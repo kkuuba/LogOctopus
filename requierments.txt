@@ -1,0 +1,4 @@
+fabric
+pandas
+python-dateutil
+pytest
