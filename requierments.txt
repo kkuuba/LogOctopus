@@ -2,3 +2,5 @@ fabric
 pandas
 python-dateutil
 pytest
+fastapi
+uvicorn
