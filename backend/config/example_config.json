@@ -1,28 +1,21 @@
 {
-    "device_configs": [
+    "device_name": "name",
+    "ip_address": "ip_address",
+    "port": 23,
+    "user": "user",
+    "password": "passwd",
+    "collection_interval": 10,
+    "log_file_configs": [
         {
-            "device_name": "name",
-            "ip_address": "ip_address",
-            "port": 23,
-            "user": "user",
-            "password": "passwd",
-            "collection_interval": 10,
-            "log_file_configs": [
-                {
-                    "log_file_cmd": "sudo journalctl -n 100",
-                    "log_name": "syslog",
-                    "data_extraction_regex": "^(?P<TIME>\\w+\\s+\\d+\\s+\\d+\\:\\d+\\:\\d+)\\s+(?P<ENTRY>.*)",
-                    "log_activation_cmd": "sudo journalctl --rotate;sudo journalctl --vacuum-time=1s"
-                },
-                {
-                    "log_file_cmd": "dmesg -T",
-                    "log_name": "kernel",
-                    "data_extraction_regex": "^\\[(?P<TIME>\\w+\\s+\\w+\\s+\\d+\\s\\d+\\:\\d+\\:\\d+\\s+\\d+)\\]\\s+(?P<ENTRY>.*)",
-                    "log_activation_cmd": "sudo dmesg -C"
-                }]
-        }
-    ],
-    "ai_token": "asdsa345gfs",
-    "ai_url": "test",
-    "data_storage_path": "/root/cmd-helper/database/"
+            "log_file_cmd": "sudo journalctl -n 100",
+            "log_name": "syslog",
+            "data_extraction_regex": "^(?P<TIME>\\w+\\s+\\d+\\s+\\d+\\:\\d+\\:\\d+)\\s+(?P<ENTRY>.*)",
+            "log_activation_cmd": "sudo journalctl --rotate;sudo journalctl --vacuum-time=1s"
+        },
+        {
+            "log_file_cmd": "dmesg -T",
+            "log_name": "kernel",
+            "data_extraction_regex": "^\\[(?P<TIME>\\w+\\s+\\w+\\s+\\d+\\s\\d+\\:\\d+\\:\\d+\\s+\\d+)\\]\\s+(?P<ENTRY>.*)",
+            "log_activation_cmd": "sudo dmesg -C"
+        }]
 }
