@@ -1,0 +1,92 @@
+# -------------------------
+# Python
+# -------------------------
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pdb
+*.egg
+*.egg-info/
+.eggs/
+build/
+dist/
+*.so
+
+# Virtual environments
+venv/
+.env/
+.env*/
+.venv*/
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache/
+pytest_cache/
+
+# MyPy / Pyright / Pylance
+.mypy_cache/
+.pytype/
+.pyright/
+
+# Logs
+*.log
+
+# -------------------------
+# OS-specific
+# -------------------------
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Linux
+*~
+
+# -------------------------
+# Editors / IDEs
+# -------------------------
+# VS Code
+.vscode/
+.history/
+
+# PyCharm
+.idea/
+
+# Emacs
+*~
+\#*\#
+.\#*
+
+# Vim
+*.swp
+*.swo
+*.swn
+
+# -------------------------
+# Git
+# -------------------------
+# Ignore git-merge leftover files
+*.orig
+
+# -------------------------
+# Other common tooling
+# -------------------------
+.envrc        # direnv
