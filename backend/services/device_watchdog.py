@@ -32,6 +32,7 @@ class DeviceWatchdog:
         self.errors = pd.DataFrame({"time": [], "error_info": []})
         self.collection_ongoing = False
         self.thread = None
+        self.collection_stop_event = None
 
     def execute_cmd(self, cmd):
         """
@@ -110,12 +111,14 @@ class DeviceWatchdog:
         """
         self.collection_ongoing = True
         self.thread = threading.Thread(target=self.logs_collection_loop, args=(self.device_config["collection_interval"],))
+        self.thread.daemon = True
         self.thread.start()
 
     def stop_logs_collection(self):
         """
         Stop logs collection background thread.
         """
+        self.collection_stop_event.set()
         self.collection_ongoing = False
         self.thread.join()
 
@@ -126,7 +129,7 @@ class DeviceWatchdog:
         Args:
             interval (int): Interval between logs extraction from target device.
         """
-        collection_stop_event = threading.Event()
+        self.collection_stop_event = threading.Event()
         while self.collection_ongoing:
-            collection_stop_event.wait(timeout=interval)
+            self.collection_stop_event.wait(timeout=interval)
             self.get_all_log_files_content()

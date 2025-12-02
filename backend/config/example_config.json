@@ -1,5 +1,6 @@
 {
     "device_name": "name",
+    "local_device": false,
     "ip_address": "ip_address",
     "port": 23,
     "user": "user",
