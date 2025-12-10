@@ -48,15 +48,14 @@ class DeviceWatchdog:
             root_requried = True if "sudo " in cmd else False
             if self.local_device:
                 if root_requried:
-                    cmd_result = self.ssh_connection.sudo(cmd, password=self.device_config["password"], hide=True, pty=True)
+                    cmd_result = self.ssh_connection.sudo(cmd, password=self.device_config["password"], hide=True, pty=True, timeout=10)
                 else:
-                    cmd_result = self.ssh_connection.local(cmd, hide=True, pty=True)
+                    cmd_result = self.ssh_connection.local(cmd, hide=True, pty=True, timeout=10)
             else:
-                self.ssh_connection.open()
                 if root_requried:
-                    cmd_result = self.ssh_connection.sudo(cmd, password=self.device_config["password"], hide=True, pty=True)
+                    cmd_result = self.ssh_connection.sudo(cmd, password=self.device_config["password"], hide=True, pty=True, timeout=10)
                 else:
-                    cmd_result = self.ssh_connection.run(cmd, hide=True, pty=True)
+                    cmd_result = self.ssh_connection.run(cmd, hide=True, pty=True, timeout=10)
             if cmd_result.ok:
                 return cmd_result.stdout
             error_entry = {"time": [datetime.now()], "error_info": [f"cmd '{cmd}' failed with -> {cmd_result.stderr.strip()}"]}
