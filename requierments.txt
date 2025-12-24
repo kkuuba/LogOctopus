@@ -4,3 +4,4 @@ python-dateutil
 pytest
 fastapi
 uvicorn
+pyarrow
