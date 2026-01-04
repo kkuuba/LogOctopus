@@ -5,11 +5,13 @@ class LogSnapshot:
     """
     A class to perform basic operations on collected logs.
     """
-    def __init__(self, collected_data):
+    def __init__(self, log_name, collected_data):
+        self.log_name = log_name
         self.collected_data = collected_data
         self.creation_time = datetime.now()
         self.logs_collection_duration = self.calcaute_logs_collection_duration()
         self.size_in_bytes = self.get_size_of_collected_data_in_bytes()
+        self.data_file_name = None
 
     def calcaute_logs_collection_duration(self):
         """
@@ -18,14 +20,12 @@ class LogSnapshot:
         Returns:
             dict: Log collection duration for all defined logs.
         """
-        log_collection_duration = {}
-        for log_name in self.collected_data:
-            if self.collected_data[log_name].empty:
-                log_collection_duration[log_name] = 0
-            else:
-                first_entry = pd.to_datetime(self.collected_data[log_name]["time"].iloc[0])
-                last_entry  = pd.to_datetime(self.collected_data[log_name]["time"].iloc[-1])
-                log_collection_duration[log_name] = (last_entry - first_entry).seconds
+        if self.collected_data.empty:
+            log_collection_duration = 0
+        else:
+            first_entry = pd.to_datetime(self.collected_data["time"].iloc[0])
+            last_entry  = pd.to_datetime(self.collected_data["time"].iloc[-1])
+            log_collection_duration = (last_entry - first_entry).seconds
 
         return log_collection_duration
     
@@ -37,8 +37,7 @@ class LogSnapshot:
             int: Size of all collected data in bytes.
         """
         size_in_bytes = 0
-        for log_name in self.collected_data:
-            size_in_bytes = size_in_bytes + self.collected_data[log_name].memory_usage(deep=True).sum()
+        size_in_bytes = size_in_bytes + self.collected_data.memory_usage(deep=True).sum()
 
         return size_in_bytes
 
@@ -48,14 +47,6 @@ class LogSnapshot:
         
         Args:
             device_name (str): Name of target device where logs were collected.
-
-        Returns:
-            list: List of all generated parquet data files.
         """
-        data_file_names = []
-        for log_name in self.collected_data:
-            data_file_name = f"{device_name}_{log_name}_log_{self.creation_time.strftime('%Y%m%d_%H%M%S')}.parquet"
-            self.collected_data[log_name].to_parquet(data_file_name, engine="pyarrow", index=False)
-            data_file_names.append(data_file_name)
-
-        return data_file_names
+        self.data_file_name = f"{device_name}_{self.log_name}_log_{self.creation_time.strftime('%Y%m%d_%H%M%S')}.parquet"
+        self.collected_data.to_parquet(self.data_file_name, engine="pyarrow", index=False)

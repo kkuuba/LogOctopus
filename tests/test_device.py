@@ -11,9 +11,9 @@ def test_normal_log_collection_scenario():
     example_device.start_logs_collection()
     sleep(30)
     example_device.stop_logs_collection()
-    example_device.save_log_snapshot()
+    example_device.save_log_snapshots()
     assert len(example_device.log_snapshots) > 0
-    assert len(example_device.log_snapshots[0].collected_data["syslog"]) > 0
+    assert len(example_device.log_snapshots[0].collected_data) > 0
 
 def test_abnormal_log_collection_scenario():
     device_config_obj = DeviceConfig(device_config_path=remote_device_incorrect_ip_config_path)
@@ -21,7 +21,7 @@ def test_abnormal_log_collection_scenario():
     example_device.start_logs_collection()
     sleep(30)
     example_device.stop_logs_collection()
-    example_device.save_log_snapshot()
+    example_device.save_log_snapshots()
     assert len(example_device.log_snapshots) > 0
     assert len(example_device.device_watchdog.errors["error_info"]) > 0
-    assert len(example_device.log_snapshots[0].collected_data["syslog"]["content"]) == 0
+    assert len(example_device.log_snapshots[0].collected_data["content"]) == 0

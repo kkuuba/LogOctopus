@@ -1,4 +1,3 @@
-from backend.models.device_config import DeviceConfig
 from backend.models.log_snapshot import LogSnapshot
 from backend.services.device_watchdog import DeviceWatchdog
 
@@ -62,9 +61,10 @@ class Device:
         """
         self.device_watchdog.stop_logs_collection()
 
-    def save_log_snapshot(self):
+    def save_log_snapshots(self):
         """
-        Save logs in LogSnapshot object with all info about collected data.
+        Save all logs collected by device watchdog and save it in LogSnapshot object with all info about collected data.
         Data will be save info file and added to logsnapshots list.
         """
-        self.log_snapshots.append(LogSnapshot(self.device_watchdog.collected_data))
+        for log_name, log_content in self.device_watchdog.collected_data.items():
+            self.log_snapshots.append(LogSnapshot(log_name, log_content))
