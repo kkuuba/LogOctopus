@@ -1,14 +1,25 @@
 import os
 import json
+import hashlib
+import base64
 import logging
 
 class DeviceConfig:
     """
     A class used to store and manage device configuration.
     """
-    def __init__(self, device_config_path):
-        self.device_config_path = device_config_path
+    def __init__(self, file_content_str):
+        self.device_config_id = self.save_config_file(file_content_str)
+        self.device_config_path = f"backend/config/{self.device_config_id}.json"
         self.device_config = None
+
+    def save_config_file(self, file_content_str):
+        decoded = base64.b64decode(file_content_str)
+        device_config_id = hashlib.sha256(decoded).hexdigest()
+        with open(f"backend/config/{device_config_id}.json", "wb") as f:
+            f.write(decoded)
+
+        return device_config_id
 
     def __del__(self):
         self.remove_device_config()

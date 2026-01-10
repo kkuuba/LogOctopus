@@ -4,11 +4,15 @@ import dash_bootstrap_components as dbc
 import json, base64, uuid
 from datetime import datetime
 import pandas as pd
+from layout import layout_view
+from backend.models.device import Device
+from backend.models.device_config import DeviceConfig
+from backend.models.log_snapshot import LogSnapshot
 
 # -------------------
 # Backend Simulation
 # -------------------
-devices = {}
+devices = []
 log_sessions = []
 
 def backend_create_device(device_config):
@@ -62,107 +66,13 @@ def backend_stop_logs(device_id):
 # Dash App
 # -------------------
 app = Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP])
-
-# Logs modal
-log_modal = dbc.Modal(
-    [
-        dbc.ModalHeader(dbc.ModalTitle("Logs")),
-        dbc.ModalBody(id="modal-body"),
-        dbc.ModalFooter([
-            dbc.Button("⬇ Download CSV", id="download-logs", color="secondary"),
-            dcc.Download(id="download-component"),
-            dbc.Button("Close", id="close-modal")
-        ])
-    ],
-    id="logs-modal",
-    size="xl",
-    is_open=False
-)
-
-# Device details modal
-device_modal = dbc.Modal(
-    [
-        dbc.ModalHeader(dbc.ModalTitle("Device Details")),
-        dbc.ModalBody(id="device-modal-body"),
-        dbc.ModalFooter(dbc.Button("Close", id="close-device-modal"))
-    ],
-    id="device-modal",
-    is_open=False
-)
-
-app.layout = dbc.Container([
-    dcc.Store(id="collection-store", data=0),
-    dbc.Row(
-        [
-            dbc.Col(
-                html.Img(
-                    src="/assets/icon.png",  # your minimalist line-art octopus icon
-                    height="60px",  # zoomed
-                    style={
-                        "margin-right": "12px",
-                        "display": "inline-block",
-                        "transform": "translateY(3px)"  # vertical alignment
-                    }
-                ),
-                width="auto",
-                style={"display": "flex", "align-items": "center"}
-            ),
-
-            # App title and subtitle
-            dbc.Col(
-                html.Div([
-                    html.H2(
-                        "LogOctopus",
-                        className="m-0",
-                        style={"color": "#1a1a1a", "font-weight": "bold"}  # match dark lines of icon
-                    ),
-                    html.Small(
-                        "Collect & Analyze Logs Efficiently",
-                        className="text-secondary"  # muted gray
-                    )
-                ]),
-                style={"display": "flex", "flex-direction": "column", "justify-content": "center"}
-            )
-        ],
-        align="center",
-        className="my-3",
-        style={
-            "background-color": "#ffffff",  # white to match icon background
-            "padding": "12px 20px",
-            "border-radius": "10px",
-            "box-shadow": "0 2px 8px rgba(0,0,0,0.08)"  # subtle shadow
-        }
-    ),
-    dbc.Row([
-        dbc.Col(
-            dcc.Upload(
-                id="upload-json",
-                children=dbc.Button("➕ Add New Device", color="primary"),
-                multiple=False
-            ),
-            width="auto"
-        ),
-        dbc.Col(dbc.Button("▶ Start Logs (Selected)", id="start-all", color="success"), width="auto"),
-        dbc.Col(dbc.Button("⏹ Stop Logs (Selected)", id="stop-all", color="danger"), width="auto"),
-        dbc.Col(dbc.Button("🗑 Remove Selected", id="remove-selected", color="secondary"), width="auto"),
-    ]),
-
-    html.Hr(),
-    html.Div(id="devices-container", style={"display": "flex", "flex-wrap": "wrap"}),
-
-    html.Hr(),
-    html.H4("Log Snapshots"),
-    dbc.Button("📊 View Selected Logs", id="view-selected", color="primary"),
-    html.Div(id="log-snapshots-container"),
-
-    log_modal,
-    device_modal
-], fluid=True)
+app.layout = layout_view
 
 # -------------------
 # Upload Device
 # -------------------
 @app.callback(
+    Output("config-alert", "is_open"),
     Output("devices-container", "children", allow_duplicate=True),
     Input("upload-json", "contents"),
     State("devices-container", "children"),
@@ -170,53 +80,58 @@ app.layout = dbc.Container([
 )
 def upload_device(contents, cards):
     cards = cards or []
+    show_incorrect_config_alert = False
+    config_file_content = base64.b64decode(contents.split(",")[1])
+    device_config = DeviceConfig(config_file_content)
+    if device_config.validate_device_config():
+        device_instance = Device(device_config_instance=device_config)
+        device_instance.get_device_connection_status()
+        device_instance.test_log_files_access()
+        device_id = device_instance.device_config.device_config_id
+        devices.append(device_instance)
 
-    # Decode uploaded JSON
-    cfg = json.loads(base64.b64decode(contents.split(",")[1]))
-    device_id = backend_create_device(cfg)
+        card = html.Div(
+            id={"type": "device-card", "index": device_id},
+            className="card m-2 p-2",
+            style={"width": "260px", "backgroundColor": "lightgray", "position": "relative"},
+            children=[
+                dcc.Checklist(
+                    options=[{"label": "", "value": device_id}],
+                    id={"type": "device-select", "index": device_id},
+                    style={"position": "absolute", "top": "6px", "left": "6px"}
+                ),
 
-    # Automatically check device to populate initial status
-    backend_check_device(device_id)
+                dbc.Button(
+                    "↻",
+                    id={"type": "refresh-device", "index": device_id},
+                    size="sm",
+                    color="secondary",
+                    style={"position": "absolute", "top": "4px", "right": "4px", "padding": "2px 6px"}
+                ),
 
-    card = html.Div(
-        id={"type": "device-card", "index": device_id},
-        className="card m-2 p-2",
-        style={"width": "260px", "backgroundColor": "lightgray", "position": "relative"},
-        children=[
-            dcc.Checklist(
-                options=[{"label": "", "value": device_id}],
-                id={"type": "device-select", "index": device_id},
-                style={"position": "absolute", "top": "6px", "left": "6px"}
-            ),
+                html.H5(device_instance.device_name, className="mt-4"),
 
-            dbc.Button(
-                "↻",
-                id={"type": "refresh-device", "index": device_id},
-                size="sm",
-                color="secondary",
-                style={"position": "absolute", "top": "4px", "right": "4px", "padding": "2px 6px"}
-            ),
+                # Pre-populate status
+                html.Small(f"Connection: {device_instance.connection_status}", id={"type": "status-connection", "index": device_id}),
+                html.Br(),
+                html.Small(f"Logs Access: {device_instance.log_access}", id={"type": "status-access", "index": device_id}),
+                html.Br(),
+                html.Small(f"Logs Collection: {device_instance.device_watchdog.collection_ongoing}", id={"type": "status-collection", "index": device_id}),
+                html.Hr(),
 
-            html.H5(cfg.get("name", "Unnamed"), className="mt-4"),
+                dbc.Button(
+                    "ℹ Device Details",
+                    id={"type": "device-info-btn", "index": device_id},
+                    size="sm",
+                    color="info"
+                )
+            ]
+        )
+    else:
+        device_config.remove_device_config()
+        show_incorrect_config_alert = True
 
-            # Pre-populate status
-            html.Small(f"Connection: {devices[device_id]['connection']}", id={"type": "status-connection", "index": device_id}),
-            html.Br(),
-            html.Small(f"Logs Access: {devices[device_id]['log_access']}", id={"type": "status-access", "index": device_id}),
-            html.Br(),
-            html.Small(f"Logs Collection: {devices[device_id]['collection']}", id={"type": "status-collection", "index": device_id}),
-            html.Hr(),
-
-            dbc.Button(
-                "ℹ Device Details",
-                id={"type": "device-info-btn", "index": device_id},
-                size="sm",
-                color="info"
-            )
-        ]
-    )
-
-    return cards + [card]
+    return show_incorrect_config_alert, cards + [card]
 
 # -------------------
 # Refresh Device Status
