@@ -1,4 +1,4 @@
-from dash import Dash, html, dcc, Input, Output, State, ctx, ALL, dash_table
+from dash import Dash, html, dcc, Input, Output, State, ctx, ALL, MATCH, dash_table
 from dash.exceptions import PreventUpdate
 import dash_bootstrap_components as dbc
 import json, base64, uuid
@@ -92,10 +92,8 @@ device_modal = dbc.Modal(
 
 app.layout = dbc.Container([
     dcc.Store(id="collection-store", data=0),
-    # html.H2("Remote Devices Log Dashboard", className="my-3"),
     dbc.Row(
         [
-            # App icon from assets folder
             dbc.Col(
                 html.Img(
                     src="/assets/icon.png",  # your minimalist line-art octopus icon
@@ -224,24 +222,22 @@ def upload_device(contents, cards):
 # Refresh Device Status
 # -------------------
 @app.callback(
-    Output({"type": "status-connection", "index": ALL}, "children"),
-    Output({"type": "status-access", "index": ALL}, "children"),
-    Output({"type": "status-collection", "index": ALL}, "children"),
-    Input({"type": "refresh-device", "index": ALL}, "n_clicks"),
-    State({"type": "status-connection", "index": ALL}, "id"),
+    Output({"type": "status-connection", "index": MATCH}, "children"),
+    Output({"type": "status-access", "index": MATCH}, "children"),
+    Output({"type": "status-collection", "index": MATCH}, "children"),
+    Input({"type": "refresh-device", "index": MATCH}, "n_clicks"),
+    State({"type": "refresh-device", "index": MATCH}, "id"),
     prevent_initial_call=True
 )
-def refresh_device(_, ids):
-    t = ctx.triggered_id
-    if not isinstance(t, dict):
-        raise PreventUpdate
+def refresh_device(_, btn_id):
+    idx = btn_id["index"]
 
-    backend_check_device(t["index"])
+    backend_check_device(idx)
 
     return (
-        [f"Connection: {devices[i['index']]['connection']}" for i in ids],
-        [f"Logs Access: {devices[i['index']]['log_access']}" for i in ids],
-        [f"Logs Collection: {devices[i['index']]['collection']}" for i in ids],
+        f"Connection: {devices[idx]['connection']}",
+        f"Logs Access: {devices[idx]['log_access']}",
+        f"Logs Collection: {devices[idx]['collection']}",
     )
 
 # -------------------
@@ -292,9 +288,6 @@ def start_stop_selected(start, stop, selected, ids, store_data):
 )
 def remove_selected(_, selected, cards):
     ids = {v[0] for v in selected if v}
-    if not ids:
-        raise PreventUpdate
-
     for d in ids:
         devices.pop(d, None)
 
@@ -416,22 +409,24 @@ def device_details(info_clicks, close_click):
         return False, None
 
     # Only respond if a device info button was clicked
-    if isinstance(t, dict) and t.get("type") == "device-info-btn":
+    if isinstance(t, dict) and t.get("type") == "device-info-btn" and info_clicks[0]:
+        print(t)
+        print(info_clicks)
         idx = t["index"]
 
-        # Find the index of this button in the ALL input list
-        try:
-            idx_pos = next(i for i, btn in enumerate(ctx.inputs_list[0]) if btn["id"]["index"] == idx)
-        except StopIteration:
-            raise PreventUpdate
+        # # Find the index of this button in the ALL input list
+        # try:
+        #     idx_pos = next(i for i, btn in enumerate(ctx.inputs_list[0]) if btn["id"]["index"] == idx)
+        # except StopIteration:
+        #     raise PreventUpdate
 
-        # Make sure n_clicks > 0
-        if info_clicks[idx_pos] is None or info_clicks[idx_pos] == 0:
-            raise PreventUpdate
+        # # Make sure n_clicks > 0
+        # if info_clicks[idx_pos] is None or info_clicks[idx_pos] == 0:
+        #     raise PreventUpdate
 
-        # Safety: device exists
-        if idx not in devices:
-            raise PreventUpdate
+        # # Safety: device exists
+        # if idx not in devices:
+        #     raise PreventUpdate
 
         # Build modal content
         d = devices[idx]
@@ -445,8 +440,6 @@ def device_details(info_clicks, close_click):
         ])
         return True, body
 
-    # Anything else → do nothing
-    raise PreventUpdate
 # -------------------
 # Download Logs
 # -------------------
