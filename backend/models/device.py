@@ -7,6 +7,7 @@ class Device:
     """
     def __init__(self, device_config_instance):
         self.device_config = device_config_instance.get_device_config()
+        self.device_config_id = device_config_instance.device_config_id
         self.device_name = self.device_config["device_name"]
         self.device_watchdog = DeviceWatchdog(self.device_config)
         self.connection_status = False
@@ -19,7 +20,8 @@ class Device:
         """
         if self.device_config["local_device"]:
             self.connection_status = True
-        self.connection_status = self.device_watchdog.ssh_connection.is_connected()
+        else:
+            self.connection_status = self.device_watchdog.ssh_connection.is_connected
 
     def test_log_files_access(self):
         """
@@ -27,7 +29,7 @@ class Device:
         method return False.
         """
         for log_file_config in self.device_config["log_file_configs"]:
-            current_log_content = self.device_watchdog.ssh_connection.execute_cmd(log_file_config["log_file_cmd"])
+            current_log_content = self.device_watchdog.execute_cmd(log_file_config["log_file_cmd"])
             if current_log_content:
                 continue
             else:

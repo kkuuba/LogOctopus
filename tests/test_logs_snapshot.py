@@ -6,7 +6,7 @@ from conftest import remote_device_config_path
 
 
 def test_normal_log_collection_scenario():
-    device_config_obj = DeviceConfig(device_config_path=remote_device_config_path)
+    device_config_obj = DeviceConfig(open(remote_device_config_path, "rb").read())
     example_device = Device(device_config_instance=device_config_obj)
     example_device.start_logs_collection()
     sleep(30)

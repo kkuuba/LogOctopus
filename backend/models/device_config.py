@@ -21,8 +21,8 @@ class DeviceConfig:
 
         return device_config_id
 
-    def __del__(self):
-        self.remove_device_config()
+    # def __del__(self):
+    #     self.remove_device_config()
 
     def validate_device_config(self):
         """

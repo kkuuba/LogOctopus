@@ -4,7 +4,7 @@ import dash_bootstrap_components as dbc
 import json, base64, uuid
 from datetime import datetime
 import pandas as pd
-from layout import layout_view
+from frontend.layout import layout_view
 from backend.models.device import Device
 from backend.models.device_config import DeviceConfig
 from backend.models.log_snapshot import LogSnapshot
@@ -81,13 +81,13 @@ app.layout = layout_view
 def upload_device(contents, cards):
     cards = cards or []
     show_incorrect_config_alert = False
-    config_file_content = base64.b64decode(contents.split(",")[1])
+    config_file_content = contents.split(",", 1)[1]
     device_config = DeviceConfig(config_file_content)
     if device_config.validate_device_config():
         device_instance = Device(device_config_instance=device_config)
         device_instance.get_device_connection_status()
         device_instance.test_log_files_access()
-        device_id = device_instance.device_config.device_config_id
+        device_id = device_instance.device_config_id
         devices.append(device_instance)
 
         card = html.Div(
@@ -144,15 +144,14 @@ def upload_device(contents, cards):
     State({"type": "refresh-device", "index": MATCH}, "id"),
     prevent_initial_call=True
 )
-def refresh_device(_, btn_id):
-    idx = btn_id["index"]
+def refresh_device(_, device_id):
 
-    backend_check_device(idx)
+    target_device = get_target_device_instance_to_update(device_id["index"])
 
     return (
-        f"Connection: {devices[idx]['connection']}",
-        f"Logs Access: {devices[idx]['log_access']}",
-        f"Logs Collection: {devices[idx]['collection']}",
+        f"Connection: {target_device.connection_status}",
+        f"Logs Access: {target_device.log_access}",
+        f"Logs Collection: {target_device.device_watchdog.collection_ongoing}",
     )
 
 # -------------------
@@ -325,35 +324,19 @@ def device_details(info_clicks, close_click):
 
     # Only respond if a device info button was clicked
     if isinstance(t, dict) and t.get("type") == "device-info-btn" and info_clicks[0]:
-        print(t)
-        print(info_clicks)
-        idx = t["index"]
-
-        # # Find the index of this button in the ALL input list
-        # try:
-        #     idx_pos = next(i for i, btn in enumerate(ctx.inputs_list[0]) if btn["id"]["index"] == idx)
-        # except StopIteration:
-        #     raise PreventUpdate
-
-        # # Make sure n_clicks > 0
-        # if info_clicks[idx_pos] is None or info_clicks[idx_pos] == 0:
-        #     raise PreventUpdate
-
-        # # Safety: device exists
-        # if idx not in devices:
-        #     raise PreventUpdate
-
-        # Build modal content
-        d = devices[idx]
-        body = html.Div([
-            html.P(f"Name: {d['name']}"),
-            html.P(f"Connection: {d['connection']}"),
-            html.P(f"Logs Access: {d['log_access']}"),
-            html.P(f"Logs Collection: {d['collection']}"),
-            html.Hr(),
-            html.Pre(json.dumps(d["config"], indent=2))
-        ])
-        return True, body
+        target_device = get_target_device_instance_to_update(t["index"])
+        if target_device:
+            body = html.Div([
+                html.P(f"Name: {target_device.device_name}"),
+                html.P(f"Connection: {target_device.connection_status}"),
+                html.P(f"Logs Access: {target_device.log_access}"),
+                html.P(f"Logs Collection: {target_device.device_watchdog.collection_ongoing}"),
+                html.Hr(),
+                html.Pre(json.dumps(target_device.device_config, indent=2))
+            ])
+            return True, body
+        return False, None
+    return False, None
 
 # -------------------
 # Download Logs
@@ -368,6 +351,13 @@ def download_logs(_, table):
     if not isinstance(table, dash_table.DataTable):
         raise PreventUpdate
     return dcc.send_data_frame(pd.DataFrame(table.data).to_csv, "logs.csv", index=False)
+
+
+def get_target_device_instance_to_update(device_id):
+    for device in devices:
+        if device.device_config_id == device_id:
+            return device
+    return None
 
 # -------------------
 if __name__ == "__main__":

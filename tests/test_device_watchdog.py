@@ -1,7 +1,7 @@
 import json
 from time import sleep
 from backend.services.device_watchdog import DeviceWatchdog
-from conftest import remote_device_config_path,local_device_config_path
+from conftest import remote_device_config_path, local_device_config_path
 
 
 def test_normal_log_collection_scenario():
