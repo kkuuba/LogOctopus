@@ -74,6 +74,7 @@ app.layout = layout_view
 @app.callback(
     Output("config-alert", "is_open"),
     Output("devices-container", "children", allow_duplicate=True),
+    Output("upload-json", "contents"),
     Input("upload-json", "contents"),
     State("devices-container", "children"),
     prevent_initial_call=True
@@ -131,7 +132,7 @@ def upload_device(contents, cards):
         device_config.remove_device_config()
         show_incorrect_config_alert = True
 
-    return show_incorrect_config_alert, cards + [card]
+    return show_incorrect_config_alert, cards + [card], None
 
 # -------------------
 # Refresh Device Status
@@ -169,24 +170,33 @@ def refresh_device(_, device_id):
 )
 def start_stop_selected(start, stop, selected, ids, store_data):
     t = ctx.triggered_id
-    selected_ids = {v[0] for v in selected if v}
-
-    if t == "start-all":
-        for d in selected_ids:
-            backend_start_logs(d)
-    elif t == "stop-all":
-        for d in selected_ids:
-            backend_stop_logs(d)
-
-    # Update styles
+    ids_to_remove = {v[0] for v in selected if v}
     styles = []
-    for i in ids:
-        col = devices[i["index"]]["collection"]
-        styles.append({
-            "width": "260px",
-            "position": "relative",
-            "backgroundColor": "lightgreen" if col == "running" else "lightgray"
-        })
+    for device in devices:
+        if t == "start-all" and device.device_config_id in ids_to_remove:
+            device.start_logs_collection()
+            styles.append({
+                        "width": "260px",
+                        "position": "relative",
+                        "backgroundColor": "lightgreen"
+                    })
+        elif t == "stop-all" and device.device_config_id in ids_to_remove:
+            device.stop_logs_collection()
+            styles.append({
+                        "width": "260px",
+                        "position": "relative",
+                        "backgroundColor": "lightgray"
+                    })
+
+    # # Update styles
+    # styles = []
+    # for i in ids:
+    #     col = devices[i["index"]]
+    #     styles.append({
+    #         "width": "260px",
+    #         "position": "relative",
+    #         "backgroundColor": "lightgreen" if col == "running" else "lightgray"
+    #     })
 
     return styles, store_data + 1  # increment to trigger snapshot refresh
 
@@ -201,11 +211,14 @@ def start_stop_selected(start, stop, selected, ids, store_data):
     prevent_initial_call=True
 )
 def remove_selected(_, selected, cards):
-    ids = {v[0] for v in selected if v}
-    for d in ids:
-        devices.pop(d, None)
+    ids_to_remove = {v[0] for v in selected if v}
+    for device in devices:
+        if device.device_config_id in ids_to_remove:
+            devices.remove(device)
 
-    return [c for c in cards if c["props"]["id"]["index"] not in ids]
+    cards = [c for c in cards if c["props"]["id"]["index"] not in ids_to_remove]
+
+    return cards
 
 # -------------------
 # Log Snapshots Table
