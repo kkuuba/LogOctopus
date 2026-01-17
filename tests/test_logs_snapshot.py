@@ -1,12 +1,13 @@
 from time import sleep
 import os
+import base64
 from backend.models.device import Device
 from backend.models.device_config import DeviceConfig
 from conftest import remote_device_config_path
 
 
 def test_normal_log_collection_scenario():
-    device_config_obj = DeviceConfig(open(remote_device_config_path, "rb").read())
+    device_config_obj = DeviceConfig(base64.b64encode(open(remote_device_config_path, "rb").read()))
     example_device = Device(device_config_instance=device_config_obj)
     example_device.start_logs_collection()
     sleep(30)
