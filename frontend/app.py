@@ -86,8 +86,6 @@ def upload_device(contents, cards):
     device_config = DeviceConfig(config_file_content)
     if device_config.validate_device_config():
         device_instance = Device(device_config_instance=device_config)
-        device_instance.get_device_connection_status()
-        device_instance.test_log_files_access()
         device_id = device_instance.device_config_id
         devices.append(device_instance)
 
@@ -101,15 +99,6 @@ def upload_device(contents, cards):
                     id={"type": "device-select", "index": device_id},
                     style={"position": "absolute", "top": "6px", "left": "6px"}
                 ),
-
-                dbc.Button(
-                    "↻",
-                    id={"type": "refresh-device", "index": device_id},
-                    size="sm",
-                    color="secondary",
-                    style={"position": "absolute", "top": "4px", "right": "4px", "padding": "2px 6px"}
-                ),
-
                 html.H5(device_instance.device_name, className="mt-4"),
 
                 # Pre-populate status
@@ -138,22 +127,24 @@ def upload_device(contents, cards):
 # Refresh Device Status
 # -------------------
 @app.callback(
-    Output({"type": "status-connection", "index": MATCH}, "children"),
-    Output({"type": "status-access", "index": MATCH}, "children"),
-    Output({"type": "status-collection", "index": MATCH}, "children"),
-    Input({"type": "refresh-device", "index": MATCH}, "n_clicks"),
-    State({"type": "refresh-device", "index": MATCH}, "id"),
-    prevent_initial_call=True
+    Output({"type": "status-connection", "index": ALL}, "children"),
+    Output({"type": "status-access", "index": ALL}, "children"),
+    Output({"type": "status-collection", "index": ALL}, "children"),
+    Input("device-refresh-interval", "n_intervals"),
 )
-def refresh_device(_, device_id):
+def refresh_devices(_):
+    connection_statuses = []
+    access_statuses = []
+    collection_statuses = []
 
-    target_device = get_target_device_instance_to_update(device_id["index"])
+    for device in devices:
+        device.test_log_files_access()
+        device.get_device_connection_status()
+        connection_statuses.append(f"Connection: {device.connection_status}")
+        access_statuses.append(f"Logs Access: {device.log_access}")
+        collection_statuses.append(f"Logs Collection: {device.device_watchdog.collection_ongoing}")
 
-    return (
-        f"Connection: {target_device.connection_status}",
-        f"Logs Access: {target_device.log_access}",
-        f"Logs Collection: {target_device.device_watchdog.collection_ongoing}",
-    )
+    return connection_statuses, access_statuses, collection_statuses
 
 # -------------------
 # Start / Stop Selected Devices
@@ -170,33 +161,23 @@ def refresh_device(_, device_id):
 )
 def start_stop_selected(start, stop, selected, ids, store_data):
     t = ctx.triggered_id
-    ids_to_remove = {v[0] for v in selected if v}
+    selected_ids = {v[0] for v in selected if v}
     styles = []
     for device in devices:
-        if t == "start-all" and device.device_config_id in ids_to_remove:
+        if t == "start-all" and device.device_config_id in selected_ids:
             device.start_logs_collection()
             styles.append({
                         "width": "260px",
                         "position": "relative",
                         "backgroundColor": "lightgreen"
                     })
-        elif t == "stop-all" and device.device_config_id in ids_to_remove:
+        elif t == "stop-all" and device.device_config_id in selected_ids:
             device.stop_logs_collection()
             styles.append({
                         "width": "260px",
                         "position": "relative",
                         "backgroundColor": "lightgray"
                     })
-
-    # # Update styles
-    # styles = []
-    # for i in ids:
-    #     col = devices[i["index"]]
-    #     styles.append({
-    #         "width": "260px",
-    #         "position": "relative",
-    #         "backgroundColor": "lightgreen" if col == "running" else "lightgray"
-    #     })
 
     return styles, store_data + 1  # increment to trigger snapshot refresh
 

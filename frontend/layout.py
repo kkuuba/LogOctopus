@@ -30,6 +30,11 @@ device_modal_view = dbc.Modal(
 
 layout_view = dbc.Container([
     dcc.Store(id="collection-store", data=0),
+    dcc.Interval(
+        id="device-refresh-interval",
+        interval=5000,   # 5 seconds
+        n_intervals=0
+    ),
     dbc.Row(
         [
             dbc.Col(
