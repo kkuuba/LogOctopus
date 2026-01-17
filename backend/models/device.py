@@ -65,4 +65,4 @@ class Device:
         Data will be save info file and added to logsnapshots list.
         """
         for log_name, log_content in self.device_watchdog.collected_data.items():
-            self.log_snapshots.append(LogSnapshot(log_name, log_content))
+            self.log_snapshots.append(LogSnapshot(self.device_name, log_name, log_content))

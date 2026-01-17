@@ -59,10 +59,10 @@ class DeviceWatchdog:
             if cmd_result.ok:
                 return cmd_result.stdout
             error_entry = {"time": [datetime.now()], "error_info": [f"cmd '{cmd}' failed with -> {cmd_result.stderr.strip()}"]}
-            self.errors = pd.concat([self.errors, pd.DataFrame(error_entry)], ignore_index=True)
+            self.errors = pd.concat([self.errors, pd.DataFrame(error_entry)], ignore_index=True) if not self.errors.empty else pd.DataFrame(error_entry)
         except Exception as e:
             error_entry = {"time": [datetime.now()], "error_info": [f"cmd '{cmd}' failed with -> {e}"]}
-            self.errors = pd.concat([self.errors, pd.DataFrame(error_entry)], ignore_index=True)
+            self.errors = pd.concat([self.errors, pd.DataFrame(error_entry)], ignore_index=True) if not self.errors.empty else pd.DataFrame(error_entry)
         return None
 
     def initialize_log_collectors(self):
@@ -102,7 +102,11 @@ class DeviceWatchdog:
         """
         for log_config in self.device_config["log_file_configs"]:
             new_log_content = pd.DataFrame(self.get_log_file_content(log_config))
-            self.collected_data[log_config["log_name"]] = pd.concat([self.collected_data[log_config["log_name"]], new_log_content], ignore_index=True).drop_duplicates(subset="time", keep="first")
+            current_log_content = self.collected_data[log_config["log_name"]]
+            if current_log_content.empty:
+                self.collected_data[log_config["log_name"]] = new_log_content
+            elif not new_log_content.empty:
+                self.collected_data[log_config["log_name"]] = pd.concat([current_log_content, new_log_content], ignore_index=True).drop_duplicates(subset="time", keep="first")
 
     def start_logs_collection(self):
         """

@@ -4,8 +4,21 @@ import dash_bootstrap_components as dbc
 
 log_modal_view = dbc.Modal(
     [
-        dbc.ModalHeader(dbc.ModalTitle("Logs")),
-        dbc.ModalBody(id="modal-body"),
+        dbc.ModalHeader(dbc.ModalTitle("Logs content")),
+        # dbc.ModalBody(id="modal-body", style={'height': '100%', 'width': '100%'}),
+        dbc.ModalBody(
+            html.Div(
+                id="modal-body",
+                style={
+                    "height": "100%",
+                    "overflow": "hidden"
+                }
+            ),
+            style={
+                "height": "100%",
+                "overflow": "hidden"
+            }
+        ),
         dbc.ModalFooter([
             dbc.Button("⬇ Download CSV", id="download-logs", color="secondary"),
             dcc.Download(id="download-component"),
@@ -13,8 +26,9 @@ log_modal_view = dbc.Modal(
         ])
     ],
     id="logs-modal",
-    size="xl",
-    is_open=False
+    is_open=False,
+    fullscreen=True,
+    scrollable=False
 )
 
 # Device details modal

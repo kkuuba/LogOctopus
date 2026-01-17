@@ -5,7 +5,8 @@ class LogSnapshot:
     """
     A class to perform basic operations on collected logs.
     """
-    def __init__(self, log_name, collected_data):
+    def __init__(self, device_name, log_name, collected_data):
+        self.device_name = device_name
         self.log_name = log_name
         self.collected_data = collected_data
         self.creation_time = datetime.now()
