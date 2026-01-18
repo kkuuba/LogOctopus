@@ -218,8 +218,8 @@ def show_logs(view_clicks, view_selected, close_click, checked):
         log_content = pd.DataFrame(columns=["time", "content", "device"])
         for selected_id in selected_ids:
             selected_log_content = log_snapshots[selected_id].collected_data
-            selected_log_content["device"] = log_snapshots[selected_id].device_name
-            selected_log_content["log_name"] = log_snapshots[selected_id].log_name
+            selected_log_content.insert(1, "device", log_snapshots[selected_id].device_name)
+            selected_log_content.insert(2, "log_name", log_snapshots[selected_id].log_name)
             if log_content.empty:
                 log_content = selected_log_content
             elif not selected_log_content.empty:
@@ -233,45 +233,29 @@ def show_logs(view_clicks, view_selected, close_click, checked):
     if log_content.empty:
         return True, html.P("No logs available")
 
-    log_table = dash_table.DataTable(
+    log_table = dash_table.DataTable( 
         columns=[{"name": i, "id": i} for i in log_content.columns],
         data=log_content.to_dict("records"),
-        page_action="none",
-
-        style_table={
-            "height": "calc(100vh - 120px)",  # header + footer space
-            "overflowY": "auto",              # ✅ ONLY scrollbar
-            "overflowX": "auto",
-            "width": "100%",
-        },
-
-        style_cell={
-            "textAlign": "left",
-            "minWidth": "150px",
-            "width": "200px",
-            "maxWidth": "300px",
-            "whiteSpace": "normal",
-        },
-
-        style_data={"userSelect": "text"},
-        # ✅ Conditional row coloring
-        # style_data_conditional=[
-        #     {
-        #         'if': {
-        #             'filter_query': '{content} contains "Error"',
-        #         },
-        #         'backgroundColor': '#FFCCCC',  # light red
-        #         'color': 'black',
-        #         'fontWeight': 'bold'
-        #     },
-        #     {
-        #         'if': {
-        #             'filter_query': '{device} = "remote_device"',
-        #         },
-        #         'backgroundColor': '#CCFFCC',  # light green
-        #     }
-        # ]
-    )
+        page_action="none", 
+        style_table={ "height": "calc(100vh - 120px)", "overflowY": "auto", "overflowX": "auto", "width": "100%", }, 
+        # Default style for all columns (small) 
+        style_cell={ 
+            "textAlign": "left", 
+            "whiteSpace": "normal", 
+            "overflow": "hidden", 
+            "textOverflow": "ellipsis", 
+            "minWidth": "50px", 
+            "width": "50px", 
+            "maxWidth": "100px" }, 
+            # Make the last column extremely wide 
+            style_cell_conditional=[ 
+                { 
+                    "if": {"column_id": log_content.columns[-1]}, # last column
+                    "minWidth": "1000px", 
+                    "width": "1200px", 
+                    "maxWidth": "2000px", } ], 
+            style_data={"userSelect": "text"}
+            )
 
     return True, log_table
 
