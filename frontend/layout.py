@@ -48,6 +48,12 @@ layout_view = dbc.Container([
         interval=5000,   # 5 seconds
         n_intervals=0
     ),
+    dcc.Interval(
+        id="startup-trigger",
+        interval=1,   # 1 ms
+        n_intervals=0,
+        max_intervals=1
+    ),
     dbc.Row(
         [
             dbc.Col(

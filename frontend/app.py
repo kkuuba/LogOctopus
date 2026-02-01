@@ -65,11 +65,11 @@ def upload_device(contents, cards):
     Output({"type": "status-access", "index": ALL}, "children"),
     Output({"type": "status-collection", "index": ALL}, "children"),
     Output("log-snapshots-container", "children", allow_duplicate=True),
-    Output("devices-container", "children", allow_duplicate=True),
     Input("device-refresh-interval", "n_intervals"),
+    State({"type": "log-check", "index": ALL}, "value"),
     prevent_initial_call=True,
 )
-def refresh_devices(_):
+def refresh_devices(_, log_snapshots_select):
     connection_statuses = []
     access_statuses = []
     collection_statuses = []
@@ -81,7 +81,9 @@ def refresh_devices(_):
         access_statuses.append(f"Logs Access: {'✅' if device.log_access else '❌'}")
         collection_statuses.append(f"Logs Collection: {'🟢' if device.device_watchdog.collection_ongoing else '🟡'}")
 
-    return connection_statuses, access_statuses, collection_statuses, update_log_snapshots_layout(), update_devices_layout()
+    updated_snapshots_layout = update_log_snapshots_layout(log_snapshots_select)
+
+    return connection_statuses, access_statuses, collection_statuses, updated_snapshots_layout
 
 # -------------------
 # Start / Stop Selected Devices
@@ -253,6 +255,13 @@ def device_details(info_clicks, close_click):
 def download_logs(_, table):
     return dcc.send_data_frame(pd.DataFrame(table["props"]["data"]).to_html, "logs.html", index=False)
 
+@app.callback(
+    Output("devices-container", "children", allow_duplicate=True),
+    Input("startup-trigger", "n_intervals"),
+    prevent_initial_call=True
+)
+def on_app_start(n):
+    return update_devices_layout()
 
 def get_target_device_instance_to_update(device_id):
     for device in devices:
@@ -261,12 +270,16 @@ def get_target_device_instance_to_update(device_id):
     return None
                     
 
-def update_log_snapshots_layout():
+def update_log_snapshots_layout(log_snapshots_select):
     log_snapshots_list = []
-    i = 0    
+    i = 0
+    selected_ids = [i for i, v in enumerate(log_snapshots_select) if v]
+    print(selected_ids)
     for log_snapshot in log_snapshots:
+        log_snapshot_checked = [i] if i in selected_ids else []
+        print(log_snapshot_checked)
         log_snapshots_list.append(html.Tr([
-            html.Td(dcc.Checklist(options=[{"label": "", "value": i}], id={"type": "log-check", "index": i})),
+            html.Td(dcc.Checklist(options=[{"label": "", "value": i}], value=log_snapshot_checked, id={"type": "log-check", "index": i})),
             html.Td(log_snapshot.device_name),
             html.Td(log_snapshot.log_name),
             html.Td(log_snapshot.creation_time),
