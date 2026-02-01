@@ -5,14 +5,15 @@ class LogSnapshot:
     """
     A class to perform basic operations on collected logs.
     """
-    def __init__(self, device_name, log_name, collected_data):
+    def __init__(self, device_name, log_name, collected_data, loaded_from_file=False):
         self.device_name = device_name
         self.log_name = log_name
         self.collected_data = collected_data
         self.creation_time = datetime.now()
         self.logs_collection_duration = self.calcaute_logs_collection_duration()
         self.size_in_bytes = self.get_size_of_collected_data_in_bytes()
-        self.data_file_name = None
+        if not loaded_from_file:
+            self.data_file_name = self.create_parquet_data_file(device_name)
 
     def calcaute_logs_collection_duration(self):
         """
@@ -48,6 +49,11 @@ class LogSnapshot:
         
         Args:
             device_name (str): Name of target device where logs were collected.
+
+        Returns:
+            str: Data file path for LogSnapshot in 'parqet' format.
         """
-        self.data_file_name = f"{device_name}_{self.log_name}_log_{self.creation_time.strftime('%Y%m%d_%H%M%S')}.parquet"
-        self.collected_data.to_parquet(self.data_file_name, engine="pyarrow", index=False)
+        data_file_path = f"data/{device_name}/{self.log_name}_log_{self.creation_time.strftime('%Y%m%d_%H%M%S')}.parquet"
+        self.collected_data.to_parquet(data_file_path, engine="pyarrow", index=False)
+
+        return data_file_path

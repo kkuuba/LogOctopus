@@ -1,20 +1,26 @@
-from dash import Dash, html, dcc, Input, Output, State, ctx, ALL, MATCH, dash_table
-from dash.exceptions import PreventUpdate
+from dash import Dash, html, dcc, Input, Output, State, ctx, ALL, dash_table
 import dash_bootstrap_components as dbc
-import json, uuid
+import json
 from time import sleep
-from datetime import datetime
 import pandas as pd
 from frontend.layout import layout_view
 from backend.models.device import Device
 from backend.models.device_config import DeviceConfig
-from backend.models.log_snapshot import LogSnapshot
 
 # -------------------
 # Backend Simulation
 # -------------------
 devices = []
+
+def populate_log_snapshots_list(log_snapshots):
+    for device in devices:
+        for log_snapshot in device.log_snapshots:
+                if log_snapshot not in log_snapshots:
+                    log_snapshots.append(log_snapshot)
+
 log_snapshots = []
+
+populate_log_snapshots_list(log_snapshots)
 
 # -------------------
 # Dash App
@@ -155,10 +161,7 @@ def remove_selected(_, selected, cards):
 )
 def update_snapshots(_):
 
-    for device in devices:
-        for log_snapshot in device.log_snapshots:
-                if log_snapshot not in log_snapshots:
-                    log_snapshots.append(log_snapshot)
+    populate_log_snapshots_list(log_snapshots)
 
     log_snapshots_list = []
     i = 0    
@@ -302,9 +305,7 @@ def device_details(info_clicks, close_click):
     prevent_initial_call=True
 )
 def download_logs(_, table):
-    if not isinstance(table, dash_table.DataTable):
-        raise PreventUpdate
-    return dcc.send_data_frame(pd.DataFrame(table.data).to_csv, "logs.csv", index=False)
+    return dcc.send_data_frame(pd.DataFrame(table["props"]["data"]).to_html, "logs.html", index=False)
 
 
 def get_target_device_instance_to_update(device_id):
@@ -312,7 +313,21 @@ def get_target_device_instance_to_update(device_id):
         if device.device_config_id == device_id:
             return device
     return None
+                    
 
 # -------------------
 if __name__ == "__main__":
     app.run(debug=True)
+
+
+# TODO 
+# Add doc string to main app file
+# Add loading config from config files
+# Add button for devices coloring
+# Add new column to log snapshots view with test trigger ID
+# Add some filter bar to log snapshots list
+# Add button for error list in device card
+# Add logs download option with format choice
+# Add button on top bar for help, rest api and settings
+# Investigate a way to add rest API
+# Investgiate a way to create container with https based on dash app

@@ -5,7 +5,6 @@ import dash_bootstrap_components as dbc
 log_modal_view = dbc.Modal(
     [
         dbc.ModalHeader(dbc.ModalTitle("Logs content")),
-        # dbc.ModalBody(id="modal-body", style={'height': '100%', 'width': '100%'}),
         dbc.ModalBody(
             html.Div(
                 id="modal-body",
@@ -99,8 +98,8 @@ layout_view = dbc.Container([
             ),
             width="auto"
         ),
-        dbc.Col(dbc.Button("▶ Start Logs (Selected)", id="start-all", color="success"), width="auto"),
-        dbc.Col(dbc.Button("⏹ Stop Logs (Selected)", id="stop-all", color="danger"), width="auto"),
+        dbc.Col(dbc.Button("▶ Start Logs collection", id="start-all", color="success"), width="auto"),
+        dbc.Col(dbc.Button("⏹ Stop Logs collection", id="stop-all", color="danger"), width="auto"),
         dbc.Col(dbc.Button("🗑 Remove Selected", id="remove-selected", color="secondary"), width="auto"),
     ]),
 

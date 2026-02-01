@@ -1,4 +1,5 @@
 import os
+import shutil
 import json
 import hashlib
 import base64
@@ -10,30 +11,36 @@ class DeviceConfig:
     """
     def __init__(self, file_content_str):
         self.device_config_id = self.save_config_file(file_content_str)
-        self.device_config_path = f"backend/config/{self.device_config_id}.json"
+        self.device_config_path = f"/tmp/{self.device_config_id}.json"
         self.device_config = None
 
     def save_config_file(self, file_content_str):
         decoded = base64.b64decode(file_content_str)
         device_config_id = hashlib.sha256(decoded).hexdigest()
-        with open(f"backend/config/{device_config_id}.json", "wb") as f:
+        with open(f"/tmp/{device_config_id}.json", "wb") as f:
             f.write(decoded)
 
         return device_config_id
 
-    # def __del__(self):
-    #     self.remove_device_config()
-
     def validate_device_config(self):
         """
-        Validated JSON structure of provided configuration file.
+        Validated JSON structure of provided configuration file and copy file to target desticnation directory.
         """
         try:
             with open(self.device_config_path, encoding='utf-8', errors='ignore') as config_file:
-                json.load(config_file)
+                config_data = json.load(config_file)
+
+            target_device_directory = f"data/{config_data['device_name']}"
+            target_config_path = f"{target_device_directory}/{self.device_config_path.split('/')[-1]}"
+            if not os.path.exists(target_device_directory):
+                os.mkdir(target_device_directory)
+            shutil.move(self.device_config_path, target_config_path)
+            self.device_config_path = target_config_path
+
             return True
         except json.JSONDecodeError as e:
             logging.error("Invalid %s JSON file. Parsing error -> %s", self.device_config_path, e)
+
             return False
 
     def get_device_config(self):

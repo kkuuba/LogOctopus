@@ -106,7 +106,7 @@ class DeviceWatchdog:
             if current_log_content.empty:
                 self.collected_data[log_config["log_name"]] = new_log_content
             elif not new_log_content.empty:
-                self.collected_data[log_config["log_name"]] = pd.concat([current_log_content, new_log_content], ignore_index=True).drop_duplicates(subset="time", keep="first")
+                self.collected_data[log_config["log_name"]] = pd.concat([current_log_content, new_log_content], ignore_index=True).drop_duplicates(subset=["time", "content"], keep="last")
 
     def start_logs_collection(self):
         """
