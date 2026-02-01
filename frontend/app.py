@@ -6,11 +6,14 @@ import pandas as pd
 from frontend.layout import layout_view
 from backend.models.device import Device
 from backend.models.device_config import DeviceConfig
+from backend.utils.config_loader import DeviceConfigLoader
 
 # -------------------
 # Backend Simulation
 # -------------------
-devices = []
+devices = DeviceConfigLoader("data").load_all_devices()
+
+print(devices)
 
 def populate_log_snapshots_list(log_snapshots):
     for device in devices:
@@ -46,42 +49,13 @@ def upload_device(contents, cards):
     device_config = DeviceConfig(config_file_content)
     if device_config.validate_device_config():
         device_instance = Device(device_config_instance=device_config)
-        device_id = device_instance.device_config_id
         devices.append(device_instance)
-
-        card = html.Div(
-            id={"type": "device-card", "index": device_id},
-            className="card m-2 p-2",
-            style={"width": "260px", "backgroundColor": "lightgray", "position": "relative"},
-            children=[
-                dcc.Checklist(
-                    options=[{"label": "", "value": device_id}],
-                    id={"type": "device-select", "index": device_id},
-                    style={"position": "absolute", "top": "6px", "left": "6px"}
-                ),
-                html.H5(device_instance.device_name, className="mt-4"),
-
-                # Pre-populate status
-                html.Small(f"Connection: {'✅' if device_instance.connection_status else '❌'}", id={"type": "status-connection", "index": device_id}),
-                html.Br(),
-                html.Small(f"Logs Access: {'✅' if device_instance.log_access else '❌'}", id={"type": "status-access", "index": device_id}),
-                html.Br(),
-                html.Small(f"Logs Collection: {'🟢' if device_instance.device_watchdog.collection_ongoing else '🟡'}", id={"type": "status-collection", "index": device_id}),
-                html.Hr(),
-
-                dbc.Button(
-                    "ℹ Device Details",
-                    id={"type": "device-info-btn", "index": device_id},
-                    size="sm",
-                    color="info"
-                )
-            ]
-        )
+        cards = update_devices_layout()
     else:
         device_config.remove_device_config()
         show_incorrect_config_alert = True
 
-    return show_incorrect_config_alert, cards + [card], None
+    return show_incorrect_config_alert, cards, None
 
 # -------------------
 # Refresh Device Status
@@ -90,7 +64,10 @@ def upload_device(contents, cards):
     Output({"type": "status-connection", "index": ALL}, "children"),
     Output({"type": "status-access", "index": ALL}, "children"),
     Output({"type": "status-collection", "index": ALL}, "children"),
+    Output("log-snapshots-container", "children", allow_duplicate=True),
+    Output("devices-container", "children", allow_duplicate=True),
     Input("device-refresh-interval", "n_intervals"),
+    prevent_initial_call=True,
 )
 def refresh_devices(_):
     connection_statuses = []
@@ -104,7 +81,7 @@ def refresh_devices(_):
         access_statuses.append(f"Logs Access: {'✅' if device.log_access else '❌'}")
         collection_statuses.append(f"Logs Collection: {'🟢' if device.device_watchdog.collection_ongoing else '🟡'}")
 
-    return connection_statuses, access_statuses, collection_statuses
+    return connection_statuses, access_statuses, collection_statuses, update_log_snapshots_layout(), update_devices_layout()
 
 # -------------------
 # Start / Stop Selected Devices
@@ -156,46 +133,15 @@ def remove_selected(_, selected, cards):
 # Log Snapshots Table
 # -------------------
 @app.callback(
-    Output("log-snapshots-container", "children"),
+    Output("log-snapshots-container", "children", allow_duplicate=True),
     Input("collection-store", "data"),  # <- changed
+    prevent_initial_call=True
 )
 def update_snapshots(_):
 
     populate_log_snapshots_list(log_snapshots)
 
-    log_snapshots_list = []
-    i = 0    
-    for log_snapshot in log_snapshots:
-        log_snapshots_list.append(html.Tr([
-            html.Td(dcc.Checklist(options=[{"label": "", "value": i}], id={"type": "log-check", "index": i})),
-            html.Td(log_snapshot.device_name),
-            html.Td(log_snapshot.log_name),
-            html.Td(log_snapshot.creation_time),
-            html.Td(f"{log_snapshot.logs_collection_duration} s"),
-            html.Td(f"{int(log_snapshot.size_in_bytes)/1000} kB"),
-            html.Td(dbc.Button("View Logs", id={"type": "view-log-btn", "index": i}, size="sm"))
-        ]))
-        i = i + 1
-
-    if not log_snapshots_list:
-        return html.P("No log snapshots yet.")
-
-    return dbc.Table(
-        [
-            html.Thead(html.Tr([
-                html.Th("✔"),
-                html.Th("Device"),
-                html.Th("Log name"),
-                html.Th("Created"),
-                html.Th("Duration"),
-                html.Th("Size"),
-                html.Th("Action")
-            ])),
-            html.Tbody(log_snapshots_list)
-        ],
-        bordered=True,
-        hover=True
-    )
+    return update_log_snapshots_layout()
 
 # -------------------
 # Logs Modal
@@ -314,6 +260,77 @@ def get_target_device_instance_to_update(device_id):
             return device
     return None
                     
+
+def update_log_snapshots_layout():
+    log_snapshots_list = []
+    i = 0    
+    for log_snapshot in log_snapshots:
+        log_snapshots_list.append(html.Tr([
+            html.Td(dcc.Checklist(options=[{"label": "", "value": i}], id={"type": "log-check", "index": i})),
+            html.Td(log_snapshot.device_name),
+            html.Td(log_snapshot.log_name),
+            html.Td(log_snapshot.creation_time),
+            html.Td(f"{log_snapshot.logs_collection_duration} s"),
+            html.Td(f"{int(log_snapshot.size_in_bytes)/1000} kB"),
+            html.Td(dbc.Button("View Logs", id={"type": "view-log-btn", "index": i}, size="sm"))
+        ]))
+        i = i + 1
+
+    if not log_snapshots_list:
+        return html.P("No log snapshots yet.")
+
+    return dbc.Table(
+        [
+            html.Thead(html.Tr([
+                html.Th("✔"),
+                html.Th("Device"),
+                html.Th("Log name"),
+                html.Th("Created"),
+                html.Th("Duration"),
+                html.Th("Size"),
+                html.Th("Action")
+            ])),
+            html.Tbody(log_snapshots_list)
+        ],
+        bordered=True,
+        hover=True
+    )
+
+def update_devices_layout():
+    cards_list = []
+    for device_instance in devices: 
+        device_id = device_instance.device_config_id
+        card = html.Div(
+            id={"type": "device-card", "index": device_id},
+            className="card m-2 p-2",
+            style={"width": "260px", "backgroundColor": "lightgray", "position": "relative"},
+            children=[
+                dcc.Checklist(
+                    options=[{"label": "", "value": device_id}],
+                    id={"type": "device-select", "index": device_id},
+                    style={"position": "absolute", "top": "6px", "left": "6px"}
+                ),
+                html.H5(device_instance.device_name, className="mt-4"),
+
+                # Pre-populate status
+                html.Small(f"Connection: {'✅' if device_instance.connection_status else '❌'}", id={"type": "status-connection", "index": device_id}),
+                html.Br(),
+                html.Small(f"Logs Access: {'✅' if device_instance.log_access else '❌'}", id={"type": "status-access", "index": device_id}),
+                html.Br(),
+                html.Small(f"Logs Collection: {'🟢' if device_instance.device_watchdog.collection_ongoing else '🟡'}", id={"type": "status-collection", "index": device_id}),
+                html.Hr(),
+
+                dbc.Button(
+                    "ℹ Device Details",
+                    id={"type": "device-info-btn", "index": device_id},
+                    size="sm",
+                    color="info"
+                )
+            ]
+        )
+        cards_list.append(card)
+
+    return cards_list
 
 # -------------------
 if __name__ == "__main__":

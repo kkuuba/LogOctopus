@@ -1,29 +1,29 @@
-import base64
 import os
-from backend.models.device import Device
-from backend.models.device_config import DeviceConfig
+from pathlib import Path
+from backend.models.log_snapshot import LogSnapshot
+import pandas as pd
 
 class LogSnapshotsLoader():
 
     def __init__(self, log_snapshots_dir_path):
+        self.device_name = log_snapshots_dir_path.split("/")[-1]
         self.log_snapshots_dir_path = log_snapshots_dir_path
 
-    def load_log_snapshots_from_file(self, log_snapshots_path):
-        with open(log_snapshots_path, encoding='utf-8', errors='ignore') as log_snapshot_file:
-            log_snapshot_content = base64.b64encode(config_file.read())
-            log_snapshot_file.close()
-
-        if log_snapshot_content:
-            device_config = DeviceConfig(config_content)
-            return Device(device_config_instance=device_config)
+    def load_log_snapshots_from_file(self, log_snapshot_path):
+        filename = os.path.basename(log_snapshot_path)
+        log_name = filename.split("_log_")[0]
+        log_content = pd.read_parquet(log_snapshot_path)
+        if log_content.empty:
+           return None
         else:
-            return None
+            return LogSnapshot(self.device_name, log_name, log_content, True)
 
-    def load_all_devices(self):
-        devices_list = []
-        for root, dirs, files in os.walk(self.configs_dir_path):
-            for file in files:
-                full_path = os.path.join(root, file)
-                devices_list.append(self.load_device_from_config(full_path))
+    def load_all_log_snapshots(self):
+        log_snapshots_list = []
+        log_snapshots_paths = list(Path(self.log_snapshots_dir_path).glob("*.parquet"))
+        for log_snapshot_path in log_snapshots_paths:
+            log_snapshot = self.load_log_snapshots_from_file(log_snapshot_path)
+            if log_snapshot:
+                log_snapshots_list.append(log_snapshot)
 
-        return devices_list
+        return log_snapshots_list

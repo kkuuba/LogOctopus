@@ -1,5 +1,7 @@
+import os
 from backend.models.log_snapshot import LogSnapshot
 from backend.services.device_watchdog import DeviceWatchdog
+from backend.utils.log_snapshots_loader import LogSnapshotsLoader
 
 class Device:
     """
@@ -12,7 +14,7 @@ class Device:
         self.device_watchdog = DeviceWatchdog(self.device_config)
         self.connection_status = False
         self.log_access = False
-        self.log_snapshots = []
+        self.log_snapshots = LogSnapshotsLoader(os.path.join("data", self.device_name)).load_all_log_snapshots()
 
     def get_device_connection_status(self):
         """
