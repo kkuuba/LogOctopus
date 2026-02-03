@@ -64,12 +64,10 @@ def upload_device(contents, cards):
     Output({"type": "status-connection", "index": ALL}, "children"),
     Output({"type": "status-access", "index": ALL}, "children"),
     Output({"type": "status-collection", "index": ALL}, "children"),
-    Output("log-snapshots-container", "children", allow_duplicate=True),
     Input("device-refresh-interval", "n_intervals"),
-    State({"type": "log-check", "index": ALL}, "value"),
     prevent_initial_call=True,
 )
-def refresh_devices(_, log_snapshots_select):
+def refresh_devices(_):
     connection_statuses = []
     access_statuses = []
     collection_statuses = []
@@ -81,9 +79,7 @@ def refresh_devices(_, log_snapshots_select):
         access_statuses.append(f"Logs Access: {'✅' if device.log_access else '❌'}")
         collection_statuses.append(f"Logs Collection: {'🟢' if device.device_watchdog.collection_ongoing else '🟡'}")
 
-    updated_snapshots_layout = update_log_snapshots_layout(log_snapshots_select)
-
-    return connection_statuses, access_statuses, collection_statuses, updated_snapshots_layout
+    return connection_statuses, access_statuses, collection_statuses
 
 # -------------------
 # Start / Stop Selected Devices
@@ -125,6 +121,7 @@ def remove_selected(_, selected, cards):
     ids_to_remove = {v[0] for v in selected if v}
     for device in devices:
         if device.device_config_id in ids_to_remove:
+            device.device_config_instance.remove_device_config()
             devices.remove(device)
 
     cards = [c for c in cards if c["props"]["id"]["index"] not in ids_to_remove]
@@ -257,11 +254,12 @@ def download_logs(_, table):
 
 @app.callback(
     Output("devices-container", "children", allow_duplicate=True),
+    Output("log-snapshots-container", "children", allow_duplicate=True),
     Input("startup-trigger", "n_intervals"),
     prevent_initial_call=True
 )
 def on_app_start(n):
-    return update_devices_layout()
+    return update_devices_layout(), update_log_snapshots_layout()
 
 def get_target_device_instance_to_update(device_id):
     for device in devices:
@@ -270,16 +268,12 @@ def get_target_device_instance_to_update(device_id):
     return None
                     
 
-def update_log_snapshots_layout(log_snapshots_select):
+def update_log_snapshots_layout():
     log_snapshots_list = []
     i = 0
-    selected_ids = [i for i, v in enumerate(log_snapshots_select) if v]
-    print(selected_ids)
     for log_snapshot in log_snapshots:
-        log_snapshot_checked = [i] if i in selected_ids else []
-        print(log_snapshot_checked)
         log_snapshots_list.append(html.Tr([
-            html.Td(dcc.Checklist(options=[{"label": "", "value": i}], value=log_snapshot_checked, id={"type": "log-check", "index": i})),
+            html.Td(dcc.Checklist(options=[{"label": "", "value": i}], id={"type": "log-check", "index": i})),
             html.Td(log_snapshot.device_name),
             html.Td(log_snapshot.log_name),
             html.Td(log_snapshot.creation_time),

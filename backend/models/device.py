@@ -10,6 +10,7 @@ class Device:
     def __init__(self, device_config_instance):
         self.device_config = device_config_instance.get_device_config()
         self.device_config_id = device_config_instance.device_config_id
+        self.device_config_instance = device_config_instance
         self.device_name = self.device_config["device_name"]
         self.device_watchdog = DeviceWatchdog(self.device_config)
         self.connection_status = False
