@@ -21,7 +21,6 @@ class DeviceConfigLoader():
     def load_all_devices(self):
         devices_list = []
         config_paths = list(Path(self.configs_dir_path).rglob("*.json"))
-        print(config_paths)
         for config_path in config_paths:
             device = self.load_device_from_config(config_path)
             if device:

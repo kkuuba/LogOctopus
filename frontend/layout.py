@@ -1,4 +1,5 @@
-from dash import html, dcc
+import json
+from dash import html, dcc, dash_table
 import dash_bootstrap_components as dbc
 
 
@@ -126,3 +127,177 @@ layout_view = dbc.Container([
     log_modal_view,
     device_modal_view
 ], fluid=True)
+
+
+def generate_logs_snapshots_table(log_snapshots_list):
+    """
+    Generate dbc.Dash table based on info in logs snapshot objects list.
+
+    Args:
+        log_snapshots_list (list): List which contains all logs snapshot objects.
+    
+    Returns:
+        (dbc.Table): HTML table based on dbc dash component with all collected logs snapshots.
+    """
+    table_rows = []
+    i = 0
+    for log_snapshot in log_snapshots_list:
+        table_rows.append(html.Tr([
+            html.Td(dcc.Checklist(options=[{"label": "", "value": i}], id={"type": "log-check", "index": i})),
+            html.Td(log_snapshot.device_name),
+            html.Td(log_snapshot.log_name),
+            html.Td(log_snapshot.creation_time),
+            html.Td(f"{log_snapshot.logs_collection_duration} s"),
+            html.Td(f"{int(log_snapshot.size_in_bytes)/1000} kB"),
+            html.Td(dbc.Button("View Logs", id={"type": "view-log-btn", "index": i}, size="sm"))
+        ]))
+        i = i + 1
+
+    if not table_rows:
+        return html.P("No log snapshots yet.")
+
+    return dbc.Table(
+        [
+            html.Thead(html.Tr([
+                html.Th("✔"),
+                html.Th("Device"),
+                html.Th("Log name"),
+                html.Th("Created"),
+                html.Th("Duration"),
+                html.Th("Size"),
+                html.Th("Action")
+            ])),
+            html.Tbody(table_rows)
+        ],
+        bordered=True,
+        hover=True
+    )
+
+def generate_all_devices_cards_list(devices_list):
+    """
+    Generate all devices cards lists.
+
+    Args:
+        devices_list (list): List which contains all device objects.
+    
+    Returns:
+        (list): List containg all devices info in HTML cards format.
+    """
+    cards_list = []
+    for device_instance in devices_list:
+        device_id = device_instance.device_config_id
+        card = html.Div(
+            id={"type": "device-card", "index": device_id},
+            className="card m-2 p-2",
+            style={"width": "260px", "backgroundColor": "lightgray", "position": "relative"},
+            children=[
+                dcc.Checklist(
+                    options=[{"label": "", "value": device_id}],
+                    id={"type": "device-select", "index": device_id},
+                    style={"position": "absolute", "top": "6px", "left": "6px"}
+                ),
+                html.H5(device_instance.device_name, className="mt-4"),
+
+                # Pre-populate status
+                html.Small(f"Connection: {'✅' if device_instance.connection_status else '❌'}", id={"type": "status-connection", "index": device_id}),
+                html.Br(),
+                html.Small(f"Logs Access: {'✅' if device_instance.log_access else '❌'}", id={"type": "status-access", "index": device_id}),
+                html.Br(),
+                html.Small(f"Logs Collection: {'🟢' if device_instance.device_watchdog.collection_ongoing else '🟡'}", id={"type": "status-collection", "index": device_id}),
+                html.Hr(),
+
+                dbc.Button(
+                    "ℹ Device Details",
+                    id={"type": "device-info-btn", "index": device_id},
+                    size="sm",
+                    color="info"
+                )
+            ]
+        )
+        cards_list.append(card)
+
+    return cards_list
+
+def generate_device_info_modal(target_device):
+    """
+    Generate device info modal.
+
+    Args:
+        target_device (Device): Device class object which contains all info about target device.
+    
+    Returns:
+        (html.Div): HTML body with all detailed info about target device.
+    """
+    body = html.Div([
+        html.P(f"Name: {target_device.device_name}"),
+        html.P(f"Connection: {target_device.connection_status}"),
+        html.P(f"Logs Access: {target_device.log_access}"),
+        html.P(f"Logs Collection: {target_device.device_watchdog.collection_ongoing}"),
+        html.Hr(),
+        html.Pre(json.dumps(target_device.device_config, indent=2))
+    ])
+
+    return body
+
+def generate_log_content_modal(log_content_df):
+    """
+    Generate log content modal with all logs timestamps and entries.
+
+    Args:
+        log_content_df (pandas.df): Device class object which contains all info about target device.
+    
+    Returns:
+        (dash_table.DataTable): Dash table with full log content.
+    """
+    if log_content_df.empty:
+
+        return None
+    else:
+        log_table = dash_table.DataTable( 
+            columns=[{"name": i, "id": i} for i in log_content_df.columns],
+            data=log_content_df.to_dict("records"),
+            page_action="none", 
+            style_table={ "height": "calc(100vh - 120px)", "overflowY": "auto", "overflowX": "auto", "width": "100%", }, 
+            # Default style for all columns (small) 
+            style_cell={ 
+                "textAlign": "left", 
+                "whiteSpace": "normal", 
+                "overflow": "hidden", 
+                "textOverflow": "ellipsis", 
+                "minWidth": "50px", 
+                "width": "50px", 
+                "maxWidth": "100px" }, 
+                # Make the last column extremely wide 
+                style_cell_conditional=[ 
+                    { 
+                        "if": {"column_id": log_content_df.columns[-1]}, # last column
+                        "minWidth": "1000px", 
+                        "width": "1200px", 
+                        "maxWidth": "2000px", } ], 
+                style_data={"userSelect": "text"}
+                )
+
+        return log_table
+
+def get_all_devices_statuses(devices_list):
+    """
+    Get following statuses: connection, log_access, logs_collection for all devices.
+
+    Args:
+        devices_list (list): List which contains all device objects.
+
+    Returns:
+        [list, list, list]: Three elements list containg lists for all devices statuses (connection, log_access, logs_collection).
+    """
+    connection_statuses = []
+    log_access_statuses = []
+    logs_collection_statuses = []
+
+    for device in devices_list:
+        device.test_log_files_access()
+        device.get_device_connection_status()
+        connection_statuses.append(f"Connection: {'✅' if device.connection_status else '❌'}")
+        log_access_statuses.append(f"Logs Access: {'✅' if device.log_access else '❌'}")
+        logs_collection_statuses.append(f"Logs Collection: {'🟢' if device.device_watchdog.collection_ongoing else '🟡'}")
+    
+    return connection_statuses, log_access_statuses, logs_collection_statuses

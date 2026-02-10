@@ -1,29 +1,22 @@
-from dash import Dash, html, dcc, Input, Output, State, ctx, ALL, dash_table
+from dash import Dash, dcc, Input, Output, State, ctx, ALL
+from dash.exceptions import PreventUpdate
 import dash_bootstrap_components as dbc
-import json
-from time import sleep
 import pandas as pd
-from frontend.layout import layout_view
+from frontend.layout import (layout_view, 
+                             generate_logs_snapshots_table, 
+                             generate_all_devices_cards_list, 
+                             generate_device_info_modal, 
+                             generate_log_content_modal, 
+                             get_all_devices_statuses)
 from backend.models.device import Device
 from backend.models.device_config import DeviceConfig
 from backend.utils.config_loader import DeviceConfigLoader
+from backend.utils.log_snapshot_helper import LogSnapshotsHelper
 
-# -------------------
-# Backend Simulation
-# -------------------
+
 devices = DeviceConfigLoader("data").load_all_devices()
-
-print(devices)
-
-def populate_log_snapshots_list(log_snapshots):
-    for device in devices:
-        for log_snapshot in device.log_snapshots:
-                if log_snapshot not in log_snapshots:
-                    log_snapshots.append(log_snapshot)
-
-log_snapshots = []
-
-populate_log_snapshots_list(log_snapshots)
+log_snapshots_helper = LogSnapshotsHelper(devices)
+log_snapshots = log_snapshots_helper.get_log_snapshots_list()
 
 # -------------------
 # Dash App
@@ -50,7 +43,7 @@ def upload_device(contents, cards):
     if device_config.validate_device_config():
         device_instance = Device(device_config_instance=device_config)
         devices.append(device_instance)
-        cards = update_devices_layout()
+        cards = generate_all_devices_cards_list(devices)
     else:
         device_config.remove_device_config()
         show_incorrect_config_alert = True
@@ -65,24 +58,18 @@ def upload_device(contents, cards):
     Output({"type": "status-access", "index": ALL}, "children"),
     Output({"type": "status-collection", "index": ALL}, "children"),
     Input("device-refresh-interval", "n_intervals"),
+    State({"type": "status-connection", "index": ALL}, "id"),
     prevent_initial_call=True,
 )
-def refresh_devices(_):
-    connection_statuses = []
-    access_statuses = []
-    collection_statuses = []
+def refresh_devices(_, conn_ids):
 
-    for device in devices:
-        device.test_log_files_access()
-        device.get_device_connection_status()
-        connection_statuses.append(f"Connection: {'✅' if device.connection_status else '❌'}")
-        access_statuses.append(f"Logs Access: {'✅' if device.log_access else '❌'}")
-        collection_statuses.append(f"Logs Collection: {'🟢' if device.device_watchdog.collection_ongoing else '🟡'}")
+    if len(conn_ids) != len(devices):
+        raise PreventUpdate
 
-    return connection_statuses, access_statuses, collection_statuses
+    return get_all_devices_statuses(devices)
 
 # -------------------
-# Start / Stop Selected Devices
+# Start / Stop Logs collection
 # -------------------
 @app.callback(
     Output("collection-store", "data"),  # <- new output
@@ -105,7 +92,7 @@ def start_stop_selected(start, stop, selected, store_data):
     if t == "start-all":
         return store_data
     else:
-        return store_data + 1  # increment to trigger snapshot refresh
+        return store_data + 1
 
 # -------------------
 # Remove Selected Devices
@@ -114,19 +101,16 @@ def start_stop_selected(start, stop, selected, store_data):
     Output("devices-container", "children", allow_duplicate=True),
     Input("remove-selected", "n_clicks"),
     State({"type": "device-select", "index": ALL}, "value"),
-    State("devices-container", "children"),
     prevent_initial_call=True
 )
-def remove_selected(_, selected, cards):
+def remove_selected(_, selected):
     ids_to_remove = {v[0] for v in selected if v}
     for device in devices:
         if device.device_config_id in ids_to_remove:
             device.device_config_instance.remove_device_config()
             devices.remove(device)
 
-    cards = [c for c in cards if c["props"]["id"]["index"] not in ids_to_remove]
-
-    return cards
+    return generate_all_devices_cards_list()
 
 # -------------------
 # Log Snapshots Table
@@ -137,10 +121,9 @@ def remove_selected(_, selected, cards):
     prevent_initial_call=True
 )
 def update_snapshots(_):
+    log_snapshots = log_snapshots_helper.get_log_snapshots_list()
 
-    populate_log_snapshots_list(log_snapshots)
-
-    return update_log_snapshots_layout()
+    return generate_logs_snapshots_table(log_snapshots)
 
 # -------------------
 # Logs Modal
@@ -156,56 +139,19 @@ def update_snapshots(_):
 )
 def show_logs(view_clicks, view_selected, close_click, checked):
     t = ctx.triggered_id
-
     if t == "close-modal" or t is None:
         return False, None
-
-    log_content = None
     if t == "view-selected":
-        selected_ids = [i for i, v in enumerate(checked) if v]
-        log_content = pd.DataFrame(columns=["time", "content", "device"])
-        for selected_id in selected_ids:
-            selected_log_content = log_snapshots[selected_id].collected_data
-            selected_log_content.insert(1, "device", log_snapshots[selected_id].device_name)
-            selected_log_content.insert(2, "log_name", log_snapshots[selected_id].log_name)
-            if log_content.empty:
-                log_content = selected_log_content
-            elif not selected_log_content.empty:
-                log_content = pd.concat([log_content, selected_log_content], ignore_index=True)
-        log_content = log_content.sort_values(by="time", ascending=True)
-    elif t["type"] == "view-log-btn" and not set(view_clicks) == {None}:
-        log_content = log_snapshots[t["index"]].collected_data
+        selected_log_snapshots = []
+        for selected_id in [i for i, v in enumerate(checked) if v]:
+            selected_log_snapshots.append(log_snapshots[selected_id])
+            log_content = log_snapshots_helper.get_log_content_for_selected_snapshots(selected_log_snapshots)
+    elif t["type"] == "view-log-btn":
+        log_content = log_snapshots_helper.get_log_content_for_selected_snapshots([log_snapshots[t["index"]]])
     else:
         return False, None
-    
-    if log_content.empty:
-        return True, html.P("No logs available")
 
-    log_table = dash_table.DataTable( 
-        columns=[{"name": i, "id": i} for i in log_content.columns],
-        data=log_content.to_dict("records"),
-        page_action="none", 
-        style_table={ "height": "calc(100vh - 120px)", "overflowY": "auto", "overflowX": "auto", "width": "100%", }, 
-        # Default style for all columns (small) 
-        style_cell={ 
-            "textAlign": "left", 
-            "whiteSpace": "normal", 
-            "overflow": "hidden", 
-            "textOverflow": "ellipsis", 
-            "minWidth": "50px", 
-            "width": "50px", 
-            "maxWidth": "100px" }, 
-            # Make the last column extremely wide 
-            style_cell_conditional=[ 
-                { 
-                    "if": {"column_id": log_content.columns[-1]}, # last column
-                    "minWidth": "1000px", 
-                    "width": "1200px", 
-                    "maxWidth": "2000px", } ], 
-            style_data={"userSelect": "text"}
-            )
-
-    return True, log_table
+    return True, generate_log_content_modal(log_content)
 
 # -------------------
 # Device Details Modal
@@ -217,26 +163,14 @@ def show_logs(view_clicks, view_selected, close_click, checked):
     Input("close-device-modal", "n_clicks"),
     prevent_initial_call=True
 )
-def device_details(info_clicks, close_click):
+def device_details(info_clicks, _):
     t = ctx.triggered_id
-
-    # Close modal
     if t == "close-device-modal" or t is None:
         return False, None
-
-    # Only respond if a device info button was clicked
     if isinstance(t, dict) and t.get("type") == "device-info-btn" and info_clicks[0]:
         target_device = get_target_device_instance_to_update(t["index"])
         if target_device:
-            body = html.Div([
-                html.P(f"Name: {target_device.device_name}"),
-                html.P(f"Connection: {target_device.connection_status}"),
-                html.P(f"Logs Access: {target_device.log_access}"),
-                html.P(f"Logs Collection: {target_device.device_watchdog.collection_ongoing}"),
-                html.Hr(),
-                html.Pre(json.dumps(target_device.device_config, indent=2))
-            ])
-            return True, body
+            return True, generate_device_info_modal(target_device)
         return False, None
     return False, None
 
@@ -259,85 +193,13 @@ def download_logs(_, table):
     prevent_initial_call=True
 )
 def on_app_start(n):
-    return update_devices_layout(), update_log_snapshots_layout()
+    return generate_all_devices_cards_list(devices), generate_logs_snapshots_table(log_snapshots)
 
 def get_target_device_instance_to_update(device_id):
     for device in devices:
         if device.device_config_id == device_id:
             return device
     return None
-                    
-
-def update_log_snapshots_layout():
-    log_snapshots_list = []
-    i = 0
-    for log_snapshot in log_snapshots:
-        log_snapshots_list.append(html.Tr([
-            html.Td(dcc.Checklist(options=[{"label": "", "value": i}], id={"type": "log-check", "index": i})),
-            html.Td(log_snapshot.device_name),
-            html.Td(log_snapshot.log_name),
-            html.Td(log_snapshot.creation_time),
-            html.Td(f"{log_snapshot.logs_collection_duration} s"),
-            html.Td(f"{int(log_snapshot.size_in_bytes)/1000} kB"),
-            html.Td(dbc.Button("View Logs", id={"type": "view-log-btn", "index": i}, size="sm"))
-        ]))
-        i = i + 1
-
-    if not log_snapshots_list:
-        return html.P("No log snapshots yet.")
-
-    return dbc.Table(
-        [
-            html.Thead(html.Tr([
-                html.Th("✔"),
-                html.Th("Device"),
-                html.Th("Log name"),
-                html.Th("Created"),
-                html.Th("Duration"),
-                html.Th("Size"),
-                html.Th("Action")
-            ])),
-            html.Tbody(log_snapshots_list)
-        ],
-        bordered=True,
-        hover=True
-    )
-
-def update_devices_layout():
-    cards_list = []
-    for device_instance in devices: 
-        device_id = device_instance.device_config_id
-        card = html.Div(
-            id={"type": "device-card", "index": device_id},
-            className="card m-2 p-2",
-            style={"width": "260px", "backgroundColor": "lightgray", "position": "relative"},
-            children=[
-                dcc.Checklist(
-                    options=[{"label": "", "value": device_id}],
-                    id={"type": "device-select", "index": device_id},
-                    style={"position": "absolute", "top": "6px", "left": "6px"}
-                ),
-                html.H5(device_instance.device_name, className="mt-4"),
-
-                # Pre-populate status
-                html.Small(f"Connection: {'✅' if device_instance.connection_status else '❌'}", id={"type": "status-connection", "index": device_id}),
-                html.Br(),
-                html.Small(f"Logs Access: {'✅' if device_instance.log_access else '❌'}", id={"type": "status-access", "index": device_id}),
-                html.Br(),
-                html.Small(f"Logs Collection: {'🟢' if device_instance.device_watchdog.collection_ongoing else '🟡'}", id={"type": "status-collection", "index": device_id}),
-                html.Hr(),
-
-                dbc.Button(
-                    "ℹ Device Details",
-                    id={"type": "device-info-btn", "index": device_id},
-                    size="sm",
-                    color="info"
-                )
-            ]
-        )
-        cards_list.append(card)
-
-    return cards_list
 
 # -------------------
 if __name__ == "__main__":
