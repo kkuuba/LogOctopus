@@ -18,24 +18,22 @@ devices = DeviceConfigLoader("data").load_all_devices()
 log_snapshots_helper = LogSnapshotsHelper(devices)
 log_snapshots = log_snapshots_helper.get_log_snapshots_list()
 
-# -------------------
-# Dash App
-# -------------------
+
 app = Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP])
 app.layout = layout_view
 
-# -------------------
-# Upload Device
-# -------------------
+
 @app.callback(
     Output("config-alert", "is_open"),
     Output("devices-container", "children", allow_duplicate=True),
-    Output("upload-json", "contents"),
     Input("upload-json", "contents"),
     State("devices-container", "children"),
     prevent_initial_call=True
 )
 def upload_device(contents, cards):
+    """
+    Upload new device based on provided config file.
+    """
     cards = cards or []
     show_incorrect_config_alert = False
     config_file_content = contents.split(",", 1)[1]
@@ -48,11 +46,9 @@ def upload_device(contents, cards):
         device_config.remove_device_config()
         show_incorrect_config_alert = True
 
-    return show_incorrect_config_alert, cards, None
+    return show_incorrect_config_alert, cards
 
-# -------------------
-# Refresh Device Status
-# -------------------
+
 @app.callback(
     Output({"type": "status-connection", "index": ALL}, "children"),
     Output({"type": "status-access", "index": ALL}, "children"),
@@ -62,15 +58,15 @@ def upload_device(contents, cards):
     prevent_initial_call=True,
 )
 def refresh_devices(_, conn_ids):
-
+    """
+    Refresh all device statuses (connection, log access, logs collection state).
+    """
     if len(conn_ids) != len(devices):
         raise PreventUpdate
 
     return get_all_devices_statuses(devices)
 
-# -------------------
-# Start / Stop Logs collection
-# -------------------
+
 @app.callback(
     Output("collection-store", "data"),  # <- new output
     Input("start-all", "n_clicks"),
@@ -80,6 +76,9 @@ def refresh_devices(_, conn_ids):
     prevent_initial_call=True
 )
 def start_stop_selected(start, stop, selected, store_data):
+    """
+    Start or stop logs collection on selected devices.
+    """
     t = ctx.triggered_id
     selected_ids = {v[0] for v in selected if v}
     for device in devices:
@@ -94,9 +93,7 @@ def start_stop_selected(start, stop, selected, store_data):
     else:
         return store_data + 1
 
-# -------------------
-# Remove Selected Devices
-# -------------------
+
 @app.callback(
     Output("devices-container", "children", allow_duplicate=True),
     Input("remove-selected", "n_clicks"),
@@ -104,6 +101,9 @@ def start_stop_selected(start, stop, selected, store_data):
     prevent_initial_call=True
 )
 def remove_selected(_, selected):
+    """
+    Remove all selected devices.
+    """
     ids_to_remove = {v[0] for v in selected if v}
     for device in devices:
         if device.device_config_id in ids_to_remove:
@@ -112,22 +112,21 @@ def remove_selected(_, selected):
 
     return generate_all_devices_cards_list()
 
-# -------------------
-# Log Snapshots Table
-# -------------------
+
 @app.callback(
     Output("log-snapshots-container", "children", allow_duplicate=True),
     Input("collection-store", "data"),  # <- changed
     prevent_initial_call=True
 )
 def update_snapshots(_):
+    """
+    Update all log snapshots table.
+    """
     log_snapshots = log_snapshots_helper.get_log_snapshots_list()
 
     return generate_logs_snapshots_table(log_snapshots)
 
-# -------------------
-# Logs Modal
-# -------------------
+
 @app.callback(
     Output("logs-modal", "is_open"),
     Output("modal-body", "children"),
@@ -138,6 +137,9 @@ def update_snapshots(_):
     prevent_initial_call=True
 )
 def show_logs(view_clicks, view_selected, close_click, checked):
+    """
+    Show log content for selected or single log snapshots.
+    """
     t = ctx.triggered_id
     if t == "close-modal" or t is None:
         return False, None
@@ -146,16 +148,14 @@ def show_logs(view_clicks, view_selected, close_click, checked):
         for selected_id in [i for i, v in enumerate(checked) if v]:
             selected_log_snapshots.append(log_snapshots[selected_id])
             log_content = log_snapshots_helper.get_log_content_for_selected_snapshots(selected_log_snapshots)
-    elif t["type"] == "view-log-btn":
+    elif t["type"] == "view-log-btn" and not set(view_clicks) == {None}:
         log_content = log_snapshots_helper.get_log_content_for_selected_snapshots([log_snapshots[t["index"]]])
     else:
         return False, None
 
     return True, generate_log_content_modal(log_content)
 
-# -------------------
-# Device Details Modal
-# -------------------
+
 @app.callback(
     Output("device-modal", "is_open"),
     Output("device-modal-body", "children"),
@@ -164,6 +164,9 @@ def show_logs(view_clicks, view_selected, close_click, checked):
     prevent_initial_call=True
 )
 def device_details(info_clicks, _):
+    """
+    Open modal with device paramters info.
+    """
     t = ctx.triggered_id
     if t == "close-device-modal" or t is None:
         return False, None
@@ -174,9 +177,7 @@ def device_details(info_clicks, _):
         return False, None
     return False, None
 
-# -------------------
-# Download Logs
-# -------------------
+
 @app.callback(
     Output("download-component", "data"),
     Input("download-logs", "n_clicks"),
@@ -184,6 +185,9 @@ def device_details(info_clicks, _):
     prevent_initial_call=True
 )
 def download_logs(_, table):
+    """
+    Download log content for single or selected log snashots in HTML format.
+    """
     return dcc.send_data_frame(pd.DataFrame(table["props"]["data"]).to_html, "logs.html", index=False)
 
 @app.callback(
@@ -193,15 +197,27 @@ def download_logs(_, table):
     prevent_initial_call=True
 )
 def on_app_start(n):
+    """
+    Update device list and log snapshots table based on source files.
+    """
     return generate_all_devices_cards_list(devices), generate_logs_snapshots_table(log_snapshots)
 
 def get_target_device_instance_to_update(device_id):
+    """
+    Get Device object based on provided device ID.
+
+    Args:
+        device_id (int): Target device id.
+
+    Returns:
+        (Device): Instance of target Device object.
+    """
     for device in devices:
         if device.device_config_id == device_id:
             return device
     return None
 
-# -------------------
+
 if __name__ == "__main__":
     app.run(debug=True)
 

@@ -9,6 +9,15 @@ class DeviceConfigLoader():
         self.configs_dir_path = configs_dir_path
 
     def load_device_from_config(self, config_path):
+        """
+        Create Device object based on source device config file.
+
+        Args:
+            config_path (str): Path to source device config file.
+
+        Returns:
+            (Device): Instance of Device object.
+        """
         with open(config_path, "rb") as config_file:
             config_content = base64.b64encode(config_file.read())
             config_file.close()
@@ -19,6 +28,12 @@ class DeviceConfigLoader():
             return None
 
     def load_all_devices(self):
+        """
+        Get all source device config files from target directory and create a list of Device objects.
+
+        Returns:
+            (list): List of Device objects.
+        """
         devices_list = []
         config_paths = list(Path(self.configs_dir_path).rglob("*.json"))
         for config_path in config_paths:
