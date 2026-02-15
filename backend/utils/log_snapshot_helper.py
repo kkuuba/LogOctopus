@@ -2,10 +2,8 @@ import pandas as pd
 
 class LogSnapshotsHelper:
 
-    def __init__(self, device_list):
-        self.device_list = device_list
-
-    def get_log_content_for_selected_snapshots(self, selected_log_snapshots):
+    @staticmethod
+    def get_log_content_for_selected_snapshots(selected_log_snapshots):
         """
         Extracts log content from selected log snapshots and generate time aligned data frame.
 
@@ -25,7 +23,8 @@ class LogSnapshotsHelper:
 
         return final_data_frame
 
-    def get_log_snapshots_list(self):
+    @staticmethod
+    def update_log_snapshots_list(device_list):
         """
         Extract list of all logs snapshots from provided devices.
 
@@ -33,7 +32,7 @@ class LogSnapshotsHelper:
             (list): List of all log snapshots for provded devices.
         """
         log_snapshots_list = []
-        for device in self.device_list:
+        for device in device_list:
             for log_snapshot in device.log_snapshots:
                     log_snapshots_list.append(log_snapshot)
 

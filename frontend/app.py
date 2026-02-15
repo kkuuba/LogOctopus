@@ -15,8 +15,7 @@ from backend.utils.log_snapshot_helper import LogSnapshotsHelper
 
 
 devices = DeviceConfigLoader("data").load_all_devices()
-log_snapshots_helper = LogSnapshotsHelper(devices)
-log_snapshots = log_snapshots_helper.get_log_snapshots_list()
+log_snapshots = LogSnapshotsHelper.update_log_snapshots_list(devices)
 
 
 app = Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP])
@@ -68,14 +67,13 @@ def refresh_devices(_, conn_ids):
 
 
 @app.callback(
-    Output("collection-store", "data"),  # <- new output
+    Output("log-snapshots-container", "children", allow_duplicate=True),  # <- new output
     Input("start-all", "n_clicks"),
     Input("stop-all", "n_clicks"),
     State({"type": "device-select", "index": ALL}, "value"),
-    State("collection-store", "data"),
     prevent_initial_call=True
 )
-def start_stop_selected(start, stop, selected, store_data):
+def start_stop_selected(start, stop, selected):
     """
     Start or stop logs collection on selected devices.
     """
@@ -89,9 +87,13 @@ def start_stop_selected(start, stop, selected, store_data):
             device.stop_logs_collection()
             device.save_log_snapshots()
     if t == "start-all":
-        return store_data
+        log_snapshots = LogSnapshotsHelper.update_log_snapshots_list(devices)
+
+        return generate_logs_snapshots_table(log_snapshots)
     else:
-        return store_data + 1
+        log_snapshots = LogSnapshotsHelper.update_log_snapshots_list(devices)
+
+        return generate_logs_snapshots_table(log_snapshots)
 
 
 @app.callback(
@@ -113,18 +115,18 @@ def remove_selected(_, selected):
     return generate_all_devices_cards_list()
 
 
-@app.callback(
-    Output("log-snapshots-container", "children", allow_duplicate=True),
-    Input("collection-store", "data"),  # <- changed
-    prevent_initial_call=True
-)
-def update_snapshots(_):
-    """
-    Update all log snapshots table.
-    """
-    log_snapshots = log_snapshots_helper.get_log_snapshots_list()
+# @app.callback(
+#     Output("log-snapshots-container", "children", allow_duplicate=True),
+#     Input("collection-store", "data"),  # <- changed
+#     prevent_initial_call=True
+# )
+# def update_snapshots(_):
+#     """
+#     Update all log snapshots table.
+#     """
+#     log_snapshots = LogSnapshotsHelper.update_log_snapshots_list(devices)
 
-    return generate_logs_snapshots_table(log_snapshots)
+#     return generate_logs_snapshots_table(log_snapshots)
 
 
 @app.callback(
@@ -147,9 +149,9 @@ def show_logs(view_clicks, view_selected, close_click, checked):
         selected_log_snapshots = []
         for selected_id in [i for i, v in enumerate(checked) if v]:
             selected_log_snapshots.append(log_snapshots[selected_id])
-            log_content = log_snapshots_helper.get_log_content_for_selected_snapshots(selected_log_snapshots)
+            log_content = LogSnapshotsHelper.get_log_content_for_selected_snapshots(selected_log_snapshots)
     elif t["type"] == "view-log-btn" and not set(view_clicks) == {None}:
-        log_content = log_snapshots_helper.get_log_content_for_selected_snapshots([log_snapshots[t["index"]]])
+        log_content = LogSnapshotsHelper.get_log_content_for_selected_snapshots([log_snapshots[t["index"]]])
     else:
         return False, None
 

@@ -50,7 +50,7 @@ class DeviceWatchdog:
                 if root_requried:
                     cmd_result = self.ssh_connection.sudo(cmd, password=self.device_config["password"], hide=True, pty=True, timeout=10)
                 else:
-                    cmd_result = self.ssh_connection.local(cmd, hide=True, pty=True, timeout=10)
+                    cmd_result = self.ssh_connection.run(cmd, hide=True, pty=True, timeout=10)
             else:
                 if root_requried:
                     cmd_result = self.ssh_connection.sudo(cmd, password=self.device_config["password"], hide=True, pty=True, timeout=10)
@@ -135,4 +135,5 @@ class DeviceWatchdog:
         self.collection_stop_event = threading.Event()
         while self.collection_ongoing:
             self.collection_stop_event.wait(timeout=interval)
+            print(self.errors["error_info"].astype(str).str.cat(sep="\n"))
             self.get_all_log_files_content()
