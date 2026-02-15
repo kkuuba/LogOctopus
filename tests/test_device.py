@@ -11,7 +11,7 @@ from conftest import remote_device_config_path, remote_device_incorrect_ip_confi
 def test_normal_log_collection_scenario():
     device_config_obj = DeviceConfig(base64.b64encode(open(remote_device_config_path, "rb").read()))
     example_device = Device(device_config_instance=device_config_obj)
-    example_device.start_logs_collection()
+    example_device.start_logs_collection("test")
     sleep(30)
     example_device.stop_logs_collection()
     example_device.save_log_snapshots()
@@ -21,7 +21,7 @@ def test_normal_log_collection_scenario():
 def test_abnormal_log_collection_scenario():
     device_config_obj = DeviceConfig(base64.b64encode(open(remote_device_incorrect_ip_config_path, "rb").read()))
     example_device = Device(device_config_instance=device_config_obj)
-    example_device.start_logs_collection()
+    example_device.start_logs_collection("test")
     sleep(30)
     example_device.stop_logs_collection()
     example_device.save_log_snapshots()

@@ -5,11 +5,13 @@ class LogSnapshot:
     """
     A class to perform basic operations on collected logs.
     """
-    def __init__(self, device_name, log_name, collected_data, loaded_from_file=False):
+    def __init__(self, device_name, log_name, session_id, collected_data, loaded_from_file=False):
         self.device_name = device_name
         self.log_name = log_name
         self.collected_data = collected_data
-        self.creation_time = datetime.now()
+        self.creation_time =datetime.now()
+        self.session_id = session_id
+        self.start_time, self.finish_time = self.get_start_and_finish_timestamps()
         self.logs_collection_duration = self.calcaute_logs_collection_duration()
         self.size_in_bytes = self.get_size_of_collected_data_in_bytes()
         if not loaded_from_file:
@@ -31,6 +33,18 @@ class LogSnapshot:
 
         return log_collection_duration
     
+    def get_start_and_finish_timestamps(self):
+        """
+        Get start and finish log collection timestamps based on info first and last entry in collected data.
+        
+        Returns:
+            (datatime, datatime): Start and finish logs collection timestamps.
+        """
+        first_entry = pd.to_datetime(self.collected_data["time"].iloc[0])
+        last_entry  = pd.to_datetime(self.collected_data["time"].iloc[-1])
+
+        return first_entry, last_entry
+
     def get_size_of_collected_data_in_bytes(self):
         """
         Get size of all collected data in bytes.
@@ -53,7 +67,7 @@ class LogSnapshot:
         Returns:
             str: Data file path for LogSnapshot in 'parqet' format.
         """
-        data_file_path = f"data/{device_name}/{self.log_name}_log_{self.creation_time.strftime('%Y%m%d_%H%M%S')}.parquet"
+        data_file_path = f"data/{device_name}/{self.log_name}_#$#_{self.session_id}_#$#_{self.creation_time.strftime('%Y%m%d_%H%M%S')}.parquet"
         self.collected_data.to_parquet(data_file_path, engine="pyarrow", index=False)
 
         return data_file_path

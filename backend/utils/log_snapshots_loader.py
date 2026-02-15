@@ -20,12 +20,13 @@ class LogSnapshotsLoader():
             (LogSnapshot): Instance of LogSnapshot object.
         """
         filename = os.path.basename(log_snapshot_path)
-        log_name = filename.split("_log_")[0]
+        log_name = filename.split("_#$#_")[0]
+        session_id = filename.split("_#$#_")[1]
         log_content = pd.read_parquet(log_snapshot_path)
         if log_content.empty:
            return None
         else:
-            return LogSnapshot(self.device_name, log_name, log_content, True)
+            return LogSnapshot(self.device_name, log_name, session_id, log_content, True)
 
     def load_all_log_snapshots(self):
         """

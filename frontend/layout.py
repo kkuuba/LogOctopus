@@ -120,8 +120,14 @@ layout_view = dbc.Container([
         dismissable=True,
     ),
     html.Hr(),
-    html.H4("Log Snapshots"),
-    dbc.Button("📊 View Selected Logs", id="view-selected", color="primary"),
+    dbc.Row([
+        dbc.Col(dbc.Button("📋 Show Logs", id="view-selected", color="primary"), width="auto"),
+        dbc.Col(dbc.Input(id="search-param", type="text", placeholder="Paramter"), width="auto"),
+        dbc.Col(html.Span("=", style={"fontWeight": "bold", "fontSize": "20px", "textAlign": "center"}), width="auto"),
+        dbc.Col(dbc.Input(id="search-value", type="text", placeholder="Value"), width="auto"),
+        dbc.Col(dbc.Button("🔍 Filter", id="filter-btn", n_clicks=0), width="auto"),
+    ]),
+    html.Hr(),
     html.Div(id="log-snapshots-container"),
 
     log_modal_view,
@@ -146,9 +152,11 @@ def generate_logs_snapshots_table(log_snapshots_list):
             html.Td(dcc.Checklist(options=[{"label": "", "value": i}], id={"type": "log-check", "index": i})),
             html.Td(log_snapshot.device_name),
             html.Td(log_snapshot.log_name),
-            html.Td(log_snapshot.creation_time),
+            html.Td(str(log_snapshot.start_time)),
+            html.Td(str(log_snapshot.finish_time)),
             html.Td(f"{log_snapshot.logs_collection_duration} s"),
             html.Td(f"{int(log_snapshot.size_in_bytes)/1000} kB"),
+            html.Td(log_snapshot.session_id),
             html.Td(dbc.Button("View Logs", id={"type": "view-log-btn", "index": i}, size="sm"))
         ]))
         i = i + 1
@@ -162,9 +170,11 @@ def generate_logs_snapshots_table(log_snapshots_list):
                 html.Th("✔"),
                 html.Th("Device"),
                 html.Th("Log name"),
-                html.Th("Created"),
+                html.Th("Started"),
+                html.Th("Finished"),
                 html.Th("Duration"),
                 html.Th("Size"),
+                html.Th("Session ID"),
                 html.Th("Action")
             ])),
             html.Tbody(table_rows)
@@ -194,7 +204,14 @@ def generate_all_devices_cards_list(devices_list):
                 dcc.Checklist(
                     options=[{"label": "", "value": device_id}],
                     id={"type": "device-select", "index": device_id},
-                    style={"position": "absolute", "top": "6px", "left": "6px"}
+                    style={"position": "absolute", "top": "6px", "left": "6px", "transform": "scale(1.4)"},
+                ),
+                dbc.Button(
+                    "⚙️",
+                    id={"type": "device-info-btn", "index": device_id},
+                    size="sm",
+                    color="light",
+                    style={"position": "absolute", "top": "6px", "right": "6px", "fontSize": "10px"}
                 ),
                 html.H5(device_instance.device_name, className="mt-4"),
 
@@ -204,14 +221,6 @@ def generate_all_devices_cards_list(devices_list):
                 html.Small(f"Logs Access: {'✅' if device_instance.log_access else '❌'}", id={"type": "status-access", "index": device_id}),
                 html.Br(),
                 html.Small(f"Logs Collection: {'🟢' if device_instance.device_watchdog.collection_ongoing else '🟡'}", id={"type": "status-collection", "index": device_id}),
-                html.Hr(),
-
-                dbc.Button(
-                    "ℹ Device Details",
-                    id={"type": "device-info-btn", "index": device_id},
-                    size="sm",
-                    color="info"
-                )
             ]
         )
         cards_list.append(card)

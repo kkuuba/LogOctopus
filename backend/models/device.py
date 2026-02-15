@@ -16,6 +16,7 @@ class Device:
         self.connection_status = False
         self.log_access = False
         self.log_snapshots = LogSnapshotsLoader(os.path.join("data", self.device_name)).load_all_log_snapshots()
+        self.current_session_id = None
 
     def get_device_connection_status(self):
         """
@@ -49,12 +50,17 @@ class Device:
         """
         return self.device_watchdog.errors.to_dict("records")
 
-    def start_logs_collection(self):
+    def start_logs_collection(self, session_id):
         """
         Start logs collection thread on target device.
+
+        Args:
+            session_id (str): Unique logs collection session ID.
         """
-        self.device_watchdog.initialize_log_collectors()
-        self.device_watchdog.start_logs_collection()
+        if not self.device_watchdog.collection_ongoing:
+            self.current_session_id = session_id
+            self.device_watchdog.initialize_log_collectors()
+            self.device_watchdog.start_logs_collection()
 
     def stop_logs_collection(self):
         """
@@ -68,4 +74,5 @@ class Device:
         Data will be save info file and added to logsnapshots list.
         """
         for log_name, log_content in self.device_watchdog.collected_data.items():
-            self.log_snapshots.append(LogSnapshot(self.device_name, log_name, log_content))
+            if not log_content.empty:
+                self.log_snapshots.append(LogSnapshot(self.device_name, log_name, self.current_session_id, log_content))
