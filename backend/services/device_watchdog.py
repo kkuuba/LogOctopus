@@ -33,6 +33,7 @@ class DeviceWatchdog:
         self.collection_ongoing = False
         self.thread = None
         self.collection_stop_event = None
+        self.cutoff_time = None
 
     def execute_cmd(self, cmd):
         """
@@ -48,14 +49,14 @@ class DeviceWatchdog:
             root_requried = True if "sudo " in cmd else False
             if self.local_device:
                 if root_requried:
-                    cmd_result = self.ssh_connection.sudo(cmd, password=self.device_config["password"], hide=True, pty=True, timeout=10)
+                    cmd_result = self.ssh_connection.sudo(cmd, password=self.device_config["password"], hide=True, timeout=10)
                 else:
-                    cmd_result = self.ssh_connection.run(cmd, hide=True, pty=True, timeout=10)
+                    cmd_result = self.ssh_connection.run(cmd, hide=True, timeout=10)
             else:
                 if root_requried:
-                    cmd_result = self.ssh_connection.sudo(cmd, password=self.device_config["password"], hide=True, pty=True, timeout=10)
+                    cmd_result = self.ssh_connection.sudo(cmd, password=self.device_config["password"], hide=True, timeout=10)
                 else:
-                    cmd_result = self.ssh_connection.run(cmd, hide=True, pty=True, timeout=10)
+                    cmd_result = self.ssh_connection.run(cmd, hide=True, timeout=10)
             if cmd_result.ok:
                 return cmd_result.stdout
             error_entry = {"time": [datetime.now()], "error_info": [f"cmd '{cmd}' failed with -> {cmd_result.stderr.strip()}"]}
@@ -113,6 +114,7 @@ class DeviceWatchdog:
         Start logs collection background thread.
         """
         self.collection_ongoing = True
+        self.cutoff_time = pd.Timestamp.now()
         self.thread = threading.Thread(target=self.logs_collection_loop, args=(self.device_config["collection_interval"],))
         self.thread.daemon = True
         self.thread.start()
@@ -124,6 +126,16 @@ class DeviceWatchdog:
         self.collection_stop_event.set()
         self.collection_ongoing = False
         self.thread.join()
+        self.remove_all_outdated_entries()
+
+    def remove_all_outdated_entries(self):
+        """
+        Remove all log entries older then start of target log collection.
+        """
+        for log_config in self.device_config["log_file_configs"]:
+            log_name = log_config["log_name"]
+            self.collected_data[log_name]['time'] = pd.to_datetime(self.collected_data[log_name]['time'])
+            self.collected_data[log_name] = self.collected_data[log_name][self.collected_data[log_name]['time'] >= self.cutoff_time]
 
     def logs_collection_loop(self, interval):
         """

@@ -242,3 +242,4 @@ if __name__ == "__main__":
 # Add button on top bar for help, rest api and settings
 # Investigate a way to add rest API
 # Investgiate a way to create container with https based on dash app
+# Add synchronization of all timestamps to UTC timezone
