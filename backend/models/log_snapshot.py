@@ -27,9 +27,9 @@ class LogSnapshot:
         if self.collected_data.empty:
             log_collection_duration = 0
         else:
-            first_entry = pd.to_datetime(self.collected_data["time"].iloc[0])
-            last_entry  = pd.to_datetime(self.collected_data["time"].iloc[-1])
-            log_collection_duration = (last_entry - first_entry).seconds
+            first_entry = pd.to_datetime(self.collected_data["time"].iloc[-1])
+            last_entry  = pd.to_datetime(self.collected_data["time"].iloc[0])
+            log_collection_duration = (last_entry - first_entry).total_seconds()
 
         return log_collection_duration
     

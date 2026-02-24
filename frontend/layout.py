@@ -1,6 +1,8 @@
 import json
+import random
 from dash import html, dcc, dash_table
 import dash_bootstrap_components as dbc
+import dash_daq as daq
 
 
 log_modal_view = dbc.Modal(
@@ -20,9 +22,12 @@ log_modal_view = dbc.Modal(
             }
         ),
         dbc.ModalFooter([
-            dbc.Button("⬇ Download CSV", id="download-logs", color="secondary"),
+            html.Span("Raw mode", style={"marginRight": "10px"}, className="fw-bold me-2"),
+            daq.ToggleSwitch(id='color-mode-switch', value=False),
+            html.Span("Color mode", style={"marginLeft": "10px"}, className="fw-bold me-2"),
+            dbc.Button("Download", id="download-logs", color="secondary"),
             dcc.Download(id="download-component"),
-            dbc.Button("Close", id="close-modal")
+            dbc.Button("Close", id="close-modal"),
         ])
     ],
     id="logs-modal",
@@ -248,13 +253,14 @@ def generate_device_info_modal(target_device):
 
     return body
 
-def generate_log_content_modal(log_content_df):
+def generate_log_content_modal(log_content_df, color_mode):
     """
     Generate log content modal with all logs timestamps and entries.
 
     Args:
         log_content_df (pandas.df): Device class object which contains all info about target device.
-    
+        color_mode (bool): Defines if log content table should be colored according to 'log_name' column.
+
     Returns:
         (dash_table.DataTable): Dash table with full log content.
     """
@@ -262,6 +268,15 @@ def generate_log_content_modal(log_content_df):
 
         return None
     else:
+        unique_values = log_content_df["log_name"].unique()
+        style_rules = []
+        for value in unique_values:
+            color = "#{:06x}".format(random.randint(0, 0xFFFFFF))
+            style_rules.append({
+                "if": {"filter_query": f'{{log_name}} = "{value}"'},
+                "backgroundColor": color,
+                "color": "white"
+            })
         log_table = dash_table.DataTable( 
             columns=[{"name": i, "id": i} for i in log_content_df.columns],
             data=log_content_df.to_dict("records"),
@@ -283,7 +298,8 @@ def generate_log_content_modal(log_content_df):
                         "minWidth": "1000px", 
                         "width": "1200px", 
                         "maxWidth": "2000px", } ], 
-                style_data={"userSelect": "text"}
+                style_data={"userSelect": "text"},
+                style_data_conditional=style_rules if color_mode else []
                 )
 
         return log_table

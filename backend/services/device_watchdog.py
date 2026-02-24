@@ -136,6 +136,7 @@ class DeviceWatchdog:
             log_name = log_config["log_name"]
             self.collected_data[log_name]['time'] = pd.to_datetime(self.collected_data[log_name]['time'])
             self.collected_data[log_name] = self.collected_data[log_name][self.collected_data[log_name]['time'] >= self.cutoff_time]
+            self.collected_data[log_name] = self.collected_data[log_name].sort_values(by="time")
 
     def logs_collection_loop(self, interval):
         """

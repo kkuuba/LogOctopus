@@ -115,7 +115,7 @@ def remove_selected(_, selected):
 
 @app.callback(
     Output("logs-modal", "is_open"),
-    Output("modal-body", "children"),
+    Output("modal-body", "children", allow_duplicate=True),
     Input({"type": "view-log-btn", "index": ALL}, "n_clicks"),
     Input("view-selected", "n_clicks"),
     Input("close-modal", "n_clicks"),
@@ -142,7 +142,7 @@ def show_logs(view_clicks, view_selected, close_click, checked):
     else:
         return False, None
 
-    return True, generate_log_content_modal(log_content)
+    return True, generate_log_content_modal(log_content, False)
 
 
 @app.callback(
@@ -195,6 +195,24 @@ def download_logs(_, table):
     """
     return dcc.send_data_frame(pd.DataFrame(table["props"]["data"]).to_html, "logs.html", index=False)
 
+@app.callback(
+    Output("modal-body", "children", allow_duplicate=True),
+    Input('color-mode-switch', 'value'),
+    State({"type": "log-check", "index": ALL}, "value"),
+    prevent_initial_call=True
+)
+def switch_log_table_color_mode_state(color_mode, checked):
+    """
+    Enable of disable coloring mode for text log content table.
+    """
+    log_snapshots = ConfigurationHelper.get_log_snapshots_list(devices)
+    selected_log_snapshots = []
+    for selected_id in [i for i, v in enumerate(checked) if v]:
+        selected_log_snapshots.append(log_snapshots[selected_id])
+        log_content = ConfigurationHelper.get_log_content_for_selected_snapshots(selected_log_snapshots)
+    if color_mode:
+        return True, generate_log_content_modal(log_content, True)
+    return True, generate_log_content_modal(log_content, False)
 
 @app.callback(
     Output("devices-container", "children", allow_duplicate=True),
