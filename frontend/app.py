@@ -137,10 +137,14 @@ def show_logs(view_clicks, view_selected, close_click, checked, log_type_chart):
         for selected_id in [i for i, v in enumerate(checked) if v]:
             selected_log_snapshots.append(log_snapshots[selected_id])
             log_content = ConfigurationHelper.get_log_content_for_selected_snapshots(selected_log_snapshots)
+        if log_type_chart:
+            return True, generate_log_content_modal(log_content, True)
         if len(selected_log_snapshots) == 0:
             return False, None
     elif t["type"] == "view-log-btn" and not set(view_clicks) == {None}:
         log_content = ConfigurationHelper.get_log_content_for_selected_snapshots([log_snapshots[t["index"]]])
+        if log_type_chart:
+            return True, generate_log_content_modal(log_content, True)
     else:
         return False, None
 

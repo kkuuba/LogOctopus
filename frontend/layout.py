@@ -311,6 +311,40 @@ def generate_log_content_modal(log_content_df, color_mode):
 
         return log_table
 
+def generate_chart_content_modal(log_snapshots_list):
+    """
+    Generate chart content modal with all chart data.
+
+    Args:
+        log_snapshots_list (list): List of all logs snapshots which will be used for modal generation.
+
+    Returns:
+        (list): HTML list of dcc Graphs with all chart data.
+    """
+    # html.Div(
+    #     [
+    #         html.Div(
+    #             dcc.Graph(
+    #                 figure=create_figure(df, name),
+    #                 config={"displayModeBar": False},
+    #             ),
+    #             style={
+    #                 "backgroundColor": "white",
+    #                 "padding": "15px",
+    #                 "borderRadius": "12px",
+    #                 "boxShadow": "0 4px 12px rgba(0,0,0,0.06)",
+    #             },
+    #         )
+    #         for name, df in dataframes.items()
+    #     ],
+    #     style={
+    #         "display": "flex",
+    #         "flexDirection": "column",
+    #         "gap": "30px",
+    #         "padding": "20px",
+    #     })
+    pass
+
 def get_all_devices_statuses(devices_list):
     """
     Get following statuses: connection, log_access, logs_collection for all devices.
