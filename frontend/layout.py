@@ -125,13 +125,20 @@ layout_view = dbc.Container([
         dismissable=True,
     ),
     html.Hr(),
-    dbc.Row([
-        dbc.Col(dbc.Button("📋 Show Logs", id="view-selected", color="primary"), width="auto"),
-        dbc.Col(dbc.Input(id="search-param", type="text", placeholder="Paramter"), width="auto"),
-        dbc.Col(html.Span("=", style={"fontWeight": "bold", "fontSize": "20px", "textAlign": "center"}), width="auto"),
-        dbc.Col(dbc.Input(id="search-value", type="text", placeholder="Value"), width="auto"),
-        dbc.Col(dbc.Button("🔍 Filter", id="filter-btn", n_clicks=0), width="auto"),
-    ]),
+    dbc.Row(
+        [
+            dbc.Col(dbc.Button("📋 Show Logs", id="view-selected", color="primary"), width="auto"),
+            dbc.Col(html.Span("Text", className="fw-bold"), width="auto"),
+            dbc.Col(daq.ToggleSwitch(id="log-type-chart", value=False), width="auto"),
+            dbc.Col(html.Span("Chart", className="fw-bold"), width="auto"),
+            dbc.Col(dbc.Input(id="search-param", type="text", placeholder="Parameter"), width="auto"),
+            dbc.Col(html.Span("=", style={"fontWeight": "bold", "fontSize": "20px"}), width="auto"),
+            dbc.Col(dbc.Input(id="search-value", type="text", placeholder="Value"), width="auto"),
+            dbc.Col(dbc.Button("🔍 Filter", id="filter-btn", n_clicks=0), width="auto"),
+        ],
+        align="center",
+        className="g-2 flex-nowrap",
+    ),
     html.Hr(),
     html.Div(id="log-snapshots-container"),
 

@@ -74,5 +74,22 @@ class Device:
         Data will be save info file and added to logsnapshots list.
         """
         for log_name, log_content in self.device_watchdog.collected_data.items():
+            log_type = self.get_target_log_type_based_on_log_name(log_name)
             if not log_content.empty:
-                self.log_snapshots.append(LogSnapshot(self.device_name, log_name, self.current_session_id, log_content))
+                self.log_snapshots.append(LogSnapshot(self.device_name, log_name, self.current_session_id, log_type, log_content))
+
+    def get_target_log_type_based_on_log_name(self, log_name):
+        """
+        Get log type based on provided log name.
+
+        Args:
+            log_name (str): Log name for log type extraction from device config.
+
+        Returns:
+            str: Target log type (text|chart), default value is 'text'.
+        """
+        for log_config in self.device_config["log_file_configs"]:
+            if log_name == log_config["log_name"]:
+                return log_config["log_type"]
+        
+        return "text"

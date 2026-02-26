@@ -22,11 +22,12 @@ class LogSnapshotsLoader():
         filename = os.path.basename(log_snapshot_path)
         log_name = filename.split("_#$#_")[0]
         session_id = filename.split("_#$#_")[1]
+        log_type = filename.split("_#$#_")[2]
         log_content = pd.read_parquet(log_snapshot_path)
         if log_content.empty:
            return None
         else:
-            return LogSnapshot(self.device_name, log_name, session_id, log_content, True)
+            return LogSnapshot(self.device_name, log_name, session_id, log_type, log_content, True)
 
     def load_all_log_snapshots(self):
         """

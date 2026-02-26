@@ -70,9 +70,10 @@ def refresh_devices(_, conn_ids):
     Input("start-all", "n_clicks"),
     Input("stop-all", "n_clicks"),
     State({"type": "device-select", "index": ALL}, "value"),
+    State('log-type-chart', 'value'),
     prevent_initial_call=True
 )
-def start_stop_selected(start, stop, selected):
+def start_stop_selected(start, stop, selected, log_type_chart):
     """
     Start or stop logs collection on selected devices.
     """
@@ -87,10 +88,10 @@ def start_stop_selected(start, stop, selected):
             device.stop_logs_collection()
             device.save_log_snapshots()
     if t == "start-all":
-        log_snapshots = ConfigurationHelper.get_log_snapshots_list(devices)
+        log_snapshots = ConfigurationHelper.get_log_snapshots_list(devices, log_type_chart)
         return generate_logs_snapshots_table(log_snapshots)
     else:
-        log_snapshots = ConfigurationHelper.get_log_snapshots_list(devices)
+        log_snapshots = ConfigurationHelper.get_log_snapshots_list(devices, log_type_chart)
         return generate_logs_snapshots_table(log_snapshots)
 
 
@@ -120,13 +121,14 @@ def remove_selected(_, selected):
     Input("view-selected", "n_clicks"),
     Input("close-modal", "n_clicks"),
     State({"type": "log-check", "index": ALL}, "value"),
+    State('log-type-chart', 'value'),
     prevent_initial_call=True
 )
-def show_logs(view_clicks, view_selected, close_click, checked):
+def show_logs(view_clicks, view_selected, close_click, checked, log_type_chart):
     """
     Show log content for selected or single log snapshots.
     """
-    log_snapshots = ConfigurationHelper.get_log_snapshots_list(devices)
+    log_snapshots = ConfigurationHelper.get_log_snapshots_list(devices, log_type_chart)
     t = ctx.triggered_id
     if t == "close-modal" or t is None:
         return False, None
@@ -147,17 +149,28 @@ def show_logs(view_clicks, view_selected, close_click, checked):
 
 @app.callback(
     Output("log-snapshots-container", "children", allow_duplicate=True),
+    Input('log-type-chart', 'value'),
+    prevent_initial_call=True
+)
+def switch_log_type_for_snapshots_list(log_type_chart):
+    log_snapshots = ConfigurationHelper.get_log_snapshots_list(devices, log_type_chart)
+    return generate_logs_snapshots_table(log_snapshots)
+
+
+@app.callback(
+    Output("log-snapshots-container", "children", allow_duplicate=True),
     Input("filter-btn", "n_clicks"),
     State("search-param", "value"),
     State("search-value", "value"),
+    State('log-type-chart', 'value'),
     prevent_initial_call=True
 )
-def filter_log_snapshots_list(_, search_param, search_value):
+def filter_log_snapshots_list(_, search_param, search_value, log_type_chart):
     if not search_param or not search_value:
-        log_snapshots = ConfigurationHelper.get_log_snapshots_list(devices)
+        log_snapshots = ConfigurationHelper.get_log_snapshots_list(devices, log_type_chart)
         return generate_logs_snapshots_table(log_snapshots)
     else:
-        filtered_log_snapshots = ConfigurationHelper.get_filtered_log_snapshots_list(devices, search_param, search_value)
+        filtered_log_snapshots = ConfigurationHelper.get_filtered_log_snapshots_list(devices, search_param, search_value, log_type_chart)
         return generate_logs_snapshots_table(filtered_log_snapshots)
 
 
@@ -205,7 +218,7 @@ def switch_log_table_color_mode_state(color_mode, checked):
     """
     Enable of disable coloring mode for text log content table.
     """
-    log_snapshots = ConfigurationHelper.get_log_snapshots_list(devices)
+    log_snapshots = ConfigurationHelper.get_log_snapshots_list(devices, False)
     selected_log_snapshots = []
     for selected_id in [i for i, v in enumerate(checked) if v]:
         selected_log_snapshots.append(log_snapshots[selected_id])
@@ -218,13 +231,14 @@ def switch_log_table_color_mode_state(color_mode, checked):
     Output("devices-container", "children", allow_duplicate=True),
     Output("log-snapshots-container", "children", allow_duplicate=True),
     Input("startup-trigger", "n_intervals"),
+    State('log-type-chart', 'value'),
     prevent_initial_call=True
 )
-def on_app_start(n):
+def on_app_start(n, log_type_chart):
     """
     Update device list and log snapshots table based on source files.
     """
-    log_snapshots = ConfigurationHelper.get_log_snapshots_list(devices)
+    log_snapshots = ConfigurationHelper.get_log_snapshots_list(devices, log_type_chart)
 
     return generate_all_devices_cards_list(devices), generate_logs_snapshots_table(log_snapshots)
 
