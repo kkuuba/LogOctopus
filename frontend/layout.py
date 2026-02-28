@@ -3,6 +3,8 @@ import random
 from dash import html, dcc, dash_table
 import dash_bootstrap_components as dbc
 import dash_daq as daq
+import plotly.express as px
+import pandas as pd
 
 
 log_modal_view = dbc.Modal(
@@ -319,31 +321,36 @@ def generate_chart_content_modal(log_snapshots_list):
         log_snapshots_list (list): List of all logs snapshots which will be used for modal generation.
 
     Returns:
-        (list): HTML list of dcc Graphs with all chart data.
+        (html.Div): HTML div with list of dcc Graphs with all chart data.
     """
-    # html.Div(
-    #     [
-    #         html.Div(
-    #             dcc.Graph(
-    #                 figure=create_figure(df, name),
-    #                 config={"displayModeBar": False},
-    #             ),
-    #             style={
-    #                 "backgroundColor": "white",
-    #                 "padding": "15px",
-    #                 "borderRadius": "12px",
-    #                 "boxShadow": "0 4px 12px rgba(0,0,0,0.06)",
-    #             },
-    #         )
-    #         for name, df in dataframes.items()
-    #     ],
-    #     style={
-    #         "display": "flex",
-    #         "flexDirection": "column",
-    #         "gap": "30px",
-    #         "padding": "20px",
-    #     })
-    pass
+    return html.Div(
+            [
+                html.Div(
+                    dcc.Graph(
+                        figure=create_chart_for_data_frame(
+                            log_snapshot.collected_data,
+                            log_snapshot.log_name
+                        ),
+                        config={"displayModeBar": False},
+                    ),
+                    style={
+                        "backgroundColor": "white",
+                        "padding": "15px",
+                        "borderRadius": "12px",
+                        "boxShadow": "0 4px 12px rgba(0,0,0,0.06)",
+                    },
+                )
+                for log_snapshot in log_snapshots_list
+            ],
+            style={
+                "display": "flex",
+                "flexDirection": "column",
+                "gap": "30px",
+                "padding": "20px",
+                "height": "80vh",        # fixed height (viewport based)
+                "overflowY": "auto",     # enable vertical scroll
+            }
+        )
 
 def get_all_devices_statuses(devices_list):
     """
@@ -367,3 +374,55 @@ def get_all_devices_statuses(devices_list):
         logs_collection_statuses.append(f"Logs Collection: {'🟢' if device.device_watchdog.collection_ongoing else '🟡'}")
     
     return connection_statuses, log_access_statuses, logs_collection_statuses
+
+def create_chart_for_data_frame(data_frame, chart_title):
+    """
+    Create plotly chart based on data frame data and provided title.
+
+    Args:
+        data_frame (pandas.df): Raw data frame with collected log data.
+        chart_title (str): Target title for plotly chart.
+
+    Returns:
+        (px.line): Plotly chart based on data frame data and provided title.
+    """
+    data_frame["content"] = pd.to_numeric(data_frame["content"], errors="coerce")
+    fig = px.line(
+        data_frame,
+        x="time",
+        y="content",
+        title=chart_title,
+    )
+    fig.update_traces(
+        mode="lines",
+        line=dict(width=2.5),
+        hovertemplate="<b>%{x}</b><br>Value: %{y}<extra></extra>",
+    )
+    fig.update_layout(
+        height=360,
+        template="plotly_white",
+        title=dict(
+            x=0.02,
+            xanchor="left",
+            font=dict(size=18),
+        ),
+        xaxis=dict(
+            title="Time",
+            showgrid=True,
+            gridcolor="rgba(0,0,0,0.05)",
+            zeroline=False,
+        ),
+        yaxis=dict(
+            title="Value",
+            showgrid=True,
+            gridcolor="rgba(0,0,0,0.05)",
+            zeroline=False,
+        ),
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+        margin=dict(l=40, r=20, t=60, b=40),
+        hovermode="x unified",
+        showlegend=False,
+    )
+
+    return fig

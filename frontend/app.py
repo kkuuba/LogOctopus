@@ -8,7 +8,8 @@ from frontend.layout import (layout_view,
                              generate_all_devices_cards_list, 
                              generate_device_info_modal, 
                              generate_log_content_modal, 
-                             get_all_devices_statuses)
+                             get_all_devices_statuses,
+                             generate_chart_content_modal)
 from backend.models.device import Device
 from backend.models.device_config import DeviceConfig
 from backend.utils.device_config_loader import DeviceConfigLoader
@@ -138,13 +139,13 @@ def show_logs(view_clicks, view_selected, close_click, checked, log_type_chart):
             selected_log_snapshots.append(log_snapshots[selected_id])
             log_content = ConfigurationHelper.get_log_content_for_selected_snapshots(selected_log_snapshots)
         if log_type_chart:
-            return True, generate_log_content_modal(log_content, True)
+            return True, generate_chart_content_modal(selected_log_snapshots)
         if len(selected_log_snapshots) == 0:
             return False, None
     elif t["type"] == "view-log-btn" and not set(view_clicks) == {None}:
         log_content = ConfigurationHelper.get_log_content_for_selected_snapshots([log_snapshots[t["index"]]])
         if log_type_chart:
-            return True, generate_log_content_modal(log_content, True)
+            return True, generate_chart_content_modal([log_snapshots[t["index"]]])
     else:
         return False, None
 
