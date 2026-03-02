@@ -217,14 +217,17 @@ def download_logs(_, table):
     Output("modal-body", "children", allow_duplicate=True),
     Input('color-mode-switch', 'value'),
     State({"type": "log-check", "index": ALL}, "value"),
+    State('log-type-chart', 'value'),
     prevent_initial_call=True
 )
-def switch_log_table_color_mode_state(color_mode, checked):
+def switch_log_table_color_mode_state(color_mode, checked, log_type_chart):
     """
     Enable of disable coloring mode for text log content table.
     """
-    log_snapshots = ConfigurationHelper.get_log_snapshots_list(devices, False)
+    log_snapshots = ConfigurationHelper.get_log_snapshots_list(devices, log_type_chart)
     selected_log_snapshots = []
+    if log_type_chart:
+        return True, generate_chart_content_modal(log_snapshots)
     for selected_id in [i for i, v in enumerate(checked) if v]:
         selected_log_snapshots.append(log_snapshots[selected_id])
         log_content = ConfigurationHelper.get_log_content_for_selected_snapshots(selected_log_snapshots)
@@ -270,7 +273,6 @@ if __name__ == "__main__":
 
 # TODO 
 # Add button for error list in device card
-# Fix problem with coloring for chart log modals
 # Improve chart modals view
 # Add logs download option with format choice
 # Add button on top bar for help, rest api and settings
