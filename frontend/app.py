@@ -109,10 +109,10 @@ def remove_selected(_, selected):
     ids_to_remove = {v[0] for v in selected if v}
     for device in devices:
         if device.device_config_id in ids_to_remove:
-            device.device_config_instance.remove_device_config()
+            device.remove_device_data()
             devices.remove(device)
 
-    return generate_all_devices_cards_list()
+    return generate_all_devices_cards_list(devices)
 
 
 @app.callback(
@@ -269,12 +269,9 @@ if __name__ == "__main__":
 
 
 # TODO 
-# Add doc string to main app file
-# Add loading config from config files
-# Add button for devices coloring
-# Add new column to log snapshots view with test trigger ID
-# Add some filter bar to log snapshots list
 # Add button for error list in device card
+# Fix problem with coloring for chart log modals
+# Improve chart modals view
 # Add logs download option with format choice
 # Add button on top bar for help, rest api and settings
 # Investigate a way to add rest API

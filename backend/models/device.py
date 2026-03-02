@@ -1,4 +1,5 @@
 import os
+import shutil
 from backend.models.log_snapshot import LogSnapshot
 from backend.services.device_watchdog import DeviceWatchdog
 from backend.utils.log_snapshots_loader import LogSnapshotsLoader
@@ -93,3 +94,10 @@ class Device:
                 return log_config["log_type"]
         
         return "text"
+
+    def remove_device_data(self):
+        """
+        Remove all data files conected with this target device.
+        """
+        device_directory_path = f"data/{self.device_name}"
+        shutil.rmtree(device_directory_path)
