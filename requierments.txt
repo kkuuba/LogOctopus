@@ -5,3 +5,7 @@ pytest
 fastapi
 uvicorn
 pyarrow
+dash
+dash_bootstrap_components
+dash_daq
+plotly
