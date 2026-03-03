@@ -226,11 +226,11 @@ def switch_log_table_color_mode_state(color_mode, checked, log_type_chart):
     """
     log_snapshots = ConfigurationHelper.get_log_snapshots_list(devices, log_type_chart)
     selected_log_snapshots = []
-    if log_type_chart:
-        return True, generate_chart_content_modal(log_snapshots)
     for selected_id in [i for i, v in enumerate(checked) if v]:
         selected_log_snapshots.append(log_snapshots[selected_id])
         log_content = ConfigurationHelper.get_log_content_for_selected_snapshots(selected_log_snapshots)
+    if log_type_chart:
+        return True, generate_chart_content_modal(selected_log_snapshots)
     if color_mode:
         return True, generate_log_content_modal(log_content, True)
     return True, generate_log_content_modal(log_content, False)

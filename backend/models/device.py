@@ -30,10 +30,10 @@ class Device:
 
     def test_log_files_access(self):
         """
-        Validate if log files defined in configuration can be accessed via SSH. If any log file can be accessed
+        Validate if first 3 log files defined in configuration can be accessed via SSH. If any of first 3 log files cannot be accessed
         method return False.
         """
-        for log_file_config in self.device_config["log_file_configs"]:
+        for log_file_config in self.device_config["log_file_configs"][0:3]:
             current_log_content = self.device_watchdog.execute_cmd(log_file_config["log_file_cmd"])
             if current_log_content:
                 continue

@@ -46,7 +46,8 @@ device_modal_view = dbc.Modal(
         dbc.ModalFooter(dbc.Button("Close", id="close-device-modal"))
     ],
     id="device-modal",
-    is_open=False
+    is_open=False,
+    size="xl",
 )
 
 layout_view = dbc.Container([
@@ -253,9 +254,26 @@ def generate_device_info_modal(target_device):
     """
     body = html.Div([
         html.P(f"Name: {target_device.device_name}"),
-        html.P(f"Connection: {target_device.connection_status}"),
-        html.P(f"Logs Access: {target_device.log_access}"),
-        html.P(f"Logs Collection: {target_device.device_watchdog.collection_ongoing}"),
+        html.P(f"Connection: {'✅' if target_device.connection_status else '❌'}"),
+        html.P(f"Logs Access: {'✅' if target_device.log_access else '❌'}"),
+        html.P(f"Logs Collection: {'🟢' if target_device.device_watchdog.collection_ongoing else '🟡'}"),
+        html.Hr(),
+        html.H4(f"Recent error logs for device watchdog"),
+        html.Hr(),
+        dash_table.DataTable(
+            id="device-dataframe-table",
+            columns=[{"name": i, "id": i} for i in target_device.device_watchdog.errors.columns],
+            data=target_device.device_watchdog.errors.to_dict("records"),
+            style_table={"overflowX": "auto"},  # horizontal scroll if wide
+            style_cell={"textAlign": "left", "padding": "5px"},
+            style_header={
+                "backgroundColor": "rgb(230, 230, 230)",
+                "fontWeight": "bold"
+            },
+            page_size=10,  # optional paging
+        ),
+        html.Hr(),
+        html.H4(f"Current JSON configuration"),
         html.Hr(),
         html.Pre(json.dumps(target_device.device_config, indent=2))
     ])
@@ -386,18 +404,79 @@ def create_chart_for_data_frame(data_frame, chart_title):
     Returns:
         (px.line): Plotly chart based on data frame data and provided title.
     """
-    data_frame["content"] = pd.to_numeric(data_frame["content"], errors="coerce")
-    fig = px.line(
-        data_frame,
-        x="time",
-        y="content",
-        title=chart_title,
-    )
-    fig.update_traces(
-        mode="lines",
-        line=dict(width=2.5),
-        hovertemplate="<b>%{x}</b><br>Value: %{y}<extra></extra>",
-    )
+    # Try numeric conversion without immediately overwriting original data
+    numeric_content = pd.to_numeric(data_frame["content"], errors="coerce")
+
+    # Determine if column is numeric (at least one valid number)
+    is_numeric = numeric_content.notna().sum() > 0
+
+    if is_numeric:
+        # ---------- NUMERIC → LINE CHART ----------
+        data_frame = data_frame.copy()
+        data_frame["content"] = numeric_content
+
+        fig = px.line(
+            data_frame,
+            x="time",
+            y="content",
+            title=chart_title,
+        )
+
+        fig.update_traces(
+            mode="lines",
+            line=dict(width=2.5),
+            hovertemplate="Value: <b>%{y}</b><extra></extra>",
+        )
+
+        fig.update_layout(
+            xaxis=dict(
+                title="Time",
+                showgrid=True,
+                gridcolor="rgba(0,0,0,0.05)",
+                zeroline=False,
+            ),
+            yaxis=dict(
+                title="Value",
+                showgrid=True,
+                gridcolor="rgba(0,0,0,0.05)",
+                zeroline=False,
+            ),
+        )
+
+    else:
+        # ---------- STRING / CATEGORICAL → SCATTER ----------
+        data_frame = data_frame.copy()
+        data_frame["content"] = data_frame["content"].astype(str)
+
+        fig = px.scatter(
+            data_frame,
+            x="time",
+            y="content",
+            title=chart_title,
+        )
+
+        fig.update_traces(
+            mode="markers",
+            marker=dict(size=9),
+            hovertemplate="<b>%{x}</b><br>Value: %{y}<extra></extra>",
+        )
+
+        fig.update_layout(
+            xaxis=dict(
+                title="Time",
+                showgrid=True,
+                gridcolor="rgba(0,0,0,0.05)",
+                zeroline=False,
+            ),
+            yaxis=dict(
+                title="Category",
+                showgrid=False,
+                zeroline=False,
+                type="category",  # Important for string handling
+            ),
+        )
+
+    # ---------- COMMON LAYOUT ----------
     fig.update_layout(
         height=360,
         template="plotly_white",
@@ -405,18 +484,6 @@ def create_chart_for_data_frame(data_frame, chart_title):
             x=0.02,
             xanchor="left",
             font=dict(size=18),
-        ),
-        xaxis=dict(
-            title="Time",
-            showgrid=True,
-            gridcolor="rgba(0,0,0,0.05)",
-            zeroline=False,
-        ),
-        yaxis=dict(
-            title="Value",
-            showgrid=True,
-            gridcolor="rgba(0,0,0,0.05)",
-            zeroline=False,
         ),
         plot_bgcolor="white",
         paper_bgcolor="white",
