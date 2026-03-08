@@ -53,8 +53,11 @@ device_modal_view = dbc.Modal(
 rest_api_modal = dbc.Modal(
     [
         dbc.ModalHeader(
-            dbc.ModalTitle("📡 Logs Collection API"),
-            className="bg-primary text-white"
+            dbc.ModalTitle("🌐 Logs Collection REST API"),
+            style={
+                "background-color": "#6f42c1",
+                "border-color": "#6f42c1",
+                "color": "white"},
         ),
         dbc.ModalBody([
             dbc.Card(
@@ -65,7 +68,6 @@ rest_api_modal = dbc.Modal(
                     ], className="mb-3"),
 
                     html.P("Starts log collection on selected devices.", className="mb-2"),
-
                     html.Small("Request body:", className="text-muted"),
                     html.Pre(
                         '''{"selected_devices": ["device1","device2"]}''',
@@ -76,6 +78,10 @@ rest_api_modal = dbc.Modal(
                         '''{"status": "logs collection started", "session_id": "abc123" }''',
                         className="bg-light p-2 border rounded"
                     ),
+                    dcc.Clipboard(
+                        content="Hello clipboard",
+                        children=dbc.Button("📋 Example code", size="sm", color="secondary")
+                    )
                 ]),
                 className="w-100 mb-4 shadow-sm"
             ),
@@ -85,20 +91,21 @@ rest_api_modal = dbc.Modal(
                         dbc.Badge("POST", color="green", className="me-2"),
                         html.H5("/api/stop-logs-collection", className="d-inline")
                     ], className="mb-3"),
-
                     html.P("Stops log collection and saves collected logs.", className="mb-2"),
-
                     html.Small("Request body:", className="text-muted"),
                     html.Pre(
                         '''{ "selected_devices": ["device1"], "session_id": "abc123" }''',
                         className="bg-light p-2 border rounded"
                     ),
-
                     html.Small("Response:", className="text-muted mt-2"),
                     html.Pre(
                         '''{ "status": "logs collection stopped", "text_logs_url": "...", "chart_logs_url": "..." }''',
                         className="bg-light p-2 border rounded"
                     ),
+                    dcc.Clipboard(
+                        content="Hello clipboard",
+                        children=dbc.Button("📋 Example code", size="sm", color="secondary")
+                    )
                 ]),
                 className="w-100 mb-3 shadow-sm"
             )
