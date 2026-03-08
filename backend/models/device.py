@@ -23,10 +23,7 @@ class Device:
         """
         Get status of connection to target device.
         """
-        if self.device_config["local_device"]:
-            self.connection_status = True
-        else:
-            self.connection_status = self.device_watchdog.ssh_connection.is_connected
+        self.connection_status = self.device_watchdog.ssh_connection.is_connected
 
     def test_log_files_access(self):
         """

@@ -50,7 +50,71 @@ device_modal_view = dbc.Modal(
     size="xl",
 )
 
+rest_api_modal = dbc.Modal(
+    [
+        dbc.ModalHeader(
+            dbc.ModalTitle("📡 Logs Collection API"),
+            className="bg-primary text-white"
+        ),
+        dbc.ModalBody([
+            dbc.Card(
+                dbc.CardBody([
+                    html.Div([
+                        dbc.Badge("POST", color="green", className="me-2"),
+                        html.H5("/api/start-logs-collection", className="d-inline")
+                    ], className="mb-3"),
+
+                    html.P("Starts log collection on selected devices.", className="mb-2"),
+
+                    html.Small("Request body:", className="text-muted"),
+                    html.Pre(
+                        '''{"selected_devices": ["device1","device2"]}''',
+                        className="bg-light p-2 border rounded"
+                    ),
+                    html.Small("Response:", className="text-muted mt-2"),
+                    html.Pre(
+                        '''{"status": "logs collection started", "session_id": "abc123" }''',
+                        className="bg-light p-2 border rounded"
+                    ),
+                ]),
+                className="w-100 mb-4 shadow-sm"
+            ),
+            dbc.Card(
+                dbc.CardBody([
+                    html.Div([
+                        dbc.Badge("POST", color="green", className="me-2"),
+                        html.H5("/api/stop-logs-collection", className="d-inline")
+                    ], className="mb-3"),
+
+                    html.P("Stops log collection and saves collected logs.", className="mb-2"),
+
+                    html.Small("Request body:", className="text-muted"),
+                    html.Pre(
+                        '''{ "selected_devices": ["device1"], "session_id": "abc123" }''',
+                        className="bg-light p-2 border rounded"
+                    ),
+
+                    html.Small("Response:", className="text-muted mt-2"),
+                    html.Pre(
+                        '''{ "status": "logs collection stopped", "text_logs_url": "...", "chart_logs_url": "..." }''',
+                        className="bg-light p-2 border rounded"
+                    ),
+                ]),
+                className="w-100 mb-3 shadow-sm"
+            )
+
+        ]),
+        dbc.ModalFooter(
+            dbc.Button("Close", id="close-api-modal", color="secondary")
+        )
+    ],
+    id="api-modal",
+    is_open=False,
+    size="xl",
+)
+
 layout_view = dbc.Container([
+    dcc.Location(id="url", refresh=False),
     dcc.Store(id="collection-store", data=0),
     dcc.Interval(
         id="device-refresh-interval",
@@ -93,6 +157,30 @@ layout_view = dbc.Container([
                     )
                 ]),
                 style={"display": "flex", "flex-direction": "column", "justify-content": "center"}
+            ),
+            dbc.Col(
+                dbc.Button(
+                    html.Span("🌐 REST API", style={"font-size": "20px"}),
+                    id="open-api-modal",
+                    style={
+                        "background-color": "#6f42c1",
+                        "border-color": "#6f42c1",
+                    }
+                ),
+                width="auto",
+                style={"display": "flex", "justify-content": "flex-end", "align-items": "center"}
+            ),
+            dbc.Col(
+                dbc.Button(
+                    html.Span("🛠️", style={"font-size": "20px"}),
+                    id="open-settings-modal",
+                    style={
+                        "background-color": "#6f42c1",
+                        "border-color": "#6f42c1",
+                    }
+                ),
+                width="auto",
+                style={"display": "flex", "justify-content": "flex-end", "align-items": "center"}
             )
         ],
         align="center",
@@ -146,7 +234,8 @@ layout_view = dbc.Container([
     html.Div(id="log-snapshots-container"),
 
     log_modal_view,
-    device_modal_view
+    device_modal_view,
+    rest_api_modal
 ], fluid=True)
 
 

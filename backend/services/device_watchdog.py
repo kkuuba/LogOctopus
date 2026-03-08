@@ -18,16 +18,12 @@ class DeviceWatchdog:
             device_config (dict): Connection and logging configuraiton for target device.
         """
         self.device_config = device_config
-        self.local_device = device_config["local_device"]
         self.device_name = device_config["device_name"]
-        if self.local_device:
-            self.ssh_connection = Context()
-        else:
-            self.ssh_connection = Connection(
-                host=device_config["ip_address"],
-                user=device_config["user"],
-                port=device_config["port"],
-                connect_kwargs={"password": device_config["password"]})
+        self.ssh_connection = Connection(
+            host=device_config["ip_address"],
+            user=device_config["user"],
+            port=device_config["port"],
+            connect_kwargs={"password": device_config["password"]})
         self.collected_data = {}
         self.errors = pd.DataFrame({"time": [], "error_info": []})
         self.collection_ongoing = False
@@ -47,16 +43,10 @@ class DeviceWatchdog:
         """
         try:
             root_requried = True if "sudo " in cmd else False
-            if self.local_device:
-                if root_requried:
-                    cmd_result = self.ssh_connection.sudo(cmd, password=self.device_config["password"], hide=True, timeout=10)
-                else:
-                    cmd_result = self.ssh_connection.run(cmd, hide=True, timeout=10)
+            if root_requried:
+                cmd_result = self.ssh_connection.sudo(cmd, password=self.device_config["password"], hide=True, timeout=10)
             else:
-                if root_requried:
-                    cmd_result = self.ssh_connection.sudo(cmd, password=self.device_config["password"], hide=True, timeout=10)
-                else:
-                    cmd_result = self.ssh_connection.run(cmd, hide=True, timeout=10)
+                cmd_result = self.ssh_connection.run(cmd, hide=True, timeout=10)
             if cmd_result.ok:
                 return cmd_result.stdout
             error_entry = {"time": [datetime.now()], "error_info": [f"cmd '{cmd}' failed with -> {cmd_result.stderr.strip()}"]}

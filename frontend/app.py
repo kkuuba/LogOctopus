@@ -2,6 +2,8 @@ from dash import Dash, dcc, Input, Output, State, ctx, ALL
 from dash.exceptions import PreventUpdate
 import dash_bootstrap_components as dbc
 import pandas as pd
+from flask import request, jsonify
+from urllib.parse import parse_qs
 import uuid
 from frontend.layout import (layout_view, 
                              generate_logs_snapshots_table, 
@@ -15,11 +17,14 @@ from backend.models.device_config import DeviceConfig
 from backend.utils.device_config_loader import DeviceConfigLoader
 from backend.utils.config_helper import ConfigurationHelper
 
+HOST = "127.0.0.1"
+PORT = 8050
 
 devices = DeviceConfigLoader("data").load_all_devices()
 
 app = Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP])
 app.layout = layout_view
+server = app.server
 
 
 @app.callback(
@@ -155,29 +160,53 @@ def show_logs(view_clicks, view_selected, close_click, checked, log_type_chart):
 @app.callback(
     Output("log-snapshots-container", "children", allow_duplicate=True),
     Input('log-type-chart', 'value'),
+    State("url", "search"),
     prevent_initial_call=True
 )
-def switch_log_type_for_snapshots_list(log_type_chart):
+def switch_log_type_for_snapshots_list(log_type_chart, search):
+    if search:
+        raise PreventUpdate
     log_snapshots = ConfigurationHelper.get_log_snapshots_list(devices, log_type_chart)
     return generate_logs_snapshots_table(log_snapshots)
 
 
 @app.callback(
-    Output("log-snapshots-container", "children", allow_duplicate=True),
+    Output("url", "search"),
     Input("filter-btn", "n_clicks"),
     State("search-param", "value"),
     State("search-value", "value"),
-    State('log-type-chart', 'value'),
+    State("log-type-chart", "value"),
     prevent_initial_call=True
 )
-def filter_log_snapshots_list(_, search_param, search_value, log_type_chart):
-    if not search_param or not search_value:
-        log_snapshots = ConfigurationHelper.get_log_snapshots_list(devices, log_type_chart)
-        return generate_logs_snapshots_table(log_snapshots)
-    else:
-        filtered_log_snapshots = ConfigurationHelper.get_filtered_log_snapshots_list(devices, search_param, search_value, log_type_chart)
-        return generate_logs_snapshots_table(filtered_log_snapshots)
+def update_url(_, search_param, search_value, log_type_chart):
+    """
+    Update URL based on filter value provided on search fields.
+    """
+    log_type = "chart" if log_type_chart else "text"
+    return f"?search_param={search_param}&search_value={search_value}&log_type={log_type}"
 
+@app.callback(
+    Output("log-snapshots-container", "children"),
+    Output("log-type-chart", "value"),
+    Input("url", "search")
+)
+def load_filtered_snapshots_based_on_url(search):
+    """
+    Update log snapshots list view based on filter values in provided URL.
+    """
+    params = parse_qs(search.lstrip("?"))
+    search_param = params.get("search_param", [None])[0]
+    search_value = params.get("search_value", [None])[0]
+    log_type_chart = True if params.get("log_type", [None])[0] == "chart" else False
+    log_snapshots = ConfigurationHelper.get_log_snapshots_list(devices, log_type_chart)
+    if not search_param or not search_value:
+        return generate_logs_snapshots_table(log_snapshots), log_type_chart
+
+    filtered = ConfigurationHelper.get_filtered_log_snapshots_list(
+        devices, search_param, search_value, log_type_chart
+    )
+
+    return generate_logs_snapshots_table(filtered), log_type_chart
 
 @app.callback(
     Output("device-modal", "is_open"),
@@ -199,7 +228,6 @@ def device_details(info_clicks, _):
             return True, generate_device_info_modal(target_device)
         return False, None
     return False, None
-
 
 @app.callback(
     Output("download-component", "data"),
@@ -240,16 +268,31 @@ def switch_log_table_color_mode_state(color_mode, checked, log_type_chart):
     Output("log-snapshots-container", "children", allow_duplicate=True),
     Input("startup-trigger", "n_intervals"),
     State('log-type-chart', 'value'),
+    State("url", "search"),
     prevent_initial_call=True
 )
-def on_app_start(n, log_type_chart):
+def on_app_start(n, log_type_chart, url_search):
     """
     Update device list and log snapshots table based on source files.
     """
+    if url_search:
+        raise PreventUpdate
     log_snapshots = ConfigurationHelper.get_log_snapshots_list(devices, log_type_chart)
-
     return generate_all_devices_cards_list(devices), generate_logs_snapshots_table(log_snapshots)
 
+@app.callback(
+    Output("api-modal", "is_open"),
+    Input("open-api-modal", "n_clicks"),
+    Input("close-api-modal", "n_clicks"),
+    State("api-modal", "is_open"),
+)
+def open_rest_api_info_modal(open_click, close_click, is_open):
+    """
+    Open modal with info about REST API endpoints.
+    """
+    if open_click or close_click:
+        return not is_open
+    return is_open
 
 def get_target_device_instance_to_update(device_id):
     """
@@ -267,12 +310,61 @@ def get_target_device_instance_to_update(device_id):
     return None
 
 
+@server.route("/api/start-logs-collection", methods=["POST"])
+def start_logs_collection():
+    """
+    Start logs collection REST API endpoint action.
+    """
+    request_data = request.get_json()
+    selected_devices = request_data.get("selected_devices", [])
+
+    if not isinstance(selected_devices, list):
+        return jsonify({"error": "selected_devices must be a list"}), 400
+
+    session_id = uuid.uuid1().hex[:12] 
+
+    for device in devices:
+        if device.device_name in selected_devices:
+            device.start_logs_collection(session_id)
+
+    return jsonify({
+        "status": "logs collection started",
+        "session_id": session_id
+    })
+
+
+@server.route("/api/stop-logs-collection", methods=["POST"])
+def stop_logs_collection():
+    """
+    Stop logs collection and save collected data REST API endpoint action.
+    """
+    request_data = request.get_json()
+    selected_devices = request_data.get("selected_devices", [])
+    session_id = request_data.get("session_id", "")
+
+    if not isinstance(selected_devices, list):
+        return jsonify({"error": "selected_devices must be a list"}), 400
+
+    if not isinstance(session_id, str):
+        return jsonify({"error": "session_id must be a string"}), 400
+
+    for device in devices:
+        if device.device_name in selected_devices:
+            device.stop_logs_collection()
+            device.save_log_snapshots()
+
+    return jsonify({
+        "status": "logs collection stopped",
+        "text_logs_url": f"http://{HOST}:{PORT}/?search_param=Session%20ID&search_value={session_id}&log_type=text",
+        "chart_logs_url": f"http://{HOST}:{PORT}/?search_param=Session%20ID&search_value={session_id}&log_type=chart"
+    })
+
+
 if __name__ == "__main__":
     app.run(debug=True)
 
 
 # TODO 
-# Add button for error list in device card
 # Improve chart modals view
 # Add logs download option with format choice
 # Add button on top bar for help, rest api and settings
