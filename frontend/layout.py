@@ -53,11 +53,8 @@ device_modal_view = dbc.Modal(
 rest_api_modal = dbc.Modal(
     [
         dbc.ModalHeader(
-            dbc.ModalTitle("🌐 Logs Collection REST API"),
-            style={
-                "background-color": "#6f42c1",
-                "border-color": "#6f42c1",
-                "color": "white"},
+            dbc.ModalTitle("Logs Collection REST API"),
+
         ),
         dbc.ModalBody([
             dbc.Card(
@@ -80,7 +77,7 @@ rest_api_modal = dbc.Modal(
                     ),
                     dcc.Clipboard(
                         content="Hello clipboard",
-                        children=dbc.Button("📋 Example code", size="sm", color="secondary")
+                        children=dbc.Button("📋 Example Python code", size="sm", color="secondary")
                     )
                 ]),
                 className="w-100 mb-4 shadow-sm"
@@ -104,7 +101,7 @@ rest_api_modal = dbc.Modal(
                     ),
                     dcc.Clipboard(
                         content="Hello clipboard",
-                        children=dbc.Button("📋 Example code", size="sm", color="secondary")
+                        children=dbc.Button("📋 Example Python code", size="sm", color="secondary")
                     )
                 ]),
                 className="w-100 mb-3 shadow-sm"
@@ -167,12 +164,9 @@ layout_view = dbc.Container([
             ),
             dbc.Col(
                 dbc.Button(
-                    html.Span("🌐 REST API", style={"font-size": "20px"}),
+                    html.Span("REST API", style={"font-size": "20px"}),
                     id="open-api-modal",
-                    style={
-                        "background-color": "#6f42c1",
-                        "border-color": "#6f42c1",
-                    }
+                    color="primary"
                 ),
                 width="auto",
                 style={"display": "flex", "justify-content": "flex-end", "align-items": "center"}
@@ -181,10 +175,7 @@ layout_view = dbc.Container([
                 dbc.Button(
                     html.Span("🛠️", style={"font-size": "20px"}),
                     id="open-settings-modal",
-                    style={
-                        "background-color": "#6f42c1",
-                        "border-color": "#6f42c1",
-                    }
+                    color="primary"
                 ),
                 width="auto",
                 style={"display": "flex", "justify-content": "flex-end", "align-items": "center"}
