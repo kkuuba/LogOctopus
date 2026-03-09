@@ -1,10 +1,11 @@
 from fabric import Connection
-from invoke import Context
+from concurrent.futures import ThreadPoolExecutor
 import pandas as pd
 from datetime import datetime
 from dateutil import parser
 import re
 import threading
+import time
 
 class DeviceWatchdog:
     """
@@ -19,11 +20,7 @@ class DeviceWatchdog:
         """
         self.device_config = device_config
         self.device_name = device_config["device_name"]
-        self.ssh_connection = Connection(
-            host=device_config["ip_address"],
-            user=device_config["user"],
-            port=device_config["port"],
-            connect_kwargs={"password": device_config["password"]})
+        self.ssh_channels = {}
         self.collected_data = {}
         self.errors = pd.DataFrame({"time": [], "error_info": []})
         self.collection_ongoing = False
@@ -31,22 +28,29 @@ class DeviceWatchdog:
         self.collection_stop_event = None
         self.cutoff_time = None
 
-    def execute_cmd(self, cmd):
+    def execute_cmd(self, cmd, ssh_channel_id):
         """
         Execute command via SSH on target device with failure handling.
 
         Args:
             cmd (str): Target cmd string.
+            ssh_channel_id (str): Target SSH channel ID. 
 
         Returns:
             str: Full cmd output if execution was successful.
         """
         try:
+            if ssh_channel_id not in self.ssh_channels.keys():
+                self.ssh_channels[ssh_channel_id] = Connection(
+                    host=self.device_config["ip_address"],
+                    user=self.device_config["user"],
+                    port=self.device_config["port"],
+                    connect_kwargs={"password": self.device_config["password"]})
             root_requried = True if "sudo " in cmd else False
             if root_requried:
-                cmd_result = self.ssh_connection.sudo(cmd, password=self.device_config["password"], hide=True, timeout=10)
+                cmd_result = self.ssh_channels[ssh_channel_id].sudo(cmd, password=self.device_config["password"], hide=True, timeout=10)
             else:
-                cmd_result = self.ssh_connection.run(cmd, hide=True, timeout=10)
+                cmd_result = self.ssh_channels[ssh_channel_id].run(cmd, hide=True, timeout=10)
             if cmd_result.ok:
                 return cmd_result.stdout
             error_entry = {"time": [datetime.now()], "error_info": [f"cmd '{cmd}' failed with -> {cmd_result.stderr.strip()}"]}
@@ -61,7 +65,7 @@ class DeviceWatchdog:
         Initialzie log collectors for all defined log file configs.
         """
         for log_config in self.device_config["log_file_configs"]:
-            self.execute_cmd(log_config["log_activation_cmd"])
+            self.execute_cmd(log_config["log_activation_cmd"], log_config["log_name"])
             self.collected_data[log_config["log_name"]] = pd.DataFrame({"time": [], "content": []})
 
     def get_log_file_content(self, log_config):
@@ -71,33 +75,33 @@ class DeviceWatchdog:
 
         Args:
             log_config (dict): Log collector configuration data.
-
-        Returns:
-            dict: All extracted log entries with timestamps.
         """
         log_content = {"time": [], "content": []}
-        raw_log_content = self.execute_cmd(log_config["log_file_cmd"])
+        raw_log_content = self.execute_cmd(log_config["log_file_cmd"], log_config["log_name"])
         if raw_log_content is None:
             return log_content
-        for entry_line in self.execute_cmd(log_config["log_file_cmd"]).split("\n"):
+        for entry_line in raw_log_content.split("\n"):
             entry_line_match = re.search(log_config["data_extraction_regex"], entry_line)
             if entry_line_match:
                 log_content["time"].append(parser.parse(entry_line_match.group("TIME")))
                 log_content["content"].append(entry_line_match.group("ENTRY"))
 
-        return log_content
+        new_log_content = pd.DataFrame(log_content)
+        current_log_content = self.collected_data[log_config["log_name"]]
+        if current_log_content.empty:
+            self.collected_data[log_config["log_name"]] = new_log_content
+        elif not new_log_content.empty:
+            self.collected_data[log_config["log_name"]] = pd.concat([current_log_content, new_log_content], ignore_index=True).drop_duplicates(subset=["time", "content"], keep="last")
 
     def get_all_log_files_content(self):
         """
         Extract all logs based on logs configs and save them to target pandas dataframes.
         """
-        for log_config in self.device_config["log_file_configs"]:
-            new_log_content = pd.DataFrame(self.get_log_file_content(log_config))
-            current_log_content = self.collected_data[log_config["log_name"]]
-            if current_log_content.empty:
-                self.collected_data[log_config["log_name"]] = new_log_content
-            elif not new_log_content.empty:
-                self.collected_data[log_config["log_name"]] = pd.concat([current_log_content, new_log_content], ignore_index=True).drop_duplicates(subset=["time", "content"], keep="last")
+        start = time.perf_counter()
+        with ThreadPoolExecutor() as executor:
+            executor.map(self.get_log_file_content, self.device_config["log_file_configs"])
+        end = time.perf_counter()
+        print(f"Execution time: {end - start:.4f} seconds")
 
     def start_logs_collection(self):
         """

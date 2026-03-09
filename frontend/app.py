@@ -128,13 +128,14 @@ def remove_selected(_, selected):
     Input("close-modal", "n_clicks"),
     State({"type": "log-check", "index": ALL}, "value"),
     State('log-type-chart', 'value'),
+    State("url", "search"),
     prevent_initial_call=True
 )
-def show_logs(view_clicks, view_selected, close_click, checked, log_type_chart):
+def show_logs(view_clicks, view_selected, close_click, checked, log_type_chart, search):
     """
     Show log content for selected or single log snapshots.
     """
-    log_snapshots = ConfigurationHelper.get_log_snapshots_list(devices, log_type_chart)
+    log_snapshots = get_current_logs_snapshots_list(search, log_type_chart)
     t = ctx.triggered_id
     if t == "close-modal" or t is None:
         return False, None
@@ -164,9 +165,7 @@ def show_logs(view_clicks, view_selected, close_click, checked, log_type_chart):
     prevent_initial_call=True
 )
 def switch_log_type_for_snapshots_list(log_type_chart, search):
-    if search:
-        raise PreventUpdate
-    log_snapshots = ConfigurationHelper.get_log_snapshots_list(devices, log_type_chart)
+    log_snapshots = get_current_logs_snapshots_list(search, log_type_chart)
     return generate_logs_snapshots_table(log_snapshots)
 
 
@@ -195,18 +194,10 @@ def load_filtered_snapshots_based_on_url(search):
     Update log snapshots list view based on filter values in provided URL.
     """
     params = parse_qs(search.lstrip("?"))
-    search_param = params.get("search_param", [None])[0]
-    search_value = params.get("search_value", [None])[0]
     log_type_chart = True if params.get("log_type", [None])[0] == "chart" else False
-    log_snapshots = ConfigurationHelper.get_log_snapshots_list(devices, log_type_chart)
-    if not search_param or not search_value:
-        return generate_logs_snapshots_table(log_snapshots), log_type_chart
+    log_snapshots = get_current_logs_snapshots_list(search, log_type_chart)
 
-    filtered = ConfigurationHelper.get_filtered_log_snapshots_list(
-        devices, search_param, search_value, log_type_chart
-    )
-
-    return generate_logs_snapshots_table(filtered), log_type_chart
+    return generate_logs_snapshots_table(log_snapshots), log_type_chart
 
 @app.callback(
     Output("device-modal", "is_open"),
@@ -246,13 +237,14 @@ def download_logs(_, table):
     Input('color-mode-switch', 'value'),
     State({"type": "log-check", "index": ALL}, "value"),
     State('log-type-chart', 'value'),
+    State("url", "search"),
     prevent_initial_call=True
 )
-def switch_log_table_color_mode_state(color_mode, checked, log_type_chart):
+def switch_log_table_color_mode_state(color_mode, checked, log_type_chart, search):
     """
     Enable of disable coloring mode for text log content table.
     """
-    log_snapshots = ConfigurationHelper.get_log_snapshots_list(devices, log_type_chart)
+    log_snapshots = get_current_logs_snapshots_list(search, log_type_chart)
     selected_log_snapshots = []
     for selected_id in [i for i, v in enumerate(checked) if v]:
         selected_log_snapshots.append(log_snapshots[selected_id])
@@ -275,9 +267,7 @@ def on_app_start(n, log_type_chart, url_search):
     """
     Update device list and log snapshots table based on source files.
     """
-    if url_search:
-        raise PreventUpdate
-    log_snapshots = ConfigurationHelper.get_log_snapshots_list(devices, log_type_chart)
+    log_snapshots = get_current_logs_snapshots_list(url_search, log_type_chart)
     return generate_all_devices_cards_list(devices), generate_logs_snapshots_table(log_snapshots)
 
 @app.callback(
@@ -309,6 +299,24 @@ def get_target_device_instance_to_update(device_id):
             return device
     return None
 
+def get_current_logs_snapshots_list(search, log_type_chart):
+    """
+    Get current list of log snapshots based on URL search query and active log type.
+
+    Args:
+        search (str): Current active URL search query.
+        log_type_chart (bool): Current active log type.
+
+    Returns:
+        (list): List of current log snapshots based on provided paramters.
+    """
+    params = parse_qs(search.lstrip("?"))
+    search_param = params.get("search_param", [None])[0]
+    search_value = params.get("search_value", [None])[0]
+    if not search_param or not search_value:
+        return ConfigurationHelper.get_log_snapshots_list(devices, log_type_chart)
+    else:
+        return ConfigurationHelper.get_filtered_log_snapshots_list(devices, search_param, search_value, log_type_chart)
 
 @server.route("/api/start-logs-collection", methods=["POST"])
 def start_logs_collection():

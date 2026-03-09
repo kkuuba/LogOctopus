@@ -23,15 +23,18 @@ class Device:
         """
         Get status of connection to target device.
         """
-        self.connection_status = self.device_watchdog.ssh_connection.is_connected
+        if len(self.device_watchdog.ssh_channels.keys()) > 0:
+            self.connection_status = True
+        else:
+            self.connection_status = False
 
     def test_log_files_access(self):
         """
         Validate if first 3 log files defined in configuration can be accessed via SSH. If any of first 3 log files cannot be accessed
         method return False.
         """
-        for log_file_config in self.device_config["log_file_configs"][0:3]:
-            current_log_content = self.device_watchdog.execute_cmd(log_file_config["log_file_cmd"])
+        for log_file_config in self.device_config["log_file_configs"][:3]:
+            current_log_content = self.device_watchdog.execute_cmd(log_file_config["log_file_cmd"], log_file_config["log_name"])
             if current_log_content:
                 continue
             else:
