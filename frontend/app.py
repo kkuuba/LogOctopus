@@ -11,7 +11,8 @@ from frontend.layout import (layout_view,
                              generate_device_info_modal, 
                              generate_log_content_modal, 
                              get_all_devices_statuses,
-                             generate_chart_content_modal)
+                             generate_chart_content_modal,
+                             create_session_info_content_modal)
 from backend.models.device import Device
 from backend.models.device_config import DeviceConfig
 from backend.utils.device_config_loader import DeviceConfigLoader
@@ -73,6 +74,8 @@ def refresh_devices(_, conn_ids):
 
 @app.callback(
     Output("log-snapshots-container", "children", allow_duplicate=True),  # <- new output
+    Output("session-modal", "is_open"),
+    Output("session-modal-body", "children"),
     Input("start-all", "n_clicks"),
     Input("stop-all", "n_clicks"),
     State({"type": "device-select", "index": ALL}, "value"),
@@ -95,10 +98,15 @@ def start_stop_selected(start, stop, selected, log_type_chart):
             device.save_log_snapshots()
     if t == "start-all":
         log_snapshots = ConfigurationHelper.get_log_snapshots_list(devices, log_type_chart)
-        return generate_logs_snapshots_table(log_snapshots)
+        return generate_logs_snapshots_table(log_snapshots), False, None
     else:
         log_snapshots = ConfigurationHelper.get_log_snapshots_list(devices, log_type_chart)
-        return generate_logs_snapshots_table(log_snapshots)
+        return (generate_logs_snapshots_table(log_snapshots), 
+                True, 
+                create_session_info_content_modal(
+                    text_logs_url=f"http://{HOST}:{PORT}/?search_param=Session%20ID&search_value={session_id}&log_type=text",
+                    chart_logs_url=f"http://{HOST}:{PORT}/?search_param=Session%20ID&search_value={session_id}&log_type=chart"
+                    ))
 
 
 @app.callback(
@@ -375,7 +383,10 @@ if __name__ == "__main__":
 # TODO 
 # Improve chart modals view
 # Add logs download option with format choice
-# Add button on top bar for help, rest api and settings
-# Investigate a way to add rest API
+# Add settings modal which will be open via button on home page
 # Investgiate a way to create container with https based on dash app
 # Add synchronization of all timestamps to UTC timezone
+# Add token authorization for rest api
+# Create some solution for testing app via github container
+# Add backend tests for each module
+# Add frontend tests

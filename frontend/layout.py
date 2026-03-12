@@ -50,6 +50,25 @@ device_modal_view = dbc.Modal(
     size="xl",
 )
 
+# Session details modal
+session_modal_view = dbc.Modal(
+    [
+        dbc.ModalHeader(
+            dbc.ModalTitle(
+                "Logs collection session details",
+                className="w-100 text-center"
+            )
+        ),
+        dbc.ModalBody(
+            id="session-modal-body",
+            className="d-flex flex-column align-items-center"
+        ),
+    ],
+    id="session-modal",
+    is_open=False,
+    size="md",
+)
+
 rest_api_modal = dbc.Modal(
     [
         dbc.ModalHeader(
@@ -233,6 +252,7 @@ layout_view = dbc.Container([
 
     log_modal_view,
     device_modal_view,
+    session_modal_view,
     rest_api_modal
 ], fluid=True)
 
@@ -580,3 +600,33 @@ def create_chart_for_data_frame(data_frame, chart_title):
     )
 
     return fig
+
+
+def create_session_info_content_modal(text_logs_url, chart_logs_url):
+    """
+    Create session info modal content based on provided data.
+
+    Args:
+        text_logs_url (str): URL with target session text logs.
+        chart_logs_url (str): URL with target session chart logs.
+
+    Returns:
+        (html.Div): HTLM with two buttons by which user can see logs collected for target session.
+    """
+    return html.Div(
+        [
+            dbc.Button(
+                "Show collected text logs",
+                href=text_logs_url,
+                target="_blank",
+                color="secondary",
+            ),
+            dbc.Button(
+                "Show collected chart logs",
+                href=chart_logs_url,
+                target="_blank",
+                color="secondary",
+            ),
+        ],
+        className="d-flex justify-content-center gap-2 mt-2"
+    )
