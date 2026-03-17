@@ -12,11 +12,13 @@ from frontend.layout import (layout_view,
                              generate_log_content_modal, 
                              get_all_devices_statuses,
                              generate_chart_content_modal,
-                             create_session_info_content_modal)
+                             create_session_info_content_modal,
+                             export_charts_div_to_html)
 from backend.models.device import Device
 from backend.models.device_config import DeviceConfig
 from backend.utils.device_config_loader import DeviceConfigLoader
 from backend.utils.config_helper import ConfigurationHelper
+
 
 HOST = "127.0.0.1"
 PORT = 8050
@@ -232,13 +234,17 @@ def device_details(info_clicks, _):
     Output("download-component", "data"),
     Input("download-logs", "n_clicks"),
     State("modal-body", "children"),
+    State('log-type-chart', 'value'),
     prevent_initial_call=True
 )
-def download_logs(_, table):
+def download_logs(_, modal_body_data, log_type_chart):
     """
     Download log content for single or selected log snashots in HTML format.
     """
-    return dcc.send_data_frame(pd.DataFrame(table["props"]["data"]).to_html, "logs.html", index=False)
+    if log_type_chart:
+        export_charts_div_to_html(modal_body_data, "data/charts.html")
+        return dcc.send_file("data/charts.html", "charts.html")
+    return dcc.send_data_frame(pd.DataFrame(modal_body_data["props"]["data"]).to_html, "logs.html", index=False)
 
 @app.callback(
     Output("modal-body", "children", allow_duplicate=True),
@@ -258,10 +264,10 @@ def switch_log_table_color_mode_state(color_mode, checked, log_type_chart, searc
         selected_log_snapshots.append(log_snapshots[selected_id])
         log_content = ConfigurationHelper.get_log_content_for_selected_snapshots(selected_log_snapshots)
     if log_type_chart:
-        return True, generate_chart_content_modal(selected_log_snapshots)
+        return generate_chart_content_modal(selected_log_snapshots)
     if color_mode:
-        return True, generate_log_content_modal(log_content, True)
-    return True, generate_log_content_modal(log_content, False)
+        return generate_log_content_modal(log_content, True)
+    return generate_log_content_modal(log_content, False)
 
 @app.callback(
     Output("devices-container", "children", allow_duplicate=True),
@@ -381,12 +387,14 @@ if __name__ == "__main__":
 
 
 # TODO 
-# Improve chart modals view
-# Add logs download option with format choice
-# Add settings modal which will be open via button on home page
+# Add settings modal which will be open via button on home page #
+    # info about CPU usage
+    # info about ram usage
+    # info about available storage
+    # contionus monitoring switch
+    # log rotation settings
+
 # Investgiate a way to create container with https based on dash app
-# Add synchronization of all timestamps to UTC timezone
-# Add token authorization for rest api
 # Create some solution for testing app via github container
 # Add backend tests for each module
 # Add frontend tests

@@ -4,6 +4,8 @@ from dash import html, dcc, dash_table
 import dash_bootstrap_components as dbc
 import dash_daq as daq
 import plotly.express as px
+import plotly.io as pio
+import plotly.graph_objects as go
 import pandas as pd
 
 
@@ -86,12 +88,12 @@ rest_api_modal = dbc.Modal(
                     html.P("Starts log collection on selected devices.", className="mb-2"),
                     html.Small("Request body:", className="text-muted"),
                     html.Pre(
-                        '''{"selected_devices": ["device1","device2"]}''',
+                        '''{"selected_devices": ["device_1","device_2"]}''',
                         className="bg-light p-2 border rounded"
                     ),
                     html.Small("Response:", className="text-muted mt-2"),
                     html.Pre(
-                        '''{"status": "logs collection started", "session_id": "abc123" }''',
+                        '''{"status": "logs collection started", "session_id": "8cd7112719ac" }''',
                         className="bg-light p-2 border rounded"
                     ),
                     dcc.Clipboard(
@@ -110,7 +112,7 @@ rest_api_modal = dbc.Modal(
                     html.P("Stops log collection and saves collected logs.", className="mb-2"),
                     html.Small("Request body:", className="text-muted"),
                     html.Pre(
-                        '''{ "selected_devices": ["device1"], "session_id": "abc123" }''',
+                        '''{ "selected_devices": ["device_1"], "session_id": "8cd7112719ac" }''',
                         className="bg-light p-2 border rounded"
                     ),
                     html.Small("Response:", className="text-muted mt-2"),
@@ -190,15 +192,15 @@ layout_view = dbc.Container([
                 width="auto",
                 style={"display": "flex", "justify-content": "flex-end", "align-items": "center"}
             ),
-            dbc.Col(
-                dbc.Button(
-                    html.Span("🛠️", style={"font-size": "20px"}),
-                    id="open-settings-modal",
-                    color="primary"
-                ),
-                width="auto",
-                style={"display": "flex", "justify-content": "flex-end", "align-items": "center"}
-            )
+            # dbc.Col(
+            #     dbc.Button(
+            #         html.Span("🛠️", style={"font-size": "20px"}),
+            #         id="open-settings-modal",
+            #         color="primary"
+            #     ),
+            #     width="auto",
+            #     style={"display": "flex", "justify-content": "flex-end", "align-items": "center"}
+            # )
         ],
         align="center",
         className="my-3",
@@ -630,3 +632,42 @@ def create_session_info_content_modal(text_logs_url, chart_logs_url):
         ],
         className="d-flex justify-content-center gap-2 mt-2"
     )
+
+def export_charts_div_to_html(div_dict, file_path):
+    """
+    Generated HTML file with all charts based on serialzied dict with chart data.
+
+    Args:
+        div_dict (dict): Serialized HTML.div with all charts data.
+        file_path (str): Target path for HTML file.
+    """
+    html_parts = []
+
+    for inner_div in div_dict["props"]["children"]:
+
+        graph = inner_div["props"]["children"]
+
+        if graph["type"] == "Graph":
+            fig_dict = graph["props"]["figure"]
+            fig = go.Figure(fig_dict)
+
+            html_parts.append(
+                pio.to_html(fig, full_html=False, include_plotlyjs="cdn")
+            )
+
+    with open(file_path, "w", encoding="utf-8") as f:
+        f.write("<html><head><meta charset='utf-8'></head><body>")
+
+        for part in html_parts:
+            f.write(f"""
+            <div style="
+                background:white;
+                padding:15px;
+                border-radius:12px;
+                box-shadow:0 4px 12px rgba(0,0,0,0.06);
+                margin-bottom:30px;">
+                {part}
+            </div>
+            """)
+
+        f.write("</body></html>")
