@@ -21,10 +21,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY . .
 
 # Step 6: Install Python dependencies
-RUN pip install --no-cache-dir -r frontend/requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Step 7: Copy the full project (all folders)
 COPY . .
+
+# Create the data directory inside the workspace
+RUN mkdir -p /app/data
 
 # Step 8: Expose the port (default)
 EXPOSE ${PORT}

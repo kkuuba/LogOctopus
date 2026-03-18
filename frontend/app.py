@@ -384,7 +384,7 @@ def stop_logs_collection():
 
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(debug=False)
 
 
 # TODO 
