@@ -18,7 +18,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Step 5: Copy only requirements first for caching
-COPY frontend/requirements.txt ./frontend/requirements.txt
+COPY . .
 
 # Step 6: Install Python dependencies
 RUN pip install --no-cache-dir -r frontend/requirements.txt
