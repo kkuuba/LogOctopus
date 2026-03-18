@@ -91,12 +91,13 @@ def start_stop_selected(start, stop, selected, log_type_chart):
     """
     t = ctx.triggered_id
     selected_ids = {v[0] for v in selected if v}
-    session_id = uuid.uuid1().hex[:12] 
     for device in devices:
         if t == "start-all" and device.device_config_id in selected_ids:
+            session_id = uuid.uuid1().hex[:12] 
             device.start_logs_collection(session_id)
 
         elif t == "stop-all" and device.device_config_id in selected_ids:
+            session_id = device.current_session_id
             device.stop_logs_collection()
             device.save_log_snapshots()
     if t == "start-all":
@@ -265,10 +266,10 @@ def switch_log_table_color_mode_state(color_mode, checked, log_type_chart, searc
         selected_log_snapshots.append(log_snapshots[selected_id])
         log_content = ConfigurationHelper.get_log_content_for_selected_snapshots(selected_log_snapshots)
     if log_type_chart:
-        return generate_chart_content_modal(selected_log_snapshots)
+        return True, generate_chart_content_modal(selected_log_snapshots)
     if color_mode:
-        return generate_log_content_modal(log_content, True)
-    return generate_log_content_modal(log_content, False)
+        return True, generate_log_content_modal(log_content, True)
+    return True, generate_log_content_modal(log_content, False)
 
 @app.callback(
     Output("devices-container", "children", allow_duplicate=True),
