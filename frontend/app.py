@@ -91,9 +91,9 @@ def start_stop_selected(start, stop, selected, log_type_chart):
     """
     t = ctx.triggered_id
     selected_ids = {v[0] for v in selected if v}
+    session_id = uuid.uuid1().hex[:12]
     for device in devices:
         if t == "start-all" and device.device_config_id in selected_ids:
-            session_id = uuid.uuid1().hex[:12] 
             device.start_logs_collection(session_id)
 
         elif t == "stop-all" and device.device_config_id in selected_ids:
