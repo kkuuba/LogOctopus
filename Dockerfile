@@ -33,4 +33,4 @@ RUN mkdir -p /app/data
 EXPOSE ${PORT}
 
 # Step 9: Run app with Gunicorn using environment variables
-CMD ["sh", "-c", "gunicorn frontend.app:app --workers 1 --threads 4 --bind ${HOST}:${PORT} --worker-class gthread"]
+CMD ["sh", "-c", "python -m frontend.app"]
