@@ -2,6 +2,7 @@ from dash import Dash, dcc, Input, Output, State, ctx, ALL
 from dash.exceptions import PreventUpdate
 import dash_bootstrap_components as dbc
 import pandas as pd
+import os
 from flask import request, jsonify
 from urllib.parse import parse_qs
 import uuid
@@ -20,8 +21,8 @@ from backend.utils.device_config_loader import DeviceConfigLoader
 from backend.utils.config_helper import ConfigurationHelper
 
 
-HOST = "127.0.0.1"
-PORT = 8050
+HOST = os.getenv("HOST")
+PORT = int(os.getenv("PORT"))
 
 devices = DeviceConfigLoader("data").load_all_devices()
 

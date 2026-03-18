@@ -97,11 +97,11 @@ class DeviceWatchdog:
         """
         Extract all logs based on logs configs and save them to target pandas dataframes.
         """
-        start = time.perf_counter()
+        # start = time.perf_counter()
         with ThreadPoolExecutor() as executor:
             executor.map(self.get_log_file_content, self.device_config["log_file_configs"])
-        end = time.perf_counter()
-        print(f"Execution time: {end - start:.4f} seconds")
+        # end = time.perf_counter()
+        # print(f"Execution time: {end - start:.4f} seconds")
 
     def start_logs_collection(self):
         """
@@ -142,5 +142,4 @@ class DeviceWatchdog:
         self.collection_stop_event = threading.Event()
         while self.collection_ongoing:
             self.collection_stop_event.wait(timeout=interval)
-            print(self.errors["error_info"].astype(str).str.cat(sep="\n"))
             self.get_all_log_files_content()

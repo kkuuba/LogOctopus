@@ -9,3 +9,4 @@ dash
 dash_bootstrap_components
 dash_daq
 plotly
+gunicorn
