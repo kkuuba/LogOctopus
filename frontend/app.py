@@ -35,7 +35,7 @@ cache = Cache(app.server, config={
 })
 
 
-@cache.memoize(timeout=300)
+@cache.memoize(timeout=None)
 def get_devices_cached():
     return DeviceConfigLoader("data").load_all_devices()
 
