@@ -100,9 +100,9 @@ def start_stop_selected(start, stop, selected, log_type_chart):
     """
     t = ctx.triggered_id
     selected_ids = {v[0] for v in selected if v}
-    session_id = uuid.uuid1().hex[:12]
     for device in get_devices_cached():
         if t == "start-all" and device.device_config_id in selected_ids:
+            session_id = uuid.uuid1().hex[:12]
             device.start_logs_collection(session_id)
 
         elif t == "stop-all" and device.device_config_id in selected_ids:
@@ -113,6 +113,7 @@ def start_stop_selected(start, stop, selected, log_type_chart):
         log_snapshots = ConfigurationHelper.get_log_snapshots_list(get_devices_cached(), log_type_chart)
         return generate_logs_snapshots_table(log_snapshots), False, None
     else:
+        cache.delete_memoized(get_devices_cached)
         log_snapshots = ConfigurationHelper.get_log_snapshots_list(get_devices_cached(), log_type_chart)
         return (generate_logs_snapshots_table(log_snapshots), 
                 True, 
