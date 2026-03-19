@@ -113,7 +113,7 @@ def start_stop_selected(start, stop, selected, log_type_chart):
         log_snapshots = ConfigurationHelper.get_log_snapshots_list(get_devices_cached(), log_type_chart)
         return generate_logs_snapshots_table(log_snapshots), False, None
     else:
-        cache.delete_memoized(get_devices_cached)
+        cache.delete_memoized()
         log_snapshots = ConfigurationHelper.get_log_snapshots_list(get_devices_cached(), log_type_chart)
         return (generate_logs_snapshots_table(log_snapshots), 
                 True, 
