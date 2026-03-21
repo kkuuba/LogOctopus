@@ -19,7 +19,6 @@ from backend.models.device import Device
 from backend.models.device_config import DeviceConfig
 from backend.utils.device_config_loader import DeviceConfigLoader
 from backend.utils.config_helper import ConfigurationHelper
-from flask_caching import Cache
 
 
 HOST = os.getenv("HOST")
@@ -30,14 +29,8 @@ app = Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP])
 app.layout = layout_view
 server = app.server
 
-cache = Cache(app.server, config={
-    'CACHE_TYPE': 'simple'
-})
 
-
-@cache.memoize(timeout=None)
-def get_devices_cached():
-    return DeviceConfigLoader("data").load_all_devices()
+devices = DeviceConfigLoader("data").load_all_devices()
 
 
 @app.callback(
@@ -57,8 +50,8 @@ def upload_device(contents, cards):
     device_config = DeviceConfig(config_file_content)
     if device_config.validate_device_config():
         device_instance = Device(device_config_instance=device_config)
-        get_devices_cached().append(device_instance)
-        cards = generate_all_devices_cards_list(get_devices_cached())
+        devices.append(device_instance)
+        cards = generate_all_devices_cards_list(devices)
     else:
         device_config.remove_device_config()
         show_incorrect_config_alert = True
@@ -78,10 +71,10 @@ def refresh_devices(_, conn_ids):
     """
     Refresh all device statuses (connection, log access, logs collection state).
     """
-    if len(conn_ids) != len(get_devices_cached()):
+    if len(conn_ids) != len(devices):
         raise PreventUpdate
 
-    return get_all_devices_statuses(get_devices_cached())
+    return get_all_devices_statuses(devices)
 
 
 @app.callback(
@@ -100,7 +93,7 @@ def start_stop_selected(start, stop, selected, log_type_chart):
     """
     t = ctx.triggered_id
     selected_ids = {v[0] for v in selected if v}
-    for device in get_devices_cached():
+    for device in devices:
         if t == "start-all" and device.device_config_id in selected_ids:
             session_id = uuid.uuid1().hex[:12]
             device.start_logs_collection(session_id)
@@ -110,11 +103,10 @@ def start_stop_selected(start, stop, selected, log_type_chart):
             device.stop_logs_collection()
             device.save_log_snapshots()
     if t == "start-all":
-        log_snapshots = ConfigurationHelper.get_log_snapshots_list(get_devices_cached(), log_type_chart)
+        log_snapshots = ConfigurationHelper.get_log_snapshots_list(devices, log_type_chart)
         return generate_logs_snapshots_table(log_snapshots), False, None
     else:
-        cache.delete_memoized()
-        log_snapshots = ConfigurationHelper.get_log_snapshots_list(get_devices_cached(), log_type_chart)
+        log_snapshots = ConfigurationHelper.get_log_snapshots_list(devices, log_type_chart)
         return (generate_logs_snapshots_table(log_snapshots), 
                 True, 
                 create_session_info_content_modal(
@@ -134,12 +126,12 @@ def remove_selected(_, selected):
     Remove all selected devices.
     """
     ids_to_remove = {v[0] for v in selected if v}
-    for device in get_devices_cached():
+    for device in devices:
         if device.device_config_id in ids_to_remove:
             device.remove_device_data()
-            get_devices_cached().remove(device)
+            devices.remove(device)
 
-    return generate_all_devices_cards_list(get_devices_cached())
+    return generate_all_devices_cards_list(devices)
 
 
 @app.callback(
@@ -294,7 +286,7 @@ def on_app_start(n, log_type_chart, url_search):
     Update device list and log snapshots table based on source files.
     """
     log_snapshots = get_current_logs_snapshots_list(url_search, log_type_chart)
-    return generate_all_devices_cards_list(get_devices_cached()), generate_logs_snapshots_table(log_snapshots)
+    return generate_all_devices_cards_list(devices), generate_logs_snapshots_table(log_snapshots)
 
 @app.callback(
     Output("api-modal", "is_open"),
@@ -320,7 +312,7 @@ def get_target_device_instance_to_update(device_id):
     Returns:
         (Device): Instance of target Device object.
     """
-    for device in get_devices_cached():
+    for device in devices:
         if device.device_config_id == device_id:
             return device
     return None
@@ -340,9 +332,9 @@ def get_current_logs_snapshots_list(search, log_type_chart):
     search_param = params.get("search_param", [None])[0]
     search_value = params.get("search_value", [None])[0]
     if not search_param or not search_value:
-        return ConfigurationHelper.get_log_snapshots_list(get_devices_cached(), log_type_chart)
+        return ConfigurationHelper.get_log_snapshots_list(devices, log_type_chart)
     else:
-        return ConfigurationHelper.get_filtered_log_snapshots_list(get_devices_cached(), search_param, search_value, log_type_chart)
+        return ConfigurationHelper.get_filtered_log_snapshots_list(devices, search_param, search_value, log_type_chart)
 
 @server.route("/api/start-logs-collection", methods=["POST"])
 def start_logs_collection():
@@ -357,7 +349,7 @@ def start_logs_collection():
 
     session_id = uuid.uuid1().hex[:12] 
 
-    for device in get_devices_cached():
+    for device in devices:
         if device.device_name in selected_devices:
             device.start_logs_collection(session_id)
 
@@ -382,7 +374,7 @@ def stop_logs_collection():
     if not isinstance(session_id, str):
         return jsonify({"error": "session_id must be a string"}), 400
 
-    for device in get_devices_cached():
+    for device in devices:
         if device.device_name in selected_devices:
             device.stop_logs_collection()
             device.save_log_snapshots()
