@@ -344,7 +344,7 @@ def generate_all_devices_cards_list(devices_list):
                 html.Br(),
                 html.Small(f"Logs Access: {'✅' if device_instance.log_access else '❌'}", id={"type": "status-access", "index": device_id}),
                 html.Br(),
-                html.Small(f"Logs Collection: {'🟢' if device_instance.device_watchdog.collection_ongoing else '🟡'}", id={"type": "status-collection", "index": device_id}),
+                html.Small(f"Logs Collection: {'🟢' if device_instance.collection_ongoing else '🟡'}", id={"type": "status-collection", "index": device_id}),
             ]
         )
         cards_list.append(card)
@@ -365,14 +365,14 @@ def generate_device_info_modal(target_device):
         html.P(f"Name: {target_device.device_name}"),
         html.P(f"Connection: {'✅' if target_device.connection_status else '❌'}"),
         html.P(f"Logs Access: {'✅' if target_device.log_access else '❌'}"),
-        html.P(f"Logs Collection: {'🟢' if target_device.device_watchdog.collection_ongoing else '🟡'}"),
+        html.P(f"Logs Collection: {'🟢' if target_device.collection_ongoing else '🟡'}"),
         html.Hr(),
         html.H4(f"Recent error logs for device watchdog"),
         html.Hr(),
         dash_table.DataTable(
             id="device-dataframe-table",
-            columns=[{"name": i, "id": i} for i in target_device.device_watchdog.errors.columns],
-            data=target_device.device_watchdog.errors.to_dict("records"),
+            columns=[{"name": i, "id": i} for i in target_device.errors.columns],
+            data=target_device.errors.to_dict("records"),
             style_table={"overflowX": "auto"},  # horizontal scroll if wide
             style_cell={"textAlign": "left", "padding": "5px"},
             style_header={
@@ -494,11 +494,9 @@ def get_all_devices_statuses(devices_list):
     logs_collection_statuses = []
 
     for device in devices_list:
-        device.test_log_files_access()
-        device.get_device_connection_status()
         connection_statuses.append(f"Connection: {'✅' if device.connection_status else '❌'}")
         log_access_statuses.append(f"Logs Access: {'✅' if device.log_access else '❌'}")
-        logs_collection_statuses.append(f"Logs Collection: {'🟢' if device.device_watchdog.collection_ongoing else '🟡'}")
+        logs_collection_statuses.append(f"Logs Collection: {'🟢' if device.collection_ongoing else '🟡'}")
     
     return connection_statuses, log_access_statuses, logs_collection_statuses
 

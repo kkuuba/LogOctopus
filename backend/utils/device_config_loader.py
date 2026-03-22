@@ -23,6 +23,7 @@ class DeviceConfigLoader():
             config_file.close()
         if config_content:
             device_config = DeviceConfig(config_content)
+            device_config.device_config_path = config_path
             return Device(device_config_instance=device_config)
         else:
             return None

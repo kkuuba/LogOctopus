@@ -1,11 +1,15 @@
 from fabric import Connection
 from concurrent.futures import ThreadPoolExecutor
+from backend.models.log_snapshot import LogSnapshot
 import pandas as pd
 from datetime import datetime
 from dateutil import parser
 import re
 import threading
-import time
+from time import sleep
+import argparse
+import json
+
 
 class DeviceWatchdog:
     """
@@ -27,6 +31,9 @@ class DeviceWatchdog:
         self.thread = None
         self.collection_stop_event = None
         self.cutoff_time = None
+        self.log_snapshots = []
+        self.connection_status = False
+        self.log_access = False
 
     def execute_cmd(self, cmd, ssh_channel_id):
         """
@@ -143,3 +150,87 @@ class DeviceWatchdog:
         while self.collection_ongoing:
             self.collection_stop_event.wait(timeout=interval)
             self.get_all_log_files_content()
+
+    def save_log_snapshots(self, session_id):
+        """
+        Save all logs collected by device watchdog and save it in LogSnapshot object with all info about collected data.
+        Data will be save info file and added to logsnapshots list.
+        """
+        for log_name, log_content in self.collected_data.items():
+            log_type = self.get_target_log_type_based_on_log_name(log_name)
+            if not log_content.empty:
+                self.log_snapshots.append(LogSnapshot(self.device_name, log_name, session_id, log_type, log_content))
+
+    def get_target_log_type_based_on_log_name(self, log_name):
+        """
+        Get log type based on provided log name.
+
+        Args:
+            log_name (str): Log name for log type extraction from device config.
+
+        Returns:
+            str: Target log type (text|chart), default value is 'text'.
+        """
+        for log_config in self.device_config["log_file_configs"]:
+            if log_name == log_config["log_name"]:
+                return log_config["log_type"]
+        
+        return "text"
+
+    def get_connection_status(self):
+        """
+        Get status of connection to target device.
+        """
+        if len(self.ssh_channels.keys()) > 0:
+            self.connection_status = True
+        else:
+            self.connection_status = False
+
+    def test_log_files_access(self):
+        """
+        Validate if first 3 log files defined in configuration can be accessed via SSH. If any of first 3 log files cannot be accessed
+        method return False.
+        """
+        for log_file_config in self.device_config["log_file_configs"][:3]:
+            current_log_content = self.execute_cmd(log_file_config["log_file_cmd"], log_file_config["log_name"])
+            if current_log_content:
+                continue
+            else:
+                self.log_access = False
+
+        self.log_access = True
+
+
+def get_current_device_config(path_to_config_file):
+    with open(path_to_config_file, "r") as f:
+        return json.load(f)
+
+
+def update_device_config_parameter(path_to_config_file, key, value):    
+    with open(path_to_config_file, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    data[key] = value
+    with open(path_to_config_file, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description="Device watchdog")
+    parser.add_argument("device_config_file_path", help="Path to target device config file")
+    args = parser.parse_args()
+    init_device_config = get_current_device_config(args.device_config_file_path)
+    device_watchdog = DeviceWatchdog(init_device_config)
+    while True:
+        current_device_config = get_current_device_config(args.device_config_file_path)
+        if current_device_config["logs_collection"] and not device_watchdog.collection_ongoing:
+            device_watchdog.initialize_log_collectors()
+            device_watchdog.start_logs_collection()
+        if not current_device_config["logs_collection"] and device_watchdog.collection_ongoing:
+            device_watchdog.stop_logs_collection()
+            device_watchdog.save_log_snapshots(current_device_config["current_session_id"])
+        if not device_watchdog.collection_ongoing:
+            device_watchdog.get_connection_status()
+            device_watchdog.test_log_files_access()
+            update_device_config_parameter(args.device_config_file_path, "connected", device_watchdog.connection_status)
+            update_device_config_parameter(args.device_config_file_path, "logs_available", device_watchdog.log_access)
+        sleep(5)
