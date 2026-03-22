@@ -229,9 +229,10 @@ if __name__ == '__main__':
             device_watchdog.stop_logs_collection()
             device_watchdog.save_log_snapshots(current_device_config["current_session_id"])
             update_device_config_parameter(args.device_config_file_path, "current_session_id", "no_active_session")
-        if not device_watchdog.collection_ongoing:
-            device_watchdog.get_connection_status()
-            device_watchdog.test_log_files_access()
-            update_device_config_parameter(args.device_config_file_path, "connected", device_watchdog.connection_status)
-            update_device_config_parameter(args.device_config_file_path, "logs_available", device_watchdog.log_access)
+        device_watchdog.get_connection_status()
+        device_watchdog.test_log_files_access()
+        update_device_config_parameter(args.device_config_file_path, "connected", device_watchdog.connection_status)
+        update_device_config_parameter(args.device_config_file_path, "logs_available", device_watchdog.log_access)
+        errors_file_path = f"data/{device_watchdog.device_name}/errors.feather"
+        device_watchdog.errors.to_feather(errors_file_path)
         sleep(10)

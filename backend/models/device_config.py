@@ -29,7 +29,16 @@ class DeviceConfig:
         try:
             with open(self.device_config_path, encoding='utf-8', errors='ignore') as config_file:
                 config_data = json.load(config_file)
-
+            watchdog_data = {
+                "logs_collection": False,
+                "current_session_id": "no_active_session",
+                "connected": False,
+                "logs_available": False,
+                "watchdog_process_pid": 0,
+            }
+            config_data.update(watchdog_data)
+            with open(self.device_config_path, 'w', encoding='utf-8') as config_file:
+                json.dump(config_data, config_file, indent=2)
             target_device_directory = f"data/{config_data['device_name']}"
             target_config_path = f"{target_device_directory}/{self.device_config_path.split('/')[-1]}"
             if not os.path.exists(target_device_directory):

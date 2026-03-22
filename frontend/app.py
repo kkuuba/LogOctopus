@@ -383,7 +383,7 @@ def stop_logs_collection():
     for device in get_current_devices():
         if device.device_name in selected_devices:
             device.stop_logs_collection()
-            device.save_log_snapshots()
+            device.wait_for_log_collection_teardown()
 
     return jsonify({
         "status": "logs collection stopped",

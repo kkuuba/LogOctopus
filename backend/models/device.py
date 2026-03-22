@@ -25,14 +25,14 @@ class Device:
             watchdog_process = subprocess.Popen(["python", "-m", "backend.services.device_watchdog", self.device_config_instance.device_config_path])
             self.update_device_config_parameter("watchdog_process_pid", watchdog_process.pid)
 
-    # def get_device_error_log(self):
-    #     """
-    #     Get list of all error log entries for target device.
-        
-    #     Returns:
-    #         list: List of all error log entries for target device.
-    #     """
-    #     return self.device_watchdog.errors.to_dict("records")
+    def get_device_error_log(self):
+        """
+        Get list of all error log entries for target device.
+
+        Returns:
+            list: List of all error log entries for target device.
+        """
+        self.errors = pd.read_parquet(f"data/{self.device_name}/errors.feather")
 
     def start_logs_collection(self, session_id):
         """
@@ -41,7 +41,6 @@ class Device:
         Args:
             session_id (str): Unique logs collection session ID.
         """
-        print("started")
         self.update_device_config_parameter("current_session_id", session_id)
         self.update_device_config_parameter("logs_collection", True)
 
@@ -60,7 +59,6 @@ class Device:
 
     def update_device_config_parameter(self, key, value):
         config_path = self.device_config_instance.device_config_path
-        print(config_path)  
         with open(config_path, "r", encoding="utf-8") as f:
             data = json.load(f)
         data[key] = value

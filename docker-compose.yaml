@@ -4,7 +4,7 @@ services:
     ports:
       - "8050:8050"
     environment:
-      HOST: "0.0.0.0"
+      HOST: "192.168.100.49"
       PORT: "8050"
     volumes:
       - ./data:/app/data
