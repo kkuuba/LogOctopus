@@ -215,9 +215,9 @@ def update_device_config_parameter(path_to_config_file, key, value):
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description="Device watchdog")
-    parser.add_argument("device_config_file_path", help="Path to target device config file")
-    args = parser.parse_args()
+    arg_parser = argparse.ArgumentParser(description="Device watchdog")
+    arg_parser.add_argument("device_config_file_path", help="Path to target device config file")
+    args = arg_parser.parse_args()
     init_device_config = get_current_device_config(args.device_config_file_path)
     device_watchdog = DeviceWatchdog(init_device_config)
     while True:
@@ -233,4 +233,4 @@ if __name__ == '__main__':
             device_watchdog.test_log_files_access()
             update_device_config_parameter(args.device_config_file_path, "connected", device_watchdog.connection_status)
             update_device_config_parameter(args.device_config_file_path, "logs_available", device_watchdog.log_access)
-        sleep(5)
+        sleep(10)

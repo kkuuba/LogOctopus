@@ -1,6 +1,7 @@
 import os
 import shutil
 import json
+import subprocess
 import pandas as pd
 from backend.utils.log_snapshots_loader import LogSnapshotsLoader
 
@@ -16,8 +17,12 @@ class Device:
         self.log_access = self.device_config["logs_available"]
         self.device_name = self.device_config["device_name"]
         self.collection_ongoing = self.device_config["logs_collection"]
+        self.watchdog_process_pid = self.device_config["watchdog_process_pid"]
         self.log_snapshots = LogSnapshotsLoader(os.path.join("data", self.device_name)).load_all_log_snapshots()
         self.errors = pd.DataFrame({"time": [], "error_info": []})
+        if not self.is_process_active():
+            watchdog_process = subprocess.Popen(["python", "-m", "backend.services.device_watchdog", self.device_config_instance.device_config_path])
+            self.update_device_config_parameter("watchdog_process_pid", watchdog_process.pid)
 
     # def get_device_error_log(self):
     #     """
@@ -60,3 +65,10 @@ class Device:
         data[key] = value
         with open(config_path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
+
+    def is_process_active(self):
+        try:
+            os.kill(self.watchdog_process_pid, 0)
+            return True
+        except ProcessLookupError:
+            return False  # Process doesn't exist

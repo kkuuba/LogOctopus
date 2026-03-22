@@ -3,8 +3,8 @@ from dash.exceptions import PreventUpdate
 import dash_bootstrap_components as dbc
 import pandas as pd
 import os
+import time
 import signal
-import subprocess
 from flask import request, jsonify
 from urllib.parse import parse_qs
 import uuid
@@ -55,8 +55,6 @@ def upload_device(contents, cards):
     if device_config.validate_device_config():
         device_instance = Device(device_config_instance=device_config)
         devices.append(device_instance)
-        watchdog_process = subprocess.Popen(["python", "-m", "backend.services.device_watchdog", device_config.device_config_path])
-        device_instance.update_device_config_parameter("watchdog_process_pid", watchdog_process.pid)
         cards = generate_all_devices_cards_list(devices)
     else:
         device_config.remove_device_config()
@@ -111,6 +109,7 @@ def start_stop_selected(start, stop, selected, log_type_chart):
         log_snapshots = ConfigurationHelper.get_log_snapshots_list(get_current_devices(), log_type_chart)
         return generate_logs_snapshots_table(log_snapshots), False, None
     else:
+        time.sleep(5) 
         log_snapshots = ConfigurationHelper.get_log_snapshots_list(get_current_devices(), log_type_chart)
         return (generate_logs_snapshots_table(log_snapshots), 
                 True, 

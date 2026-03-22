@@ -16,7 +16,7 @@ class DeviceConfig:
 
     def save_config_file(self, file_content_str):
         decoded = base64.b64decode(file_content_str)
-        device_config_id = hashlib.sha256(decoded).hexdigest()
+        device_config_id = hashlib.sha256(json.loads(decoded)["device_name"].encode()).hexdigest()[:12]
         with open(f"/tmp/{device_config_id}.json", "wb") as f:
             f.write(decoded)
 
