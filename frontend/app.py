@@ -105,7 +105,7 @@ def start_stop_selected(start, stop, selected, log_type_chart):
         elif t == "stop-all" and device.device_config_id in selected_ids:
             session_id = device.device_config["current_session_id"]
             device.stop_logs_collection()
-            device.wait_for_log_collection_teardown()
+            device.wait_for_log_collection_teardown(timeout=60)
     if t == "start-all":
         log_snapshots = ConfigurationHelper.get_log_snapshots_list(get_current_devices(), log_type_chart)
         return generate_logs_snapshots_table(log_snapshots), False, None
@@ -383,7 +383,7 @@ def stop_logs_collection():
     for device in get_current_devices():
         if device.device_name in selected_devices:
             device.stop_logs_collection()
-            device.wait_for_log_collection_teardown()
+            device.wait_for_log_collection_teardown(timeout=60)
 
     return jsonify({
         "status": "logs collection stopped",
