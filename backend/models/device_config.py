@@ -47,11 +47,10 @@ class DeviceConfig:
         """
         Get content of device configuration in dictionary format.
         """
-        if self.device_config is None:
-            with open(self.device_config_path, encoding='utf-8', errors='ignore') as config_file:
-                config_file_content = json.load(config_file)
-                config_file.close()
-            self.device_config = config_file_content
+        with open(self.device_config_path, encoding='utf-8', errors='ignore') as config_file:
+            config_file_content = json.load(config_file)
+            config_file.close()
+        self.device_config = config_file_content
 
         return self.device_config
 

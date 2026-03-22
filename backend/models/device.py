@@ -1,6 +1,7 @@
 import os
 import shutil
 import json
+import time
 import subprocess
 import pandas as pd
 from backend.utils.log_snapshots_loader import LogSnapshotsLoader
@@ -20,7 +21,7 @@ class Device:
         self.watchdog_process_pid = self.device_config["watchdog_process_pid"]
         self.log_snapshots = LogSnapshotsLoader(os.path.join("data", self.device_name)).load_all_log_snapshots()
         self.errors = pd.DataFrame({"time": [], "error_info": []})
-        if not self.is_process_active():
+        if  self.watchdog_process_pid == 0 or not self.is_process_active():
             watchdog_process = subprocess.Popen(["python", "-m", "backend.services.device_watchdog", self.device_config_instance.device_config_path])
             self.update_device_config_parameter("watchdog_process_pid", watchdog_process.pid)
 
@@ -72,3 +73,11 @@ class Device:
             return True
         except ProcessLookupError:
             return False  # Process doesn't exist
+
+    def wait_for_log_collection_teardown(self, timeout=30):
+        start_time = time.time()
+        while start_time - time.time() < timeout:
+            device_config = self.device_config_instance.get_device_config()
+            if device_config["current_session_id"] == "no_active_session":
+                break
+            time.sleep(3)

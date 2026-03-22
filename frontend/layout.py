@@ -256,9 +256,8 @@ layout_view = dbc.Container([
     device_modal_view,
     dcc.Loading(
         id="loading-snapshots",
-        type="circle",
+        type="cube",
         children=session_modal_view),
-    # session_modal_view,
     rest_api_modal
 ], fluid=True)
 

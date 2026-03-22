@@ -97,20 +97,19 @@ def start_stop_selected(start, stop, selected, log_type_chart):
     """
     t = ctx.triggered_id
     selected_ids = {v[0] for v in selected if v}
+    session_id = uuid.uuid1().hex[:12]
     for device in get_current_devices():
         if t == "start-all" and device.device_config_id in selected_ids:
-            session_id = uuid.uuid1().hex[:12]
             device.start_logs_collection(session_id)
 
         elif t == "stop-all" and device.device_config_id in selected_ids:
             session_id = device.device_config["current_session_id"]
             device.stop_logs_collection()
+            device.wait_for_log_collection_teardown()
     if t == "start-all":
         log_snapshots = ConfigurationHelper.get_log_snapshots_list(get_current_devices(), log_type_chart)
         return generate_logs_snapshots_table(log_snapshots), False, None
     else:
-        for device in get_current_devices():
-            wait_for_logs_collection_session_teardown(device, 30)
         log_snapshots = ConfigurationHelper.get_log_snapshots_list(get_current_devices(), log_type_chart)
         return (generate_logs_snapshots_table(log_snapshots), 
                 True, 
@@ -342,14 +341,6 @@ def get_current_logs_snapshots_list(search, log_type_chart):
         return ConfigurationHelper.get_log_snapshots_list(get_current_devices(), log_type_chart)
     else:
         return ConfigurationHelper.get_filtered_log_snapshots_list(get_current_devices(), search_param, search_value, log_type_chart)
-
-def wait_for_logs_collection_session_teardown(device, timeout=10):
-    start_time = time.time()
-    while start_time - time.time() < timeout:
-        device_config = device.device_config_instance.get_device_config()
-        if device_config["current_session_id"] == "no_active_session":
-            break
-        time.sleep(3)
 
 @server.route("/api/start-logs-collection", methods=["POST"])
 def start_logs_collection():
