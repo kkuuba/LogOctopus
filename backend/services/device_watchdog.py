@@ -228,6 +228,7 @@ if __name__ == '__main__':
         if not current_device_config["logs_collection"] and device_watchdog.collection_ongoing:
             device_watchdog.stop_logs_collection()
             device_watchdog.save_log_snapshots(current_device_config["current_session_id"])
+            update_device_config_parameter(args.device_config_file_path, "current_session_id", "no_active_session")
         if not device_watchdog.collection_ongoing:
             device_watchdog.get_connection_status()
             device_watchdog.test_log_files_access()
