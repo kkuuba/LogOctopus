@@ -24,7 +24,8 @@ class DeviceConfig:
 
     def validate_device_config(self):
         """
-        Validated JSON structure of provided configuration file and copy file to target desticnation directory.
+        Validated JSON structure of provided configuration file and copy file to target destination directory.
+        Add runtime paramters to configuraiton file to store current state of device watchdog.
         """
         try:
             with open(self.device_config_path, encoding='utf-8', errors='ignore') as config_file:
@@ -72,3 +73,11 @@ class DeviceConfig:
             logging.info("Configuraiton file -> '%s' was successfuly deleted", self.device_config_path)
         else:
             logging.error("Configuraiton file -> '%s' not exists ", self.device_config_path)
+
+    def update_runtime_parameter(self, key, value):
+        config_path = self.device_config_path
+        with open(config_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        data[key] = value
+        with open(config_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)

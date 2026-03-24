@@ -23,7 +23,7 @@ class Device:
         self.errors = pd.DataFrame({"time": [], "error_info": []})
         if  self.watchdog_process_pid == 0 or not self.is_process_active():
             watchdog_process = subprocess.Popen(["python", "-m", "backend.services.device_watchdog", self.device_config_instance.device_config_path])
-            self.update_device_config_parameter("watchdog_process_pid", watchdog_process.pid)
+            self.device_config_instance.update_runtime_parameter("watchdog_process_pid", watchdog_process.pid)
 
     def get_device_error_log(self):
         """
@@ -41,14 +41,14 @@ class Device:
         Args:
             session_id (str): Unique logs collection session ID.
         """
-        self.update_device_config_parameter("current_session_id", session_id)
-        self.update_device_config_parameter("logs_collection", True)
+        self.device_config_instance.update_runtime_parameter("current_session_id", session_id)
+        self.device_config_instance.update_runtime_parameter("logs_collection", True)
 
     def stop_logs_collection(self):
         """
         Stop logs collection thread on target device.
         """
-        self.update_device_config_parameter("logs_collection", False)
+        self.device_config_instance.update_runtime_parameter("logs_collection", False)
 
     def remove_device_data(self):
         """
@@ -57,15 +57,13 @@ class Device:
         device_directory_path = f"data/{self.device_name}"
         shutil.rmtree(device_directory_path)
 
-    def update_device_config_parameter(self, key, value):
-        config_path = self.device_config_instance.device_config_path
-        with open(config_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        data[key] = value
-        with open(config_path, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
-
     def is_process_active(self):
+        """
+        Validate if watchdog process is active.
+
+        Returns:
+            bool: True if watchog process is active in system, otherwise return False.
+        """
         try:
             os.kill(self.watchdog_process_pid, 0)
             return True
@@ -73,6 +71,12 @@ class Device:
             return False  # Process doesn't exist
 
     def wait_for_log_collection_teardown(self, timeout=30):
+        """
+        Wait for log collection session to be finished correctly.
+
+        Args:
+            timeout (int): Max timeout for log session teardown to be finished.
+        """
         start_time = time.time()
         while start_time - time.time() < timeout:
             device_config = self.device_config_instance.get_device_config()

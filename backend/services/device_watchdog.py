@@ -202,11 +202,28 @@ class DeviceWatchdog:
 
 
 def get_current_device_config(path_to_config_file):
+    """
+    Get current content of device JSON configuraiton file.
+
+    Args:
+        path_to_config_file (str): Target path to JSON configuration file.
+
+    Returns:
+        dict: Currnet content of device config.
+    """
     with open(path_to_config_file, "r") as f:
         return json.load(f)
 
 
-def update_device_config_parameter(path_to_config_file, key, value):    
+def update_device_config_parameter(path_to_config_file, key, value):
+    """
+    Update target runtime parameter in device configuration file.
+
+    Args:
+        path_to_config_file (str): Target path to JSON configuration file.
+        key (str): Target paramater name for update.
+        value (str): Target value for paramter to update.
+    """  
     with open(path_to_config_file, "r", encoding="utf-8") as f:
         data = json.load(f)
     data[key] = value
@@ -235,4 +252,4 @@ if __name__ == '__main__':
         update_device_config_parameter(args.device_config_file_path, "logs_available", device_watchdog.log_access)
         errors_file_path = f"data/{device_watchdog.device_name}/errors.feather"
         device_watchdog.errors.to_feather(errors_file_path)
-        sleep(10)
+        sleep(5)
