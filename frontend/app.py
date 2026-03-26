@@ -1,410 +1,283 @@
-from dash import Dash, dcc, Input, Output, State, ctx, ALL
-from dash.exceptions import PreventUpdate
-import dash_bootstrap_components as dbc
-import pandas as pd
+"""
+LogOctopus – Flask REST API backend
+Replaces the Dash app.py with pure REST endpoints consumable by the React frontend.
+"""
+
 import os
-import time
 import signal
-from flask import request, jsonify
-from urllib.parse import parse_qs
 import uuid
-from frontend.layout import (layout_view, 
-                             generate_logs_snapshots_table, 
-                             generate_all_devices_cards_list, 
-                             generate_device_info_modal, 
-                             generate_log_content_modal, 
-                             get_all_devices_statuses,
-                             generate_chart_content_modal,
-                             create_session_info_content_modal,
-                             export_charts_div_to_html)
+
+from flask import Flask, jsonify, request
+from flask_cors import CORS
+
 from backend.models.device import Device
 from backend.models.device_config import DeviceConfig
 from backend.utils.device_config_loader import DeviceConfigLoader
 from backend.utils.config_helper import ConfigurationHelper
 
 
-HOST = os.getenv("HOST")
-PORT = int(os.getenv("PORT"))
+HOST = os.getenv("HOST", "localhost")
+PORT = int(os.getenv("PORT", 8050))
+
+app = Flask(__name__)
+CORS(app)  # allow the React dev-server / built bundle to call the API
 
 
-app = Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP])
-app.layout = layout_view
-server = app.server
+# ── helpers ───────────────────────────────────────────────────────────────────
 
-
-def get_current_devices():
+def get_current_devices() -> list[Device]:
+    """Load all persisted device instances from the data directory."""
     return DeviceConfigLoader("data").load_all_devices()
 
 
-@app.callback(
-    Output("config-alert", "is_open"),
-    Output("devices-container", "children", allow_duplicate=True),
-    Input("upload-json", "contents"),
-    State("devices-container", "children"),
-    prevent_initial_call=True
-)
-def upload_device(contents, cards):
-    """
-    Upload new device based on provided config file.
-    """
-    cards = cards or []
-    devices = get_current_devices()
-    show_incorrect_config_alert = False
-    config_file_content = contents.split(",", 1)[1]
-    device_config = DeviceConfig(config_file_content)
-    if device_config.validate_device_config():
-        device_instance = Device(device_config_instance=device_config)
-        devices.append(device_instance)
-        cards = generate_all_devices_cards_list(devices)
-    else:
-        device_config.remove_device_config()
-        show_incorrect_config_alert = True
-
-    return show_incorrect_config_alert, cards
-
-
-@app.callback(
-    Output({"type": "status-connection", "index": ALL}, "children"),
-    Output({"type": "status-access", "index": ALL}, "children"),
-    Output({"type": "status-collection", "index": ALL}, "children"),
-    Input("device-refresh-interval", "n_intervals"),
-    State({"type": "status-connection", "index": ALL}, "id"),
-    prevent_initial_call=True,
-)
-def refresh_devices(_, conn_ids):
-    """
-    Refresh all device statuses (connection, log access, logs collection state).
-    """
-    if len(conn_ids) != len(get_current_devices()):
-        raise PreventUpdate
-
-    return get_all_devices_statuses(get_current_devices())
-
-
-@app.callback(
-    Output("log-snapshots-container", "children", allow_duplicate=True),  # <- new output
-    Output("session-modal", "is_open"),
-    Output("session-modal-body", "children"),
-    Input("start-all", "n_clicks"),
-    Input("stop-all", "n_clicks"),
-    State({"type": "device-select", "index": ALL}, "value"),
-    State('log-type-chart', 'value'),
-    prevent_initial_call=True
-)
-def start_stop_selected(start, stop, selected, log_type_chart):
-    """
-    Start or stop logs collection on selected devices.
-    """
-    t = ctx.triggered_id
-    selected_ids = {v[0] for v in selected if v}
-    session_id = uuid.uuid1().hex[:12]
-    for device in get_current_devices():
-        if t == "start-all" and device.device_config_id in selected_ids:
-            device.start_logs_collection(session_id)
-
-        elif t == "stop-all" and device.device_config_id in selected_ids:
-            session_id = device.device_config["current_session_id"]
-            device.stop_logs_collection()
-            device.wait_for_log_collection_teardown(timeout=60)
-    if t == "start-all":
-        log_snapshots = ConfigurationHelper.get_log_snapshots_list(get_current_devices(), log_type_chart)
-        return generate_logs_snapshots_table(log_snapshots), False, None
-    else:
-        log_snapshots = ConfigurationHelper.get_log_snapshots_list(get_current_devices(), log_type_chart)
-        return (generate_logs_snapshots_table(log_snapshots), 
-                True, 
-                create_session_info_content_modal(
-                    text_logs_url=f"http://{HOST}:{PORT}/?search_param=Session%20ID&search_value={session_id}&log_type=text",
-                    chart_logs_url=f"http://{HOST}:{PORT}/?search_param=Session%20ID&search_value={session_id}&log_type=chart"
-                    ))
-
-
-@app.callback(
-    Output("devices-container", "children", allow_duplicate=True),
-    Input("remove-selected", "n_clicks"),
-    State({"type": "device-select", "index": ALL}, "value"),
-    prevent_initial_call=True
-)
-def remove_selected(_, selected):
-    """
-    Remove all selected devices.
-    """
-    ids_to_remove = {v[0] for v in selected if v}
-    devices = get_current_devices()
-    for device in devices:
-        if device.device_config_id in ids_to_remove:
-            os.kill(device.device_config["watchdog_process_pid"], signal.SIGTERM)
-            device.remove_device_data()
-            devices.remove(device)
-
-    return generate_all_devices_cards_list(devices)
-
-
-@app.callback(
-    Output("logs-modal", "is_open"),
-    Output("modal-body", "children", allow_duplicate=True),
-    Input({"type": "view-log-btn", "index": ALL}, "n_clicks"),
-    Input("view-selected", "n_clicks"),
-    Input("close-modal", "n_clicks"),
-    State({"type": "log-check", "index": ALL}, "value"),
-    State('log-type-chart', 'value'),
-    State("url", "search"),
-    prevent_initial_call=True
-)
-def show_logs(view_clicks, view_selected, close_click, checked, log_type_chart, search):
-    """
-    Show log content for selected or single log snapshots.
-    """
-    log_snapshots = get_current_logs_snapshots_list(search, log_type_chart)
-    t = ctx.triggered_id
-    if t == "close-modal" or t is None:
-        return False, None
-    if t == "view-selected":
-        selected_log_snapshots = []
-        for selected_id in [i for i, v in enumerate(checked) if v]:
-            selected_log_snapshots.append(log_snapshots[selected_id])
-            log_content = ConfigurationHelper.get_log_content_for_selected_snapshots(selected_log_snapshots)
-        if log_type_chart:
-            return True, generate_chart_content_modal(selected_log_snapshots)
-        if len(selected_log_snapshots) == 0:
-            return False, None
-    elif t["type"] == "view-log-btn" and not set(view_clicks) == {None}:
-        log_content = ConfigurationHelper.get_log_content_for_selected_snapshots([log_snapshots[t["index"]]])
-        if log_type_chart:
-            return True, generate_chart_content_modal([log_snapshots[t["index"]]])
-    else:
-        return False, None
-
-    return True, generate_log_content_modal(log_content, False)
-
-
-@app.callback(
-    Output("log-snapshots-container", "children", allow_duplicate=True),
-    Input('log-type-chart', 'value'),
-    State("url", "search"),
-    prevent_initial_call=True
-)
-def switch_log_type_for_snapshots_list(log_type_chart, search):
-    log_snapshots = get_current_logs_snapshots_list(search, log_type_chart)
-    return generate_logs_snapshots_table(log_snapshots)
-
-
-@app.callback(
-    Output("url", "search"),
-    Input("filter-btn", "n_clicks"),
-    State("search-param", "value"),
-    State("search-value", "value"),
-    State("log-type-chart", "value"),
-    prevent_initial_call=True
-)
-def update_url(_, search_param, search_value, log_type_chart):
-    """
-    Update URL based on filter value provided on search fields.
-    """
-    log_type = "chart" if log_type_chart else "text"
-    return f"?search_param={search_param}&search_value={search_value}&log_type={log_type}"
-
-@app.callback(
-    Output("log-snapshots-container", "children"),
-    Output("log-type-chart", "value"),
-    Input("url", "search")
-)
-def load_filtered_snapshots_based_on_url(search):
-    """
-    Update log snapshots list view based on filter values in provided URL.
-    """
-    params = parse_qs(search.lstrip("?"))
-    log_type_chart = True if params.get("log_type", [None])[0] == "chart" else False
-    log_snapshots = get_current_logs_snapshots_list(search, log_type_chart)
-
-    return generate_logs_snapshots_table(log_snapshots), log_type_chart
-
-@app.callback(
-    Output("device-modal", "is_open"),
-    Output("device-modal-body", "children"),
-    Input({"type": "device-info-btn", "index": ALL}, "n_clicks"),
-    Input("close-device-modal", "n_clicks"),
-    prevent_initial_call=True
-)
-def device_details(info_clicks, _):
-    """
-    Open modal with device paramters info.
-    """
-    t = ctx.triggered_id
-    if t == "close-device-modal" or t is None:
-        return False, None
-    if isinstance(t, dict) and t.get("type") == "device-info-btn" and not set(info_clicks) == {None}:
-        target_device = get_target_device_instance_to_update(t["index"])
-        if target_device:
-            return True, generate_device_info_modal(target_device)
-        return False, None
-    return False, None
-
-@app.callback(
-    Output("download-component", "data"),
-    Input("download-logs", "n_clicks"),
-    State("modal-body", "children"),
-    State('log-type-chart', 'value'),
-    prevent_initial_call=True
-)
-def download_logs(_, modal_body_data, log_type_chart):
-    """
-    Download log content for single or selected log snashots in HTML format.
-    """
-    if log_type_chart:
-        export_charts_div_to_html(modal_body_data, "data/charts.html")
-        return dcc.send_file("data/charts.html", "charts.html")
-    return dcc.send_data_frame(pd.DataFrame(modal_body_data["props"]["data"]).to_html, "logs.html", index=False)
-
-@app.callback(
-    Output("modal-body", "children", allow_duplicate=True),
-    Input('color-mode-switch', 'value'),
-    State({"type": "log-check", "index": ALL}, "value"),
-    State('log-type-chart', 'value'),
-    State("url", "search"),
-    prevent_initial_call=True
-)
-def switch_log_table_color_mode_state(color_mode, checked, log_type_chart, search):
-    """
-    Enable of disable coloring mode for text log content table.
-    """
-    log_snapshots = get_current_logs_snapshots_list(search, log_type_chart)
-    selected_log_snapshots = []
-    for selected_id in [i for i, v in enumerate(checked) if v]:
-        selected_log_snapshots.append(log_snapshots[selected_id])
-        log_content = ConfigurationHelper.get_log_content_for_selected_snapshots(selected_log_snapshots)
-    if log_type_chart:
-        return True, generate_chart_content_modal(selected_log_snapshots)
-    if color_mode:
-        return True, generate_log_content_modal(log_content, True)
-    return True, generate_log_content_modal(log_content, False)
-
-@app.callback(
-    Output("devices-container", "children", allow_duplicate=True),
-    Output("log-snapshots-container", "children", allow_duplicate=True),
-    Input("startup-trigger", "n_intervals"),
-    State('log-type-chart', 'value'),
-    State("url", "search"),
-    prevent_initial_call=True
-)
-def on_app_start(n, log_type_chart, url_search):
-    """
-    Update device list and log snapshots table based on source files.
-    """
-    log_snapshots = get_current_logs_snapshots_list(url_search, log_type_chart)
-    return generate_all_devices_cards_list(get_current_devices()), generate_logs_snapshots_table(log_snapshots)
-
-@app.callback(
-    Output("api-modal", "is_open"),
-    Input("open-api-modal", "n_clicks"),
-    Input("close-api-modal", "n_clicks"),
-    State("api-modal", "is_open"),
-)
-def open_rest_api_info_modal(open_click, close_click, is_open):
-    """
-    Open modal with info about REST API endpoints.
-    """
-    if open_click or close_click:
-        return not is_open
-    return is_open
-
-def get_target_device_instance_to_update(device_id):
-    """
-    Get Device object based on provided device ID.
-
-    Args:
-        device_id (int): Target device id.
-
-    Returns:
-        (Device): Instance of target Device object.
-    """
+def get_target_device(device_id: str) -> Device | None:
+    """Return a Device whose config ID matches *device_id*, or None."""
     for device in get_current_devices():
         if device.device_config_id == device_id:
             return device
     return None
 
-def get_current_logs_snapshots_list(search, log_type_chart):
-    """
-    Get current list of log snapshots based on URL search query and active log type.
 
-    Args:
-        search (str): Current active URL search query.
-        log_type_chart (bool): Current active log type.
+def device_to_dict(device: Device) -> dict:
+    """Serialise a Device to a JSON-safe dict for the frontend."""
 
-    Returns:
-        (list): List of current log snapshots based on provided paramters.
+    return {
+        "id":          device.device_config_id,
+        "name":        device.device_name,
+        "connection":  device.connection_status,
+        "logAccess":   device.log_access,
+        "collecting":  device.collection_ongoing,
+        "config":      device.device_config,
+    }
+
+
+def snapshot_to_dict(snapshot) -> dict:
+    """Serialise a log snapshot object to a JSON-safe dict."""
+    return {
+        "id":          snapshot.id,
+        "deviceName":  snapshot.device_name,
+        "logName":     snapshot.log_name,
+        "startTime":   str(snapshot.start_time),
+        "finishTime":  str(snapshot.finish_time),
+        "duration":    snapshot.logs_collection_duration,
+        "sizeKb":      int(snapshot.size_in_bytes/1000),
+        "sessionId":   snapshot.session_id,
+        "isChart":     snapshot.log_type
+    }
+
+
+def _bad(msg: str, code: int = 400):
+    return jsonify({"error": msg}), code
+
+
+# ── devices ───────────────────────────────────────────────────────────────────
+
+@app.get("/api/devices")
+def list_devices():
     """
-    params = parse_qs(search.lstrip("?"))
-    search_param = params.get("search_param", [None])[0]
-    search_value = params.get("search_value", [None])[0]
-    if not search_param or not search_value:
-        return ConfigurationHelper.get_log_snapshots_list(get_current_devices(), log_type_chart)
+    Return the list of all managed devices with their current statuses.
+
+    Response 200:
+        [{ id, name, connection, logAccess, collecting, config }, …]
+    """
+    return jsonify([device_to_dict(d) for d in get_current_devices()])
+
+
+@app.post("/api/devices")
+def add_device():
+    """
+    Add a new device from a base-64-encoded JSON config payload.
+
+    Request body:
+        { "contents": "<base64-encoded config file content>" }
+
+    Response 201:
+        { "device": { … } }
+    Response 422:
+        { "error": "invalid_config" }
+    """
+    body = request.get_json(force=True)
+    contents = body.get("contents", "")
+
+    # The frontend sends "data:<mime>;base64,<data>" – strip the prefix if present
+    if "," in contents:
+        contents = contents.split(",", 1)[1]
+
+    device_config = DeviceConfig(contents)
+    if not device_config.validate_device_config():
+        device_config.remove_device_config()
+        return _bad("invalid_config", 422)
+
+    device_instance = Device(device_config_instance=device_config)
+    return jsonify({"device": device_to_dict(device_instance)}), 201
+
+
+@app.delete("/api/devices/<device_id>")
+def remove_device(device_id: str):
+    """
+    Remove a single device and kill its watchdog process.
+
+    Response 204: (no body)
+    Response 404: { "error": "not_found" }
+    """
+    device = get_target_device(device_id)
+    if not device:
+        return _bad("not_found", 404)
+
+    pid = device.device_config.get("watchdog_process_pid")
+    if pid:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+
+    device.remove_device_data()
+    return "", 204
+
+
+@app.get("/api/devices/<device_id>")
+def get_device(device_id: str):
+    """
+    Return details for a single device.
+
+    Response 200: { id, name, connection, logAccess, collecting, config }
+    Response 404: { "error": "not_found" }
+    """
+    device = get_target_device(device_id)
+    if not device:
+        return _bad("not_found", 404)
+    return jsonify(device_to_dict(device))
+
+
+# ── log snapshots ─────────────────────────────────────────────────────────────
+
+@app.get("/api/snapshots")
+def list_snapshots():
+    """
+    Return log snapshots, optionally filtered.
+
+    Query params:
+        search_param  – "Device" | "Log Name" | "Session ID"
+        search_value  – filter value
+        log_type      – "text" | "chart"   (default: "text")
+
+    Response 200:
+        [{ id, deviceName, logName, startTime, finishTime, duration, sizeKb, sessionId, isChart }, …]
+    """
+    search_param  = request.args.get("search_param")
+    search_value  = request.args.get("search_value")
+    log_type      = request.args.get("log_type", "text")
+    is_chart      = log_type == "chart"
+
+    devices = get_current_devices()
+
+    if search_param and search_value:
+        snapshots = ConfigurationHelper.get_filtered_log_snapshots_list(
+            devices, search_param, search_value, is_chart
+        )
     else:
-        return ConfigurationHelper.get_filtered_log_snapshots_list(get_current_devices(), search_param, search_value, log_type_chart)
+        snapshots = ConfigurationHelper.get_log_snapshots_list(devices, is_chart)
 
-@server.route("/api/start-logs-collection", methods=["POST"])
+    return jsonify([snapshot_to_dict(s) for s in snapshots])
+
+
+@app.get("/api/snapshots/<snapshot_id>/content")
+def get_snapshot_content(snapshot_id: str):
+    """
+    Return the full log content for a single snapshot.
+
+    Response 200:
+        { "rows": [{ timestamp, log_name, content }, …] }   (text logs)
+      OR
+        { "rows": [{ time, content }, …] }                   (chart data)
+    Response 404: { "error": "not_found" }
+    """
+    is_chart  = request.args.get("log_type", "text") == "chart"
+    devices   = get_current_devices()
+    snapshots = ConfigurationHelper.get_log_snapshots_list(devices, is_chart)
+    target = next((s for s in snapshots if s.id == snapshot_id), None)
+    if not target:
+        return _bad("not_found", 404)
+
+    rows = ConfigurationHelper.get_log_content_for_selected_snapshots([target]).to_dict(orient="records")
+    return jsonify({"rows": rows})
+
+
+# ── log collection ────────────────────────────────────────────────────────────
+
+@app.post("/api/start-logs-collection")
 def start_logs_collection():
     """
-    Start logs collection REST API endpoint action.
+    Start log collection on the specified devices.
+
+    Request body:
+        { "selected_devices": ["device_name_1", …] }
+
+    Response 200:
+        { "status": "logs collection started", "session_id": "…" }
     """
-    request_data = request.get_json()
-    selected_devices = request_data.get("selected_devices", [])
+    body             = request.get_json(force=True)
+    selected_devices = body.get("selected_devices", [])
 
     if not isinstance(selected_devices, list):
-        return jsonify({"error": "selected_devices must be a list"}), 400
+        return _bad("selected_devices must be a list")
 
-    session_id = uuid.uuid1().hex[:12] 
-
+    session_id = uuid.uuid1().hex[:12]
     for device in get_current_devices():
         if device.device_name in selected_devices:
             device.start_logs_collection(session_id)
 
-    return jsonify({
-        "status": "logs collection started",
-        "session_id": session_id
-    })
+    return jsonify({"status": "logs collection started", "session_id": session_id})
 
 
-@server.route("/api/stop-logs-collection", methods=["POST"])
+@app.post("/api/stop-logs-collection")
 def stop_logs_collection():
     """
-    Stop logs collection and save collected data REST API endpoint action.
+    Stop log collection on the specified devices.
+
+    Request body:
+        { "selected_devices": ["device_name_1", …], "session_id": "…" }
+
+    Response 200:
+        {
+          "status": "logs collection stopped",
+          "session_id": "…",
+          "text_logs_url": "…",
+          "chart_logs_url": "…"
+        }
     """
-    request_data = request.get_json()
-    selected_devices = request_data.get("selected_devices", [])
-    session_id = request_data.get("session_id", "")
+    body             = request.get_json(force=True)
+    selected_devices = body.get("selected_devices", [])
+    session_id       = body.get("session_id", "")
 
     if not isinstance(selected_devices, list):
-        return jsonify({"error": "selected_devices must be a list"}), 400
-
+        return _bad("selected_devices must be a list")
     if not isinstance(session_id, str):
-        return jsonify({"error": "session_id must be a string"}), 400
+        return _bad("session_id must be a string")
 
     for device in get_current_devices():
         if device.device_name in selected_devices:
             device.stop_logs_collection()
             device.wait_for_log_collection_teardown(timeout=60)
 
+    base = f"http://{HOST}:{PORT}"
     return jsonify({
-        "status": "logs collection stopped",
-        "text_logs_url": f"http://{HOST}:{PORT}/?search_param=Session%20ID&search_value={session_id}&log_type=text",
-        "chart_logs_url": f"http://{HOST}:{PORT}/?search_param=Session%20ID&search_value={session_id}&log_type=chart"
+        "status":         "logs collection stopped",
+        "session_id":     session_id,
+        "text_logs_url":  f"{base}/?search_param=Session%20ID&search_value={session_id}&log_type=text",
+        "chart_logs_url": f"{base}/?search_param=Session%20ID&search_value={session_id}&log_type=chart",
     })
 
 
+# ── entry point ───────────────────────────────────────────────────────────────
+
 if __name__ == "__main__":
-    app.run(debug=False)
+    app.run(host=HOST, port=PORT, debug=True, use_reloader=False)
 
 
-# TODO 
-# Add settings modal which will be open via button on home page #
-    # info about CPU usage
-    # info about ram usage
-    # info about available storage
-    # contionus monitoring switch
-    # log rotation settings
-
-# Investgiate a way to create container with https based on dash app
-# Create some solution for testing app via github container
-# Add backend tests for each module
-# Add frontend tests
+# TODO
+# Add /api/settings  endpoint (CPU / RAM / storage info, rotation settings)
+# Add /api/health    endpoint for monitoring
+# Investigate HTTPS transport layer
+# Add backend unit tests per module
+# GitHub Actions container for integration testing
