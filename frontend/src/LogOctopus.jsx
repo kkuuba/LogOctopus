@@ -1,7 +1,12 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
-const API_BASE = (import.meta?.env?.VITE_API_BASE) || "http://localhost:8050";
+// Prefer the build-time env var (set in docker-compose VITE_API_BASE).
+// Fall back to the current browser's hostname + port 8100 so the app works
+// when opened from any device on the network (not just localhost).
+const API_BASE =
+  (import.meta?.env?.VITE_API_BASE) ||
+  `${window.location.protocol}//${window.location.hostname}:8100`;
 
 // Plotly is expected as a global (loaded via CDN script tag in index.html):
 // <script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
@@ -266,7 +271,7 @@ function LogContentView({ rows, isChart, colorMode, chartGroups }) {
       >
         <thead>
           <tr>
-            {["Timestamp", "Log Name", "Content"].map((h) => (
+            {["Timestamp", "Device", "Log Name", "Content"].map((h) => (
               <th
                 key={h}
                 style={{
@@ -296,6 +301,9 @@ function LogContentView({ rows, isChart, colorMode, chartGroups }) {
               >
                 <td style={{ padding: "7px 12px", color: "var(--muted)", whiteSpace: "nowrap" }}>
                   {r.time}
+                </td>
+                <td style={{ padding: "7px 12px", whiteSpace: "nowrap" }}>
+                  {r.device_name ? <Badge color="default">{r.device_name}</Badge> : null}
                 </td>
                 <td style={{ padding: "7px 12px" }}>
                   <Badge color="cyan">{r.log_name}</Badge>
@@ -1694,7 +1702,10 @@ export default function App() {
       if (isChart) {
         setChartGroups(results);
       } else {
-        setLogRows(results.flatMap((r) => r.rows));
+        // Attach device_name from snapInfo so the table and exports can show it
+        setLogRows(results.flatMap((r) =>
+          r.rows.map((row) => ({ ...row, device_name: r.snapInfo.deviceName || "" }))
+        ));
       }
     } catch (e) {
       addToast(`Failed to load content: ${e.message}`);
@@ -1720,16 +1731,115 @@ export default function App() {
     fetchSnapshots("", "", isChart);
   };
 
+  const [downloadFormat, setDownloadFormat] = useState("csv");
+
   const downloadLogs = () => {
     if (isChart) {
       addToast("Chart export requires backend — use the API endpoint directly.", "info");
       return;
     }
-    const csv = "Time,Log Name,Content\n" + logRows.map((r) => `"${r.time}","${r.log_name}","${r.content}"`).join("\n");
+    if (!logRows || logRows.length === 0) {
+      addToast("No log rows to export.", "info");
+      return;
+    }
+
+    let content, mimeType, filename;
+
+    const esc = (s) => String(s || "").replace(/"/g, '""');
+    const escHtml = (s) => String(s || "")
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+    if (downloadFormat === "csv") {
+      content =
+        "Time,Device,Log Name,Content\n" +
+        logRows
+          .map((r) => `"${esc(r.time)}","${esc(r.device_name)}","${esc(r.log_name)}","${esc(r.content)}"`)
+          .join("\n");
+      mimeType = "text/csv";
+      filename = "logs.csv";
+    } else if (downloadFormat === "tsv") {
+      content =
+        "Time\tDevice\tLog Name\tContent\n" +
+        logRows
+          .map((r) => `${r.time||""}\t${r.device_name||""}\t${r.log_name||""}\t${(r.content||"").replace(/\t/g," ")}`)
+          .join("\n");
+      mimeType = "text/tab-separated-values";
+      filename = "logs.tsv";
+    } else if (downloadFormat === "json") {
+      content = JSON.stringify(
+        logRows.map((r) => ({ time: r.time, device_name: r.device_name, log_name: r.log_name, content: r.content })),
+        null,
+        2
+      );
+      mimeType = "application/json";
+      filename = "logs.json";
+    } else if (downloadFormat === "txt") {
+      content = logRows
+        .map((r) => `[${r.time||""}] [${r.device_name||""}] [${r.log_name||""}] ${r.content||""}`)
+        .join("\n");
+      mimeType = "text/plain";
+      filename = "logs.txt";
+    } else if (downloadFormat === "html") {
+      const rows = logRows.map((r) => {
+        const isErr  = (r.content || "").startsWith("ERROR");
+        const isWarn = (r.content || "").startsWith("WARN");
+        const color  = isErr ? "#ff6666" : isWarn ? "#ffc800" : "#e8eaf0";
+        return `    <tr>
+      <td style="white-space:nowrap;color:#6b7280">${escHtml(r.time)}</td>
+      <td><span style="background:#1a2235;border:1px solid rgba(255,255,255,0.12);border-radius:4px;padding:2px 7px;font-size:11px;color:#e8eaf0">${escHtml(r.device_name)}</span></td>
+      <td><span style="background:rgba(0,229,200,0.12);border:1px solid rgba(0,229,200,0.25);border-radius:4px;padding:2px 7px;font-size:11px;color:#00e5c8">${escHtml(r.log_name)}</span></td>
+      <td style="color:${color}">${escHtml(r.content)}</td>
+    </tr>`;
+      }).join("\n");
+      content = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>LogOctopus Export</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #080d1c; color: #e8eaf0; font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 12px; }
+  header { background: #0d1426; border-bottom: 1px solid rgba(255,255,255,0.08); padding: 16px 24px; display: flex; align-items: center; gap: 12px; }
+  header h1 { margin: 0; font-size: 18px; font-weight: 800; letter-spacing: -0.02em; }
+  header p  { margin: 0; font-size: 11px; color: #6b7280; }
+  .meta { padding: 12px 24px; font-size: 11px; color: #6b7280; border-bottom: 1px solid rgba(255,255,255,0.06); }
+  table { width: 100%; border-collapse: collapse; }
+  th { padding: 8px 16px; text-align: left; color: #6b7280; border-bottom: 1px solid rgba(255,255,255,0.08); font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; position: sticky; top: 0; background: #080d1c; }
+  td { padding: 7px 16px; border-bottom: 1px solid rgba(255,255,255,0.04); vertical-align: middle; }
+  tr:hover td { background: rgba(255,255,255,0.02); }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>🐙 LogOctopus</h1>
+    <p>Exported ${logRows.length} rows &mdash; ${new Date().toISOString()}</p>
+  </div>
+</header>
+<div class="meta">Generated by LogOctopus &bull; ${logRows.length} entries</div>
+<table>
+  <thead>
+    <tr>
+      <th>Timestamp</th><th>Device</th><th>Log Name</th><th>Content</th>
+    </tr>
+  </thead>
+  <tbody>
+${rows}
+  </tbody>
+</table>
+</body>
+</html>`;
+      mimeType = "text/html";
+      filename = "logs.html";
+    }
+
     const a = document.createElement("a");
-    a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
-    a.download = "logs.csv";
+    a.href = URL.createObjectURL(new Blob([content], { type: mimeType }));
+    a.download = filename;
     a.click();
+    URL.revokeObjectURL(a.href);
+    addToast(`Downloaded ${filename} (${logRows.length} rows).`, "success");
   };
 
   // Modal title with chart count info
@@ -1975,7 +2085,31 @@ export default function App() {
         footer={
           <>
             {!isChart && <Toggle checked={colorMode} onChange={setColorMode} labelLeft="Raw" labelRight="Color mode" />}
-            {!isChart && <Btn variant="subtle" onClick={downloadLogs}>⬇ Download CSV</Btn>}
+            {!isChart && (
+              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <select
+                  value={downloadFormat}
+                  onChange={(e) => setDownloadFormat(e.target.value)}
+                  style={{
+                    background: "var(--card-bg)",
+                    border: "1px solid var(--border)",
+                    borderRadius: 7,
+                    color: "var(--text)",
+                    fontFamily: "var(--font-mono)",
+                    fontSize: 12,
+                    padding: "6px 10px",
+                    cursor: "pointer",
+                  }}
+                >
+                  <option value="csv">CSV</option>
+                  <option value="tsv">TSV</option>
+                  <option value="json">JSON</option>
+                  <option value="txt">Plain text</option>
+                  <option value="html">HTML</option>
+                </select>
+                <Btn variant="subtle" onClick={downloadLogs}>⬇ Download</Btn>
+              </div>
+            )}
             <Btn variant="ghost" onClick={() => setLogModal(false)}>Close</Btn>
           </>
         }
