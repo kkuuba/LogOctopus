@@ -1,0 +1,41 @@
+# ── LogOctopus – React frontend ───────────────────────────────────────────────
+# Stage 1: build the Vite bundle
+FROM node:20-alpine AS builder
+
+WORKDIR /app
+
+# Install deps first (layer cache)
+COPY package*.json ./
+RUN npm ci --ignore-scripts
+
+# Copy source and build
+COPY . .
+
+# The API base URL is injected at build time via an env var.
+# When both services run in the same Docker network the browser still needs
+# to reach the backend on a port exposed to the host, so VITE_API_BASE should
+# point to the publicly accessible backend address, e.g. http://localhost:8050
+# or your production domain.  Override in docker-compose with:
+#   build:
+#     args:
+#       VITE_API_BASE: http://api.example.com
+ARG VITE_API_BASE=http://localhost:8050
+ENV VITE_API_BASE=${VITE_API_BASE}
+
+RUN npm run build
+
+# Stage 2: serve with Nginx
+FROM nginx:1.27-alpine
+
+# Remove the default Nginx page
+RUN rm -rf /usr/share/nginx/html/*
+
+# Copy Vite output
+COPY --from=builder /app/dist /usr/share/nginx/html
+
+# Nginx config: single-page application routing
+COPY nginx.conf /etc/nginx/conf.d/default.conf
+
+EXPOSE 80
+
+CMD ["nginx", "-g", "daemon off;"]

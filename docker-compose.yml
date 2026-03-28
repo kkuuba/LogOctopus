@@ -1,0 +1,84 @@
+version: "3.9"
+
+# ── LogOctopus – production docker-compose ─────────────────────────────────────
+#
+# Usage
+# ─────
+#   docker compose up --build          # first run / after code changes
+#   docker compose up -d               # start detached
+#   docker compose down                # stop & remove containers
+#   docker compose logs -f backend     # stream backend logs
+#
+# Environment variables
+# ─────────────────────
+# Override any of these in a .env file placed next to this file:
+#
+#   VITE_API_BASE   URL the BROWSER uses to reach the backend API.
+#                   In a typical single-host deployment this is
+#                   http://localhost:8050  (the default).
+#                   In production with a domain / reverse proxy, set it to
+#                   https://api.yourdomain.com
+#
+#   ADMIN_USER      Admin username shown on the login modal (default: admin)
+#   ADMIN_PASS      Initial admin password           (default: logoctopus)
+#
+#   HOST            Address the Flask server binds to (default: 0.0.0.0)
+#   PORT            Port Flask listens on             (default: 8050)
+
+services:
+
+  # ── Flask REST API ───────────────────────────────────────────────────────────
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: logoctopus-backend
+    restart: unless-stopped
+    environment:
+      HOST: "0.0.0.0"
+      PORT: "${PORT:-8050}"
+      # Forward admin credentials so the backend can hash them into settings.json
+      VITE_ADMIN_USER: "${ADMIN_USER:-admin}"
+      VITE_ADMIN_PASS: "${ADMIN_PASS:-logoctopus}"
+    ports:
+      - "${PORT:-8050}:${PORT:-8050}"
+    volumes:
+      # Persist device configs and log snapshots across container restarts
+      - logoctopus-data:/app/data
+      - logoctopus-settings:/app/settings.json
+    networks:
+      - logoctopus-net
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:${PORT:-8050}/api/devices')\""]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ── React SPA (Nginx) ────────────────────────────────────────────────────────
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+      args:
+        # Must be the URL the BROWSER (not Docker) can reach the backend on.
+        VITE_API_BASE: "${VITE_API_BASE:-http://localhost:8050}"
+        VITE_ADMIN_USER: "${ADMIN_USER:-admin}"
+        VITE_ADMIN_PASS: "${ADMIN_PASS:-logoctopus}"
+    container_name: logoctopus-frontend
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - logoctopus-net
+
+volumes:
+  logoctopus-data: ./data
+  logoctopus-settings: settings.json
+
+networks:
+  logoctopus-net:
+    driver: bridge

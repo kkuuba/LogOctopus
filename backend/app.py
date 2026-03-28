@@ -6,6 +6,9 @@ Replaces the Dash app.py with pure REST endpoints consumable by the React fronte
 import os
 import signal
 import uuid
+import json
+import hashlib
+from pathlib import Path
 
 from flask import Flask, jsonify, request
 from flask_cors import CORS
@@ -16,6 +19,8 @@ from backend.utils.device_config_loader import DeviceConfigLoader
 from backend.utils.config_helper import ConfigurationHelper
 
 
+
+SETTINGS_FILE = Path("settings.json")
 HOST = os.getenv("HOST", "localhost")
 PORT = int(os.getenv("PORT", 8050))
 
@@ -68,6 +73,20 @@ def snapshot_to_dict(snapshot) -> dict:
 
 def _bad(msg: str, code: int = 400):
     return jsonify({"error": msg}), code
+
+
+def _load_settings() -> dict:
+    if SETTINGS_FILE.exists():
+        try:
+            return json.loads(SETTINGS_FILE.read_text())
+        except Exception:
+            pass
+    return {}
+
+
+def _save_settings(settings: dict) -> None:
+    SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    SETTINGS_FILE.write_text(json.dumps(settings, indent=2))
 
 
 # ── devices ───────────────────────────────────────────────────────────────────
@@ -269,92 +288,6 @@ def stop_logs_collection():
     })
 
 
-# ── settings ──────────────────────────────────────────────────────────────────
-#
-# APScheduler is an optional dependency.  Install with:
-#   pip install apscheduler
-# If it is not installed the auto-collection endpoints still accept and persist
-# the schedule configuration, but server-side triggering will not happen —
-# the frontend's client-side setInterval will handle collection while the tab
-# is open.
-
-import json
-import hashlib
-from pathlib import Path
-
-SETTINGS_FILE = Path("settings.json")
-
-
-def _load_settings() -> dict:
-    if SETTINGS_FILE.exists():
-        try:
-            return json.loads(SETTINGS_FILE.read_text())
-        except Exception:
-            pass
-    return {}
-
-
-def _save_settings(settings: dict) -> None:
-    SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    SETTINGS_FILE.write_text(json.dumps(settings, indent=2))
-
-
-# ── APScheduler bootstrap (optional) ─────────────────────────────────────────
-try:
-    from apscheduler.schedulers.background import BackgroundScheduler
-    from apscheduler.triggers.interval import IntervalTrigger
-
-    _scheduler = BackgroundScheduler(daemon=True)
-    _scheduler.start()
-    _AUTO_COLLECT_JOB_ID = "auto_collection"
-
-    def _run_auto_collection() -> None:
-        """Executed by APScheduler on the configured interval."""
-        settings = _load_settings()
-        schedule = settings.get("auto_collection", {})
-        if not schedule.get("enabled"):
-            return
-        device_ids: list[str] = schedule.get("device_ids", [])
-        devices = get_current_devices()
-        names = [d.device_name for d in devices if d.device_config_id in device_ids]
-        if not names:
-            return
-        session_id = uuid.uuid1().hex[:12]
-        for device in devices:
-            if device.device_name in names:
-                device.start_logs_collection(session_id)
-        import time as _time
-        _time.sleep(30)          # collect for 30 seconds
-        for device in devices:
-            if device.device_name in names:
-                device.stop_logs_collection()
-                device.wait_for_log_collection_teardown(timeout=60)
-
-    def _reschedule(interval_hours: float) -> None:
-        if _scheduler.get_job(_AUTO_COLLECT_JOB_ID):
-            _scheduler.remove_job(_AUTO_COLLECT_JOB_ID)
-        _scheduler.add_job(
-            _run_auto_collection,
-            trigger=IntervalTrigger(hours=interval_hours),
-            id=_AUTO_COLLECT_JOB_ID,
-            replace_existing=True,
-        )
-
-    # Re-apply any persisted schedule on startup
-    _startup_settings = _load_settings()
-    _startup_schedule = _startup_settings.get("auto_collection", {})
-    if _startup_schedule.get("enabled") and _startup_schedule.get("interval_hours"):
-        _reschedule(_startup_schedule["interval_hours"])
-
-    _SCHEDULER_AVAILABLE = True
-
-except ImportError:
-    _SCHEDULER_AVAILABLE = False
-
-    def _reschedule(_hours):  # noqa: F811
-        pass
-
-
 @app.post("/api/settings/auto-collection")
 def set_auto_collection():
     """
@@ -381,35 +314,12 @@ def set_auto_collection():
     if interval_hours <= 0:
         return _bad("interval_hours must be positive")
 
-    settings = _load_settings()
-    settings["auto_collection"] = {
-        "enabled":        enabled,
-        "interval_hours": interval_hours,
-        "device_ids":     device_ids,
-    }
-    _save_settings(settings)
+    for device in get_current_devices():
+        if device.device_config_id in device_ids:
+            device.device_config_instance.update_runtime_parameter("auto_collection_enabled", enabled)
+            device.device_config_instance.update_runtime_parameter("auto_collection_interval", interval_hours)
 
-    if enabled:
-        _reschedule(interval_hours)
-    elif _SCHEDULER_AVAILABLE:
-        from apscheduler.schedulers.background import BackgroundScheduler  # already imported
-        if _scheduler.get_job(_AUTO_COLLECT_JOB_ID):
-            _scheduler.remove_job(_AUTO_COLLECT_JOB_ID)
-
-    return jsonify({"status": "ok", "scheduler_active": _SCHEDULER_AVAILABLE})
-
-
-@app.get("/api/settings/auto-collection")
-def get_auto_collection():
-    """
-    Return the current auto-collection schedule configuration.
-
-    Response 200:
-        { "enabled": bool, "interval_hours": float, "device_ids": […], "scheduler_active": bool }
-    """
-    settings = _load_settings()
-    schedule = settings.get("auto_collection", {"enabled": False, "interval_hours": 1, "device_ids": []})
-    return jsonify({**schedule, "scheduler_active": _SCHEDULER_AVAILABLE})
+    return jsonify({"status": "ok", "auto_collection_active": enabled})
 
 
 @app.post("/api/settings/change-password")
@@ -439,17 +349,6 @@ def change_password():
     _save_settings(settings)
 
     return jsonify({"status": "ok"})
-
-
-@app.get("/api/health")
-def health():
-    """
-    Simple liveness probe.
-
-    Response 200:
-        { "status": "ok", "scheduler_active": bool }
-    """
-    return jsonify({"status": "ok", "scheduler_active": _SCHEDULER_AVAILABLE})
 
 
 # ── entry point ───────────────────────────────────────────────────────────────

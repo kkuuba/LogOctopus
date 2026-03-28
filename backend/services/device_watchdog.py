@@ -5,6 +5,8 @@ import pandas as pd
 from datetime import datetime
 from dateutil import parser
 import re
+import uuid
+import time
 import threading
 from time import sleep
 import argparse
@@ -237,6 +239,7 @@ if __name__ == '__main__':
     args = arg_parser.parse_args()
     init_device_config = get_current_device_config(args.device_config_file_path)
     device_watchdog = DeviceWatchdog(init_device_config)
+    auto_collection_timer = 0
     while True:
         current_device_config = get_current_device_config(args.device_config_file_path)
         if current_device_config["logs_collection"] and not device_watchdog.collection_ongoing:
@@ -246,6 +249,12 @@ if __name__ == '__main__':
             device_watchdog.stop_logs_collection()
             device_watchdog.save_log_snapshots(current_device_config["current_session_id"])
             update_device_config_parameter(args.device_config_file_path, "current_session_id", "no_active_session")
+        if current_device_config["auto_collection_enabled"] and not device_watchdog.collection_ongoing:
+            auto_collection_timer = time.time()
+            update_device_config_parameter(args.device_config_file_path, "logs_collection", True)
+            update_device_config_parameter(args.device_config_file_path, "current_session_id", f"auto_{uuid.uuid1().hex[:12]}")
+        if current_device_config["auto_collection_enabled"] and time.time() - auto_collection_timer > current_device_config["auto_collection_interval"] * 3600:
+            update_device_config_parameter(args.device_config_file_path, "logs_collection", False)
         device_watchdog.get_connection_status()
         device_watchdog.test_log_files_access()
         update_device_config_parameter(args.device_config_file_path, "connected", device_watchdog.connection_status)

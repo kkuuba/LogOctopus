@@ -11,3 +11,4 @@ dash_daq
 plotly
 gunicorn
 flask_caching
+flask_cors

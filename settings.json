@@ -1,0 +1,9 @@
+{
+  "auto_collection": {
+    "enabled": true,
+    "interval_hours": 2.0,
+    "device_ids": [
+      "8e850f595c76"
+    ]
+  }
+}

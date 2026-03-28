@@ -1,0 +1,33 @@
+# ── LogOctopus – Flask backend ────────────────────────────────────────────────
+FROM python:3.12-slim
+
+WORKDIR /app
+
+# System deps (none beyond slim base needed for Flask)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Python dependencies before copying source so this layer is cached
+COPY requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy application source
+COPY . .
+
+# Create the data directory that DeviceConfigLoader expects
+RUN mkdir -p data
+
+# Non-root user for security
+RUN adduser --disabled-password --gecos "" octopus \
+    && chown -R octopus:octopus /app
+USER octopus
+
+# Flask will bind to 0.0.0.0 so it is reachable from other containers
+ENV HOST=0.0.0.0
+ENV PORT=8050
+
+EXPOSE 8050
+
+# Use gunicorn in production; fall back to Flask dev server if not installed
+CMD ["python", "-m", "backend.app"]

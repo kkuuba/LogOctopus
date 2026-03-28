@@ -99,7 +99,7 @@ function PlotlyChart({ rows, title, index }) {
           name: title,
           line: { color: lineColor, width: 2.5, shape: "spline", smoothing: 0.8 },
           marker: { size: 5, color: lineColor, symbol: "circle" },
-          hovertemplate: "<b>%{x}</b><br>Value: %{y}<extra></extra>",
+          hovertemplate: "<b>%{y}<extra></extra>",
         }
       : {
           x: xValues,
@@ -108,7 +108,7 @@ function PlotlyChart({ rows, title, index }) {
           mode: "markers",
           name: title,
           marker: { size: 8, color: lineColor, opacity: 0.85, symbol: "diamond" },
-          hovertemplate: "<b>%{x}</b><br>State: %{y}<extra></extra>",
+          hovertemplate: "<b>%{y}<extra></extra>",
         };
 
     const layout = {
@@ -1311,6 +1311,167 @@ function Toggle({ checked, onChange, labelLeft, labelRight }) {
   );
 }
 
+// ── COLLECTION LOADING OVERLAY ────────────────────────────────────────────────
+/**
+ * Full-screen blocking overlay shown while stop-collection is in flight.
+ * The backend may take up to 60 s (teardown timeout) before it responds,
+ * so we give the user clear visual feedback with an animated octopus tentacle
+ * ring, a progress-style pulse, and a step-by-step status carousel.
+ */
+const STOP_MESSAGES = [
+  "Signalling watchdog processes…",
+  "Draining log buffers…",
+  "Waiting for teardown…",
+  "Packaging snapshots…",
+  "Almost there…",
+];
+
+function CollectionLoadingOverlay({ open }) {
+  const [msgIdx, setMsgIdx] = useState(0);
+
+  useEffect(() => {
+    if (!open) { setMsgIdx(0); return; }
+    const id = setInterval(() => setMsgIdx((i) => (i + 1) % STOP_MESSAGES.length), 2200);
+    return () => clearInterval(id);
+  }, [open]);
+
+  if (!open) return null;
+
+  return (
+    <div
+      style={{
+        position: "fixed",
+        inset: 0,
+        zIndex: 3000,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        background: "rgba(8,13,28,0.88)",
+        backdropFilter: "blur(8px)",
+      }}
+    >
+      <style>{`
+        @keyframes lo-spin   { from{transform:rotate(0deg)}   to{transform:rotate(360deg)} }
+        @keyframes lo-rspin  { from{transform:rotate(0deg)}   to{transform:rotate(-360deg)} }
+        @keyframes lo-pulse  { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:0.55;transform:scale(1.18)} }
+        @keyframes lo-fadein { from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:translateY(0)} }
+        @keyframes lo-dot    { 0%,80%,100%{opacity:0.15;transform:scale(0.8)} 40%{opacity:1;transform:scale(1)} }
+        .lo-dot:nth-child(1){animation-delay:0s}
+        .lo-dot:nth-child(2){animation-delay:0.2s}
+        .lo-dot:nth-child(3){animation-delay:0.4s}
+      `}</style>
+
+      <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 28 }}>
+
+        {/* Animated concentric rings */}
+        <div style={{ position: "relative", width: 96, height: 96 }}>
+          {/* Outer ring */}
+          <svg
+            width="96" height="96"
+            style={{ position: "absolute", inset: 0, animation: "lo-spin 3s linear infinite" }}
+          >
+            <circle cx="48" cy="48" r="44"
+              fill="none" stroke="rgba(0,229,200,0.18)" strokeWidth="2"
+              strokeDasharray="40 8 20 8" />
+          </svg>
+          {/* Middle ring */}
+          <svg
+            width="96" height="96"
+            style={{ position: "absolute", inset: 0, animation: "lo-rspin 2s linear infinite" }}
+          >
+            <circle cx="48" cy="48" r="34"
+              fill="none" stroke="rgba(124,106,255,0.3)" strokeWidth="2.5"
+              strokeDasharray="30 6" />
+          </svg>
+          {/* Inner pulsing core */}
+          <div
+            style={{
+              position: "absolute",
+              inset: 0,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+            }}
+          >
+            <div
+              style={{
+                width: 42,
+                height: 42,
+                borderRadius: "50%",
+                background: "radial-gradient(circle at 40% 40%, rgba(0,229,200,0.35), rgba(8,13,28,0.9))",
+                border: "1.5px solid rgba(0,229,200,0.5)",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                fontSize: 20,
+                animation: "lo-pulse 1.6s ease-in-out infinite",
+                boxShadow: "0 0 24px rgba(0,229,200,0.25)",
+              }}
+            >
+              🐙
+            </div>
+          </div>
+        </div>
+
+        {/* Title */}
+        <div style={{
+          fontFamily: "var(--font-display)",
+          fontWeight: 800,
+          fontSize: 17,
+          color: "var(--text)",
+          letterSpacing: "-0.01em",
+        }}>
+          Stopping Collection
+        </div>
+
+        {/* Cycling status message */}
+        <div
+          key={msgIdx}
+          style={{
+            fontFamily: "var(--font-mono)",
+            fontSize: 12,
+            color: "var(--accent)",
+            animation: "lo-fadein 0.35s ease",
+            minHeight: 18,
+          }}
+        >
+          {STOP_MESSAGES[msgIdx]}
+        </div>
+
+        {/* Bouncing dots */}
+        <div style={{ display: "flex", gap: 7 }}>
+          {[0,1,2].map(i => (
+            <div
+              key={i}
+              className="lo-dot"
+              style={{
+                width: 7,
+                height: 7,
+                borderRadius: "50%",
+                background: "var(--accent)",
+                animation: "lo-dot 1.2s ease-in-out infinite",
+              }}
+            />
+          ))}
+        </div>
+
+        {/* Subtle disclaimer */}
+        <div style={{
+          fontFamily: "var(--font-mono)",
+          fontSize: 10,
+          color: "var(--muted)",
+          maxWidth: 280,
+          textAlign: "center",
+          lineHeight: 1.6,
+        }}>
+          Waiting for device teardown — this may take up to 60 s.
+          <br />Do not close the tab.
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── SESSION INFO ──────────────────────────────────────────────────────────────
 function SessionInfo({ sessionId, textUrl, chartUrl }) {
   return (
@@ -1348,6 +1509,9 @@ export default function App() {
   const [searchParam,     setSearchParam]     = useState("");
   const [searchValue,     setSearchValue]     = useState("");
   const [filterActive,    setFilterActive]    = useState(false);
+
+  // stop-collection loading overlay
+  const [stoppingCollection, setStoppingCollection] = useState(false);
 
   // modals
   const [logModal,        setLogModal]        = useState(false);
@@ -1482,12 +1646,14 @@ export default function App() {
     const names = devices.filter((d) => selectedDevices.includes(d.id)).map((d) => d.name);
     const runningDev = devices.find((d) => selectedDevices.includes(d.id) && d.collecting);
     const session_id = runningDev?.config?.current_session_id || "";
+    setStoppingCollection(true);
     try {
       const result = await apiFetch("/api/stop-logs-collection", { method: "POST", body: JSON.stringify({ selected_devices: names, session_id }) });
       setSessionModal({ sessionId: result.session_id, textUrl: result.text_logs_url, chartUrl: result.chart_logs_url });
       fetchDevices();
       fetchSnapshots(filterActive ? searchParam : "", filterActive ? searchValue : "", isChart);
     } catch (e) { addToast(`Failed to stop collection: ${e.message}`); }
+    finally { setStoppingCollection(false); }
   };
 
   const removeSelected = async () => {
@@ -1770,6 +1936,9 @@ export default function App() {
           </div>
         </div>
       </div>
+
+      {/* COLLECTION STOP LOADING OVERLAY */}
+      <CollectionLoadingOverlay open={stoppingCollection} />
 
       {/* MODALS */}
 
