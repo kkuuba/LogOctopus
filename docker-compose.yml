@@ -10,15 +10,10 @@ services:
       HOST: "0.0.0.0"
       PORT: "8050"
     volumes:
-      # Persistent data directory – device configs, collected logs, etc.
       - logoctopus_data:/app/data
-      # settings.json is a single file; bind-mount it so it survives rebuilds.
-      # The file must exist on the host before first `docker compose up`.
       - ./settings.json:/app/settings.json
-    # Backend is NOT exposed to the host – nginx proxies all /api/* traffic.
-    # Uncomment the line below only if you need direct backend access for debugging.
-    # ports:
-    #   - "8050:8050"
+    ports:
+      - "8050:8050"
     networks:
       - logoctopus_net
     healthcheck:
@@ -28,19 +23,19 @@ services:
       retries: 5
       start_period: 10s
 
-  # ── React + nginx ─────────────────────────────────────────────────────────
+  # ── React (served by 'serve') ─────────────────────────────────────────────
   frontend:
     build:
       context: .
       dockerfile: Dockerfile.frontend
       args:
-        # The browser hits this URL for API calls.
-        # With the nginx proxy in place the frontend and API share the same
-        # origin, so an empty string (same-origin /api/*) works perfectly.
-        VITE_API_BASE: ""
+        # Must be reachable from the user's browser — set to your server's
+        # public IP or domain name. "backend" only works inside Docker network,
+        # not from the browser.
+        VITE_API_BASE: "http://YOUR_SERVER_IP:8050"
     restart: unless-stopped
     ports:
-      - "8100:80"       # HTTP  – change to "443:443" when adding TLS
+      - "8100:8100"
     depends_on:
       backend:
         condition: service_healthy
@@ -48,7 +43,6 @@ services:
       - logoctopus_net
 
 volumes:
-  # Named volume for /app/data – survives container rebuilds and restarts.
   logoctopus_data:
 
 networks:
