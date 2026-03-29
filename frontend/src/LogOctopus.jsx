@@ -1,12 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
-// Prefer the build-time env var (set in docker-compose VITE_API_BASE).
-// Fall back to the current browser's hostname + port 8100 so the app works
-// when opened from any device on the network (not just localhost).
-const API_BASE =
-  (import.meta?.env?.VITE_API_BASE) ||
-  `${window.location.protocol}//${window.location.hostname}:8100`;
+const API_BASE = (import.meta?.env?.VITE_API_BASE) || "http://localhost:8050";
 
 // Plotly is expected as a global (loaded via CDN script tag in index.html):
 // <script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
@@ -303,7 +298,9 @@ function LogContentView({ rows, isChart, colorMode, chartGroups }) {
                   {r.time}
                 </td>
                 <td style={{ padding: "7px 12px", whiteSpace: "nowrap" }}>
-                  {r.device_name ? <Badge color="default">{r.device_name}</Badge> : null}
+                  {r.device_name
+                    ? <Badge color="default">{r.device_name}</Badge>
+                    : <span style={{ color: "var(--muted)", fontSize: 11 }}>—</span>}
                 </td>
                 <td style={{ padding: "7px 12px" }}>
                   <Badge color="cyan">{r.log_name}</Badge>
@@ -321,6 +318,76 @@ function LogContentView({ rows, isChart, colorMode, chartGroups }) {
           })}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+// ── DOWNLOAD MENU ─────────────────────────────────────────────────────────────
+function DownloadMenu({ onDownload }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+
+  useEffect(() => {
+    const handler = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, []);
+
+  const formats = [
+    { id: "csv",  label: "CSV",  icon: "📊", desc: "Spreadsheet-compatible" },
+    { id: "txt",  label: "TXT",  icon: "📄", desc: "Plain text, one line per row" },
+    { id: "json", label: "JSON", icon: "🗂", desc: "Structured JSON array" },
+    { id: "html", label: "HTML", icon: "🌐", desc: "Styled HTML table" },
+  ];
+
+  return (
+    <div ref={ref} style={{ position: "relative" }}>
+      <button
+        onClick={() => setOpen((v) => !v)}
+        style={{
+          display: "flex", alignItems: "center", gap: 6,
+          background: open ? "rgba(0,229,200,0.12)" : "rgba(255,255,255,0.06)",
+          border: `1px solid ${open ? "rgba(0,229,200,0.35)" : "var(--border)"}`,
+          borderRadius: 8, color: open ? "var(--accent)" : "var(--text)",
+          fontFamily: "var(--font-mono)", fontSize: 12, padding: "7px 14px",
+          cursor: "pointer", transition: "all 0.15s",
+        }}
+      >
+        ⬇ Download
+        <span style={{ fontSize: 9, marginLeft: 2, opacity: 0.7 }}>{open ? "▲" : "▼"}</span>
+      </button>
+
+      {open && (
+        <div
+          style={{
+            position: "absolute", bottom: "calc(100% + 6px)", right: 0,
+            background: "var(--card-bg)", border: "1px solid var(--border)",
+            borderRadius: 10, overflow: "hidden", minWidth: 200,
+            boxShadow: "0 8px 32px rgba(0,0,0,0.5)", zIndex: 200,
+          }}
+        >
+          {formats.map((f) => (
+            <button
+              key={f.id}
+              onClick={() => { onDownload(f.id); setOpen(false); }}
+              style={{
+                display: "flex", alignItems: "center", gap: 10, width: "100%",
+                background: "transparent", border: "none", borderBottom: "1px solid var(--border)",
+                padding: "10px 14px", cursor: "pointer", textAlign: "left",
+                transition: "background 0.1s",
+              }}
+              onMouseEnter={(e) => e.currentTarget.style.background = "rgba(0,229,200,0.08)"}
+              onMouseLeave={(e) => e.currentTarget.style.background = "transparent"}
+            >
+              <span style={{ fontSize: 16 }}>{f.icon}</span>
+              <div>
+                <div style={{ fontFamily: "var(--font-mono)", fontSize: 12, fontWeight: 600, color: "var(--text)" }}>{f.label}</div>
+                <div style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--muted)" }}>{f.desc}</div>
+              </div>
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -1702,9 +1769,8 @@ export default function App() {
       if (isChart) {
         setChartGroups(results);
       } else {
-        // Attach device_name from snapInfo so the table and exports can show it
         setLogRows(results.flatMap((r) =>
-          r.rows.map((row) => ({ ...row, device_name: r.snapInfo.deviceName || "" }))
+          r.rows.map((row) => ({ ...row, device_name: r.snapInfo.deviceName ?? r.snapInfo.device_name ?? "" }))
         ));
       }
     } catch (e) {
@@ -1731,115 +1797,84 @@ export default function App() {
     fetchSnapshots("", "", isChart);
   };
 
-  const [downloadFormat, setDownloadFormat] = useState("csv");
-
-  const downloadLogs = () => {
+  const downloadLogs = (format = "csv") => {
     if (isChart) {
       addToast("Chart export requires backend — use the API endpoint directly.", "info");
       return;
     }
     if (!logRows || logRows.length === 0) {
-      addToast("No log rows to export.", "info");
+      addToast("No log data to export.", "info");
       return;
     }
 
-    let content, mimeType, filename;
+    let blob, filename;
 
-    const esc = (s) => String(s || "").replace(/"/g, '""');
-    const escHtml = (s) => String(s || "")
-      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-
-    if (downloadFormat === "csv") {
-      content =
+    if (format === "csv") {
+      const content =
         "Time,Device,Log Name,Content\n" +
-        logRows
-          .map((r) => `"${esc(r.time)}","${esc(r.device_name)}","${esc(r.log_name)}","${esc(r.content)}"`)
-          .join("\n");
-      mimeType = "text/csv";
+        logRows.map((r) => `"${r.time}","${r.device_name ?? ""}","${r.log_name}","${(r.content ?? "").replace(/"/g, '""')}"`).join("\n");
+      blob = new Blob([content], { type: "text/csv" });
       filename = "logs.csv";
-    } else if (downloadFormat === "tsv") {
-      content =
-        "Time\tDevice\tLog Name\tContent\n" +
-        logRows
-          .map((r) => `${r.time||""}\t${r.device_name||""}\t${r.log_name||""}\t${(r.content||"").replace(/\t/g," ")}`)
-          .join("\n");
-      mimeType = "text/tab-separated-values";
-      filename = "logs.tsv";
-    } else if (downloadFormat === "json") {
-      content = JSON.stringify(
-        logRows.map((r) => ({ time: r.time, device_name: r.device_name, log_name: r.log_name, content: r.content })),
-        null,
-        2
+
+    } else if (format === "txt") {
+      const lines = logRows.map(
+        (r) => `[${r.time}] [${r.device_name ?? ""}] [${r.log_name}] ${r.content ?? ""}`
       );
-      mimeType = "application/json";
-      filename = "logs.json";
-    } else if (downloadFormat === "txt") {
-      content = logRows
-        .map((r) => `[${r.time||""}] [${r.device_name||""}] [${r.log_name||""}] ${r.content||""}`)
-        .join("\n");
-      mimeType = "text/plain";
+      blob = new Blob([lines.join("\n")], { type: "text/plain" });
       filename = "logs.txt";
-    } else if (downloadFormat === "html") {
-      const rows = logRows.map((r) => {
-        const isErr  = (r.content || "").startsWith("ERROR");
-        const isWarn = (r.content || "").startsWith("WARN");
-        const color  = isErr ? "#ff6666" : isWarn ? "#ffc800" : "#e8eaf0";
-        return `    <tr>
-      <td style="white-space:nowrap;color:#6b7280">${escHtml(r.time)}</td>
-      <td><span style="background:#1a2235;border:1px solid rgba(255,255,255,0.12);border-radius:4px;padding:2px 7px;font-size:11px;color:#e8eaf0">${escHtml(r.device_name)}</span></td>
-      <td><span style="background:rgba(0,229,200,0.12);border:1px solid rgba(0,229,200,0.25);border-radius:4px;padding:2px 7px;font-size:11px;color:#00e5c8">${escHtml(r.log_name)}</span></td>
-      <td style="color:${color}">${escHtml(r.content)}</td>
-    </tr>`;
-      }).join("\n");
-      content = `<!DOCTYPE html>
+
+    } else if (format === "json") {
+      const data = logRows.map((r) => ({
+        time: r.time,
+        device: r.device_name ?? "",
+        log_name: r.log_name,
+        content: r.content,
+      }));
+      blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+      filename = "logs.json";
+
+    } else if (format === "html") {
+      const rows = logRows
+        .map(
+          (r) =>
+            `<tr><td>${r.time ?? ""}</td><td>${r.device_name ?? ""}</td><td>${r.log_name ?? ""}</td><td style="color:${
+              (r.content ?? "").startsWith("ERROR") ? "#ff6666" : (r.content ?? "").startsWith("WARN") ? "#ffc800" : "inherit"
+            }">${(r.content ?? "").replace(/</g, "&lt;").replace(/>/g, "&gt;")}</td></tr>`
+        )
+        .join("\n");
+      const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width,initial-scale=1" />
+<meta charset="UTF-8"/>
 <title>LogOctopus Export</title>
 <style>
-  * { box-sizing: border-box; }
-  body { margin: 0; background: #080d1c; color: #e8eaf0; font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 12px; }
-  header { background: #0d1426; border-bottom: 1px solid rgba(255,255,255,0.08); padding: 16px 24px; display: flex; align-items: center; gap: 12px; }
-  header h1 { margin: 0; font-size: 18px; font-weight: 800; letter-spacing: -0.02em; }
-  header p  { margin: 0; font-size: 11px; color: #6b7280; }
-  .meta { padding: 12px 24px; font-size: 11px; color: #6b7280; border-bottom: 1px solid rgba(255,255,255,0.06); }
-  table { width: 100%; border-collapse: collapse; }
-  th { padding: 8px 16px; text-align: left; color: #6b7280; border-bottom: 1px solid rgba(255,255,255,0.08); font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; position: sticky; top: 0; background: #080d1c; }
-  td { padding: 7px 16px; border-bottom: 1px solid rgba(255,255,255,0.04); vertical-align: middle; }
-  tr:hover td { background: rgba(255,255,255,0.02); }
+  body{font-family:'JetBrains Mono',monospace;background:#080d1c;color:#e8eaf0;margin:0;padding:24px}
+  h1{font-size:16px;color:#00e5c8;margin-bottom:16px}
+  table{border-collapse:collapse;width:100%;font-size:12px}
+  th{text-align:left;padding:8px 12px;border-bottom:2px solid rgba(255,255,255,0.12);color:#6b7280;text-transform:uppercase;font-size:10px;letter-spacing:.06em}
+  td{padding:7px 12px;border-bottom:1px solid rgba(255,255,255,0.04);vertical-align:top;word-break:break-word}
+  tr:hover td{background:rgba(255,255,255,0.03)}
 </style>
 </head>
 <body>
-<header>
-  <div>
-    <h1>🐙 LogOctopus</h1>
-    <p>Exported ${logRows.length} rows &mdash; ${new Date().toISOString()}</p>
-  </div>
-</header>
-<div class="meta">Generated by LogOctopus &bull; ${logRows.length} entries</div>
+<h1>LogOctopus — Log Export (${new Date().toISOString()})</h1>
 <table>
-  <thead>
-    <tr>
-      <th>Timestamp</th><th>Device</th><th>Log Name</th><th>Content</th>
-    </tr>
-  </thead>
-  <tbody>
+<thead><tr><th>Timestamp</th><th>Device</th><th>Log Name</th><th>Content</th></tr></thead>
+<tbody>
 ${rows}
-  </tbody>
+</tbody>
 </table>
 </body>
 </html>`;
-      mimeType = "text/html";
+      blob = new Blob([html], { type: "text/html" });
       filename = "logs.html";
     }
 
     const a = document.createElement("a");
-    a.href = URL.createObjectURL(new Blob([content], { type: mimeType }));
+    a.href = URL.createObjectURL(blob);
     a.download = filename;
     a.click();
-    URL.revokeObjectURL(a.href);
-    addToast(`Downloaded ${filename} (${logRows.length} rows).`, "success");
+    addToast(`Logs exported as ${format.toUpperCase()}.`, "success");
   };
 
   // Modal title with chart count info
@@ -2085,31 +2120,7 @@ ${rows}
         footer={
           <>
             {!isChart && <Toggle checked={colorMode} onChange={setColorMode} labelLeft="Raw" labelRight="Color mode" />}
-            {!isChart && (
-              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                <select
-                  value={downloadFormat}
-                  onChange={(e) => setDownloadFormat(e.target.value)}
-                  style={{
-                    background: "var(--card-bg)",
-                    border: "1px solid var(--border)",
-                    borderRadius: 7,
-                    color: "var(--text)",
-                    fontFamily: "var(--font-mono)",
-                    fontSize: 12,
-                    padding: "6px 10px",
-                    cursor: "pointer",
-                  }}
-                >
-                  <option value="csv">CSV</option>
-                  <option value="tsv">TSV</option>
-                  <option value="json">JSON</option>
-                  <option value="txt">Plain text</option>
-                  <option value="html">HTML</option>
-                </select>
-                <Btn variant="subtle" onClick={downloadLogs}>⬇ Download</Btn>
-              </div>
-            )}
+            {!isChart && <DownloadMenu onDownload={downloadLogs} />}
             <Btn variant="ghost" onClick={() => setLogModal(false)}>Close</Btn>
           </>
         }
