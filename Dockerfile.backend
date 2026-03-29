@@ -1,26 +1,27 @@
-# ── LogOctopus – Flask backend ────────────────────────────────────────────────
+# ── LogOctopus – Backend ──────────────────────────────────────────────────────
 FROM python:3.12-slim
 
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    && rm -rf /var/lib/apt/lists/*
+# Install dependencies first (layer caching)
+COPY backend/requirements.txt ./backend/requirements.txt
+RUN pip install --no-cache-dir -r backend/requirements.txt
 
-COPY requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
+# Copy application source
+COPY backend/ ./backend/
 
-COPY . .
+# Persistent data lives in a mounted volume; pre-create the dirs so the app
+# can start cleanly even before the volume is populated for the first time.
+RUN mkdir -p /app/data
 
-RUN mkdir -p data
-
-RUN adduser --disabled-password --gecos "" octopus \
-    && chown -R octopus:octopus /app
-USER octopus
+# settings.json is also volume-mounted; touch it so the app never crashes on
+# a missing file before the first write.
+RUN touch /app/settings.json
 
 ENV HOST=0.0.0.0
-ENV PORT=8100
+ENV PORT=8050
+ENV PYTHONUNBUFFERED=1
 
-EXPOSE 8100
+EXPOSE 8050
 
 CMD ["python", "-m", "backend.app"]

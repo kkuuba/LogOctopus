@@ -1,77 +1,56 @@
-version: "3.9"
-
-# ── LogOctopus – docker-compose ────────────────────────────────────────────────
-#
-# Usage
-# ─────
-#   docker compose up --build          # first run / after code changes
-#   docker compose up -d               # start detached
-#   docker compose down                # stop & remove containers
-#   docker compose logs -f backend     # stream backend logs
-#
-# Environment variables  (.env file or shell exports)
-# ─────────────────────
-#   VITE_API_BASE   URL the BROWSER uses to reach the backend API.
-#                   Default: http://localhost:8100
-#                   For HTTPS deployments: https://yourdomain.com:8100
-#
-#   ADMIN_USER      Admin username  (default: admin)
-#   ADMIN_PASS      Admin password  (default: logoctopus)
-#
-# Ports
-# ─────
-#   8050  → React SPA   (served by "serve" / Node)
-#   8100  → Flask API
-
 services:
 
-  # ── Flask REST API ─────────────────────────────────────────────────────────
+  # ── Flask REST API ────────────────────────────────────────────────────────
   backend:
     build:
       context: .
       dockerfile: Dockerfile.backend
-    container_name: logoctopus-backend
     restart: unless-stopped
     environment:
       HOST: "0.0.0.0"
-      PORT: "8100"
-      VITE_ADMIN_USER: "${ADMIN_USER:-admin}"
-      VITE_ADMIN_PASS: "${ADMIN_PASS:-logoctopus}"
-    ports:
-      - "0.0.0.0:8100:8100"
+      PORT: "8050"
     volumes:
-      - ./data:/app/data
+      # Persistent data directory – device configs, collected logs, etc.
+      - logoctopus_data:/app/data
+      # settings.json is a single file; bind-mount it so it survives rebuilds.
+      # The file must exist on the host before first `docker compose up`.
       - ./settings.json:/app/settings.json
+    # Backend is NOT exposed to the host – nginx proxies all /api/* traffic.
+    # Uncomment the line below only if you need direct backend access for debugging.
+    # ports:
+    #   - "8050:8050"
     networks:
-      - logoctopus-net
+      - logoctopus_net
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8100/api/devices')\""]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8050/api/devices')"]
       interval: 15s
       timeout: 5s
       retries: 5
       start_period: 10s
 
-  # ── React SPA (Node "serve") ───────────────────────────────────────────────
+  # ── React + nginx ─────────────────────────────────────────────────────────
   frontend:
     build:
-      context: ./frontend
-      dockerfile: ../Dockerfile.frontend
+      context: .
+      dockerfile: Dockerfile.frontend
       args:
-        # Must be the URL the BROWSER can reach the backend on.
-        VITE_API_BASE: "${VITE_API_BASE:-http://localhost:8100}"
-        VITE_ADMIN_USER: "${ADMIN_USER:-admin}"
-        VITE_ADMIN_PASS: "${ADMIN_PASS:-logoctopus}"
-    container_name: logoctopus-frontend
+        # The browser hits this URL for API calls.
+        # With the nginx proxy in place the frontend and API share the same
+        # origin, so an empty string (same-origin /api/*) works perfectly.
+        VITE_API_BASE: ""
     restart: unless-stopped
     ports:
-      - "0.0.0.0:8050:8050"
+      - "8100:80"       # HTTP  – change to "443:443" when adding TLS
     depends_on:
       backend:
         condition: service_healthy
     networks:
-      - logoctopus-net
+      - logoctopus_net
 
+volumes:
+  # Named volume for /app/data – survives container rebuilds and restarts.
+  logoctopus_data:
 
 networks:
-  logoctopus-net:
+  logoctopus_net:
     driver: bridge

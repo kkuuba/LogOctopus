@@ -1,31 +1,32 @@
-# ── LogOctopus – React frontend (no Nginx) ────────────────────────────────────
-# Stage 1: build the Vite bundle
+# ── LogOctopus – Frontend ─────────────────────────────────────────────────────
+# Stage 1: build the Vite/React bundle
 FROM node:20-alpine AS builder
 
 WORKDIR /app
 
-COPY package*.json ./
-RUN npm install
+COPY frontend/package*.json ./
+RUN npm ci
 
-COPY . .
+COPY frontend/ ./
 
-# The API base URL is injected at build time.
-# Override in docker-compose with build args.
-ARG VITE_API_BASE=http://localhost:8100
-ENV VITE_API_BASE=${VITE_API_BASE}
+# VITE_API_BASE is injected at build time so the JS bundle knows where the
+# backend lives. Override via --build-arg or docker-compose build args.
+ARG VITE_API_BASE=http://localhost:8050
+ENV VITE_API_BASE=$VITE_API_BASE
 
 RUN npm run build
 
-# ── Stage 2: serve the static bundle with "serve" ─────────────────────────────
-FROM node:20-alpine
+# Stage 2: serve with nginx
+FROM nginx:1.27-alpine
 
-# "serve" is a zero-config static file server from Vercel
-RUN npm install -g serve
+# Remove the default nginx page
+RUN rm -rf /usr/share/nginx/html/*
 
-COPY --from=builder /app/dist /app/dist
+COPY --from=builder /app/dist /usr/share/nginx/html
 
-EXPOSE 8050
+# nginx config: serve the SPA and proxy /api/* to the backend
+COPY nginx.conf /etc/nginx/conf.d/default.conf
 
-# -s  → SPA mode (rewrites all 404s to index.html)
-# -l  → listen address  tcp://HOST:PORT
-CMD ["serve", "-s", "/app/dist", "-l", "tcp://0.0.0.0:8050"]
+EXPOSE 80
+
+CMD ["nginx", "-g", "daemon off;"]

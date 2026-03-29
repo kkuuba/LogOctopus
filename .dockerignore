@@ -1,0 +1,38 @@
+# ── .dockerignore ─────────────────────────────────────────────────────────────
+# Keep build contexts lean – exclude everything that isn't needed inside images.
+
+# Version control
+.git
+.gitignore
+
+# Python artefacts
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+venv/
+.venv/
+env/
+
+# Node artefacts
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.idea/
+.vscode/
+
+# Docker files themselves (no need to copy into the image)
+Dockerfile*
+docker-compose*.yml
+nginx.conf
