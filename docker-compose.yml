@@ -10,18 +10,10 @@ services:
       HOST: "0.0.0.0"
       PORT: "8050"
     volumes:
-      - logoctopus_data:/app/data
+      - ./data:/app/data
       - ./settings.json:/app/settings.json
     ports:
       - "8050:8050"
-    networks:
-      - logoctopus_net
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8050/api/devices')"]
-      interval: 15s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
 
   # ── React (served by 'serve') ─────────────────────────────────────────────
   frontend:
@@ -29,22 +21,9 @@ services:
       context: .
       dockerfile: Dockerfile.frontend
       args:
-        # Must be reachable from the user's browser — set to your server's
-        # public IP or domain name. "backend" only works inside Docker network,
-        # not from the browser.
-        VITE_API_BASE: "http://YOUR_SERVER_IP:8050"
+        VITE_API_BASE: "http://192.168.100.49:8050"
     restart: unless-stopped
     ports:
       - "8100:8100"
     depends_on:
-      backend:
-        condition: service_healthy
-    networks:
-      - logoctopus_net
-
-volumes:
-  logoctopus_data:
-
-networks:
-  logoctopus_net:
-    driver: bridge
+      - backend

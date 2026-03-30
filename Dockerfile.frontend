@@ -11,7 +11,7 @@ COPY frontend/ ./
 # VITE_API_BASE points directly at the backend — must be reachable from the
 # user's browser, so use the server's public IP or hostname, not "backend".
 # Override via --build-arg or the build.args section in docker-compose.yml.
-ARG VITE_API_BASE=http://localhost:8050
+ARG VITE_API_BASE=http://192.168.100.49:8050
 ENV VITE_API_BASE=$VITE_API_BASE
 
 RUN npm run build
