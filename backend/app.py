@@ -23,6 +23,7 @@ from backend.utils.config_helper import ConfigurationHelper
 SETTINGS_FILE = Path("settings.json")
 HOST = os.getenv("HOST", "localhost")
 PORT = int(os.getenv("PORT", 8050))
+FRONTEND_BASE = os.getenv("FRONTEND_BASE", "http://localhost:8100")
 
 app = Flask(__name__)
 CORS(app)  # allow the React dev-server / built bundle to call the API
@@ -279,12 +280,11 @@ def stop_logs_collection():
             device.stop_logs_collection()
             device.wait_for_log_collection_teardown(timeout=60)
 
-    base = f"http://{HOST}:{PORT}"
     return jsonify({
         "status":         "logs collection stopped",
         "session_id":     session_id,
-        "text_logs_url":  f"{base}/?search_param=Session%20ID&search_value={session_id}&log_type=text",
-        "chart_logs_url": f"{base}/?search_param=Session%20ID&search_value={session_id}&log_type=chart",
+        "text_logs_url":  f"{FRONTEND_BASE}/?search_param=Session%20ID&search_value={session_id}&log_type=text",
+        "chart_logs_url": f"{FRONTEND_BASE}/?search_param=Session%20ID&search_value={session_id}&log_type=chart",
     })
 
 

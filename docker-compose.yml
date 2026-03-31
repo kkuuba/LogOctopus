@@ -9,6 +9,7 @@ services:
     environment:
       HOST: "0.0.0.0"
       PORT: "8050"
+      FRONTEND_BASE: "http://192.168.100.49:8100"
     volumes:
       - ./data:/app/data
       - ./settings.json:/app/settings.json
