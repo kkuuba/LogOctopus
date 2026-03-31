@@ -1135,7 +1135,7 @@ function DeviceCard({ device, selected, onSelect, onInfo, autoEnabled, autoInter
         }}>
           <span style={{ fontSize: 10 }}>⏰</span>
           <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--accent)", fontWeight: 600 }}>
-            AUTO {autoIntervalHours}h
+            AUTO-COLLECTION {autoIntervalHours}h
           </span>
         </div>
       )}
