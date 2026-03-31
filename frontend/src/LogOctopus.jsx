@@ -74,7 +74,7 @@ function PlotlyChart({ rows, title, index }) {
     const Plotly = window.Plotly;
     if (!Plotly) {
       divRef.current.innerHTML =
-        '<p style="color:#ff6666;font-family:monospace;font-size:12px;padding:16px">Plotly not loaded — add the CDN script to index.html</p>';
+        '<p style="color:#f87171;font-family:monospace;font-size:12px;padding:16px">Plotly not loaded — add the CDN script to index.html</p>';
       return;
     }
 
@@ -88,7 +88,7 @@ function PlotlyChart({ rows, title, index }) {
       : rows.map((d) => d.content);
 
     // Cycle through a palette of accent colours for multi-chart display
-    const palette = ["#00e5c8", "#7c6aff", "#ff6b6b", "#ffd166", "#06d6a0", "#118ab2"];
+    const palette = ["#818cf8", "#a78bfa", "#f472b6", "#fb923c", "#34d399", "#60a5fa"];
     const lineColor = palette[index % palette.length];
 
     const trace = isNumeric
@@ -119,14 +119,14 @@ function PlotlyChart({ rows, title, index }) {
         x: 0.04,
       },
       paper_bgcolor: "transparent",
-      plot_bgcolor: "rgba(8,13,28,0.6)",
+      plot_bgcolor: "rgba(9,9,15,0.6)",
       font: { color: "#6b7280", family: "JetBrains Mono, monospace", size: 11 },
       xaxis: {
         gridcolor: "rgba(255,255,255,0.06)",
         zerolinecolor: "rgba(255,255,255,0.08)",
         tickfont: { color: "#6b7280", size: 10 },
         showspikes: true,
-        spikecolor: "rgba(0,229,200,0.4)",
+        spikecolor: "rgba(129,140,248,0.4)",
         spikethickness: 1,
         spikedash: "dot",
       },
@@ -135,7 +135,7 @@ function PlotlyChart({ rows, title, index }) {
         zerolinecolor: "rgba(255,255,255,0.08)",
         tickfont: { color: "#6b7280", size: 10 },
         showspikes: true,
-        spikecolor: "rgba(0,229,200,0.4)",
+        spikecolor: "rgba(129,140,248,0.4)",
         spikethickness: 1,
         spikedash: "dot",
       },
@@ -244,10 +244,28 @@ function ChartContentView({ chartGroups }) {
 }
 
 // ── LOG CONTENT VIEW (text) ───────────────────────────────────────────────────
-function LogContentView({ rows, isChart, colorMode, chartGroups }) {
-  if (isChart) return <ChartContentView chartGroups={chartGroups} />;
+// Uses a simple virtual-scroll approach: only renders rows within the visible
+// viewport ± an overscan buffer, keeping the DOM lean for large log payloads.
+const LOG_ROW_HEIGHT = 30; // px – must match the tr height below
+const OVERSCAN       = 40; // extra rows rendered above/below viewport
 
-  if (!rows || rows.length === 0) return <p style={{ color: "var(--muted)" }}>No data.</p>;
+function VirtualLogTable({ rows, colorMode }) {
+  const containerRef = useRef(null);
+  const [scrollTop,     setScrollTop]     = useState(0);
+  const [containerHeight, setContainerHeight] = useState(500);
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    // Observe the scrollable modal body (two levels up from the sticky header wrapper)
+    const scrollEl = el.closest('[data-log-scroll]') || el.parentElement;
+    const resizeObs = new ResizeObserver(() => setContainerHeight(scrollEl.clientHeight));
+    resizeObs.observe(scrollEl);
+    const onScroll = () => setScrollTop(scrollEl.scrollTop);
+    scrollEl.addEventListener('scroll', onScroll, { passive: true });
+    setContainerHeight(scrollEl.clientHeight);
+    return () => { scrollEl.removeEventListener('scroll', onScroll); resizeObs.disconnect(); };
+  }, []);
 
   const logColors = {};
   const palette = ["#2d6a4f", "#1d3557", "#5c2d91", "#7b2d00", "#004e64", "#3d2645"];
@@ -255,72 +273,70 @@ function LogContentView({ rows, isChart, colorMode, chartGroups }) {
     logColors[n] = palette[i % palette.length];
   });
 
+  const totalHeight = rows.length * LOG_ROW_HEIGHT;
+  const startIdx = Math.max(0, Math.floor(scrollTop / LOG_ROW_HEIGHT) - OVERSCAN);
+  const endIdx   = Math.min(rows.length, Math.ceil((scrollTop + containerHeight) / LOG_ROW_HEIGHT) + OVERSCAN);
+  const visibleRows = rows.slice(startIdx, endIdx);
+
   return (
-    <div style={{ overflowX: "auto" }}>
-      <table
-        style={{
-          width: "100%",
-          borderCollapse: "collapse",
-          fontFamily: "var(--font-mono)",
-          fontSize: 12,
-        }}
-      >
-        <thead>
+    <div ref={containerRef} style={{ overflowX: "auto" }}>
+      <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: "var(--font-mono)", fontSize: 12, tableLayout: "fixed" }}>
+        <colgroup>
+          <col style={{ width: 160 }} />
+          <col style={{ width: 120 }} />
+          <col style={{ width: 130 }} />
+          <col />
+        </colgroup>
+        <thead style={{ position: "sticky", top: 0, background: "var(--modal-bg)", zIndex: 2 }}>
           <tr>
             {["Timestamp", "Device", "Log Name", "Content"].map((h) => (
-              <th
-                key={h}
-                style={{
-                  padding: "8px 12px",
-                  textAlign: "left",
-                  color: "var(--muted)",
-                  borderBottom: "1px solid var(--border)",
-                  fontSize: 10,
-                  textTransform: "uppercase",
-                  letterSpacing: "0.06em",
-                }}
-              >
+              <th key={h} style={{ padding: "8px 12px", textAlign: "left", color: "var(--muted)", borderBottom: "1px solid var(--border)", fontSize: 10, textTransform: "uppercase", letterSpacing: "0.06em" }}>
                 {h}
               </th>
             ))}
           </tr>
         </thead>
         <tbody>
-          {rows.map((r, i) => {
-            const bg = colorMode ? logColors[r.log_name] + "66" : "transparent";
-            const isErr = (r.content || "").startsWith("ERROR");
+          {/* Spacer above visible rows */}
+          {startIdx > 0 && (
+            <tr style={{ height: startIdx * LOG_ROW_HEIGHT }}>
+              <td colSpan={4} />
+            </tr>
+          )}
+          {visibleRows.map((r, localIdx) => {
+            const absIdx = startIdx + localIdx;
+            const bg = colorMode ? logColors[r.log_name] + "55" : "transparent";
+            const isErr  = (r.content || "").startsWith("ERROR");
             const isWarn = (r.content || "").startsWith("WARN");
             return (
-              <tr
-                key={i}
-                style={{ borderBottom: "1px solid rgba(255,255,255,0.04)", background: bg }}
-              >
-                <td style={{ padding: "7px 12px", color: "var(--muted)", whiteSpace: "nowrap" }}>
-                  {r.time}
-                </td>
-                <td style={{ padding: "7px 12px", whiteSpace: "nowrap" }}>
+              <tr key={absIdx} style={{ height: LOG_ROW_HEIGHT, borderBottom: "1px solid rgba(255,255,255,0.03)", background: bg }}>
+                <td style={{ padding: "0 12px", color: "var(--muted)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{r.time}</td>
+                <td style={{ padding: "0 12px", whiteSpace: "nowrap" }}>
                   {r.device_name
                     ? <Badge color="default">{r.device_name}</Badge>
                     : <span style={{ color: "var(--muted)", fontSize: 11 }}>—</span>}
                 </td>
-                <td style={{ padding: "7px 12px" }}>
-                  <Badge color="cyan">{r.log_name}</Badge>
-                </td>
-                <td
-                  style={{
-                    padding: "7px 12px",
-                    color: isErr ? "#ff6666" : isWarn ? "#ffc800" : "var(--text)",
-                  }}
-                >
-                  {r.content}
-                </td>
+                <td style={{ padding: "0 12px" }}><Badge color="cyan">{r.log_name}</Badge></td>
+                <td style={{ padding: "0 12px", color: isErr ? "#f87171" : isWarn ? "#fbbf24" : "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.content}</td>
               </tr>
             );
           })}
+          {/* Spacer below visible rows */}
+          {endIdx < rows.length && (
+            <tr style={{ height: (rows.length - endIdx) * LOG_ROW_HEIGHT }}>
+              <td colSpan={4} />
+            </tr>
+          )}
         </tbody>
       </table>
     </div>
   );
+}
+
+function LogContentView({ rows, isChart, colorMode, chartGroups }) {
+  if (isChart) return <ChartContentView chartGroups={chartGroups} />;
+  if (!rows || rows.length === 0) return <p style={{ color: "var(--muted)" }}>No data.</p>;
+  return <VirtualLogTable rows={rows} colorMode={colorMode} />;
 }
 
 // ── DOWNLOAD MENU ─────────────────────────────────────────────────────────────
@@ -347,8 +363,8 @@ function DownloadMenu({ onDownload }) {
         onClick={() => setOpen((v) => !v)}
         style={{
           display: "flex", alignItems: "center", gap: 6,
-          background: open ? "rgba(0,229,200,0.12)" : "rgba(255,255,255,0.06)",
-          border: `1px solid ${open ? "rgba(0,229,200,0.35)" : "var(--border)"}`,
+          background: open ? "rgba(129,140,248,0.12)" : "rgba(255,255,255,0.06)",
+          border: `1px solid ${open ? "rgba(129,140,248,0.35)" : "var(--border)"}`,
           borderRadius: 8, color: open ? "var(--accent)" : "var(--text)",
           fontFamily: "var(--font-mono)", fontSize: 12, padding: "7px 14px",
           cursor: "pointer", transition: "all 0.15s",
@@ -377,7 +393,7 @@ function DownloadMenu({ onDownload }) {
                 padding: "10px 14px", cursor: "pointer", textAlign: "left",
                 transition: "background 0.1s",
               }}
-              onMouseEnter={(e) => e.currentTarget.style.background = "rgba(0,229,200,0.08)"}
+              onMouseEnter={(e) => e.currentTarget.style.background = "rgba(129,140,248,0.08)"}
               onMouseLeave={(e) => e.currentTarget.style.background = "transparent"}
             >
               <span style={{ fontSize: 16 }}>{f.icon}</span>
@@ -469,7 +485,7 @@ function SettingsModal({ open, onClose, isAdmin, onRequestLogin, devices, auth, 
     fontSize: 12,
     cursor: "pointer",
     border: "none",
-    background: active ? "rgba(0,229,200,0.15)" : "transparent",
+    background: active ? "rgba(129,140,248,0.15)" : "transparent",
     color: active ? "var(--accent)" : "var(--muted)",
     letterSpacing: "0.05em",
     transition: "all 0.15s",
@@ -510,7 +526,7 @@ function SettingsModal({ open, onClose, isAdmin, onRequestLogin, devices, auth, 
           {/* ── AUTO-COLLECTION TAB ── */}
           {tab === "schedule" && (
             <div>
-              <div style={{ ...card, borderColor: autoSchedule.enabled ? "rgba(0,229,200,0.3)" : "var(--border)" }}>
+              <div style={{ ...card, borderColor: autoSchedule.enabled ? "rgba(129,140,248,0.3)" : "var(--border)" }}>
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: autoSchedule.enabled ? 16 : 0 }}>
                   <div>
                     <div style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 14, color: "var(--text)", marginBottom: 3 }}>Scheduled Auto-Collection</div>
@@ -533,9 +549,9 @@ function SettingsModal({ open, onClose, isAdmin, onRequestLogin, devices, auth, 
                           style={{
                             padding: "6px 14px", borderRadius: 7, border: "1px solid",
                             fontFamily: "var(--font-mono)", fontSize: 12, cursor: "pointer",
-                            background: autoSchedule.intervalHours === h ? "rgba(0,229,200,0.15)" : "rgba(255,255,255,0.04)",
+                            background: autoSchedule.intervalHours === h ? "rgba(129,140,248,0.15)" : "rgba(255,255,255,0.04)",
                             color: autoSchedule.intervalHours === h ? "var(--accent)" : "var(--muted)",
-                            borderColor: autoSchedule.intervalHours === h ? "rgba(0,229,200,0.4)" : "var(--border)",
+                            borderColor: autoSchedule.intervalHours === h ? "rgba(129,140,248,0.4)" : "var(--border)",
                             transition: "all 0.12s",
                           }}>
                           {h}h
@@ -555,14 +571,14 @@ function SettingsModal({ open, onClose, isAdmin, onRequestLogin, devices, auth, 
                               style={{
                                 display: "flex", alignItems: "center", gap: 12, padding: "10px 14px",
                                 borderRadius: 8, border: "1px solid", cursor: "pointer",
-                                background: checked ? "rgba(0,229,200,0.06)" : "rgba(255,255,255,0.02)",
-                                borderColor: checked ? "rgba(0,229,200,0.3)" : "var(--border)",
+                                background: checked ? "rgba(129,140,248,0.06)" : "rgba(255,255,255,0.02)",
+                                borderColor: checked ? "rgba(129,140,248,0.3)" : "var(--border)",
                                 transition: "all 0.12s",
                               }}>
                               <input type="checkbox" checked={checked} readOnly
                                 style={{ accentColor: "var(--accent)", width: 14, height: 14, pointerEvents: "none" }} />
                               <span style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 13, color: "var(--text)", flex: 1 }}>{d.name}</span>
-                              <span style={{ width: 8, height: 8, borderRadius: "50%", background: d.connection ? "#00e564" : "#555", flexShrink: 0 }} />
+                              <span style={{ width: 8, height: 8, borderRadius: "50%", background: d.connection ? "#4ade80" : "#555", flexShrink: 0 }} />
                               <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--muted)" }}>{d.connection ? "Online" : "Offline"}</span>
                             </div>
                           );
@@ -577,7 +593,7 @@ function SettingsModal({ open, onClose, isAdmin, onRequestLogin, devices, auth, 
               {/* <div style={{
                 background: "rgba(255,200,0,0.06)", border: "1px solid rgba(255,200,0,0.2)",
                 borderRadius: 8, padding: "12px 16px", marginBottom: 16,
-                fontFamily: "var(--font-mono)", fontSize: 11, color: "#ffc800", lineHeight: 1.6,
+                fontFamily: "var(--font-mono)", fontSize: 11, color: "#fbbf24", lineHeight: 1.6,
               }}>
                 <strong>ℹ Browser-tab scheduling:</strong> The interval timer runs while this tab is open.
                 For server-side scheduling (runs even when the browser is closed), the schedule is also
@@ -595,9 +611,9 @@ function SettingsModal({ open, onClose, isAdmin, onRequestLogin, devices, auth, 
             <div>
               {!isAdmin ? (
                 <div style={{
-                  background: "rgba(124,106,255,0.07)", border: "1px solid rgba(124,106,255,0.2)",
+                  background: "rgba(129,140,248,0.07)", border: "1px solid rgba(129,140,248,0.2)",
                   borderRadius: 8, padding: "24px 20px", textAlign: "center",
-                  fontFamily: "var(--font-mono)", fontSize: 12, color: "#a89aff",
+                  fontFamily: "var(--font-mono)", fontSize: 12, color: "#a78bfa",
                 }}>
                   <div style={{ fontSize: 28, marginBottom: 12 }}>🔒</div>
                   <div style={{ fontWeight: 600, marginBottom: 6 }}>Admin login required</div>
@@ -627,7 +643,7 @@ function SettingsModal({ open, onClose, isAdmin, onRequestLogin, devices, auth, 
                           placeholder="Repeat new password" style={inputStyle} />
                       </div>
                       {pwError && (
-                        <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "#ff6666", background: "rgba(255,60,60,0.08)", border: "1px solid rgba(255,60,60,0.2)", borderRadius: 6, padding: "7px 12px" }}>
+                        <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "#f87171", background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.2)", borderRadius: 6, padding: "7px 12px" }}>
                           ⚠ {pwError}
                         </div>
                       )}
@@ -640,7 +656,7 @@ function SettingsModal({ open, onClose, isAdmin, onRequestLogin, devices, auth, 
                   <div style={{ ...card, marginBottom: 0 }}>
                     <div style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 14, color: "var(--text)", marginBottom: 6 }}>Session</div>
                     <div style={{ fontFamily: "var(--font-mono)", fontSize: 12, color: "var(--muted)", marginBottom: 14 }}>
-                      Currently signed in as <span style={{ color: "#a89aff" }}>admin</span>. Session persists until you sign out or close the browser.
+                      Currently signed in as <span style={{ color: "#a78bfa" }}>admin</span>. Session persists until you sign out or close the browser.
                     </div>
                     <Btn variant="danger" size="sm" onClick={() => { auth.logout(); onClose(); addToast("Signed out.", "info"); }}>
                       Sign Out
@@ -697,7 +713,7 @@ function LoginModal({ open, onClose, onLogin }) {
           borderRadius: 14,
           padding: "36px 40px",
           width: 380,
-          boxShadow: "0 24px 80px rgba(0,229,200,0.08), 0 0 0 1px rgba(0,229,200,0.08)",
+          boxShadow: "0 24px 80px rgba(129,140,248,0.08), 0 0 0 1px rgba(129,140,248,0.08)",
           animation: shaking ? "shake 0.4s ease" : "none",
         }}
       >
@@ -708,8 +724,8 @@ function LoginModal({ open, onClose, onLogin }) {
               width: 48,
               height: 48,
               borderRadius: "50%",
-              background: "rgba(0,229,200,0.12)",
-              border: "1px solid rgba(0,229,200,0.3)",
+              background: "rgba(129,140,248,0.12)",
+              border: "1px solid rgba(129,140,248,0.3)",
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
@@ -758,9 +774,9 @@ function LoginModal({ open, onClose, onLogin }) {
               style={{
                 fontFamily: "var(--font-mono)",
                 fontSize: 11,
-                color: "#ff6666",
-                background: "rgba(255,60,60,0.08)",
-                border: "1px solid rgba(255,60,60,0.2)",
+                color: "#f87171",
+                background: "rgba(248,113,113,0.08)",
+                border: "1px solid rgba(248,113,113,0.2)",
                 borderRadius: 6,
                 padding: "7px 12px",
               }}
@@ -867,7 +883,7 @@ function Modal({ open, onClose, title, size = "lg", children, footer }) {
             ×
           </button>
         </div>
-        <div style={{ flex: 1, overflowY: "auto", padding: "20px 24px" }}>{children}</div>
+        <div data-log-scroll style={{ flex: 1, overflowY: "auto", padding: "20px 24px" }}>{children}</div>
         {footer && (
           <div
             style={{
@@ -890,11 +906,12 @@ function Modal({ open, onClose, title, size = "lg", children, footer }) {
 // ── BADGE ─────────────────────────────────────────────────────────────────────
 function Badge({ color = "default", children }) {
   const colors = {
-    green:   { bg: "rgba(0,229,100,0.15)",  text: "#00e564",  border: "rgba(0,229,100,0.3)" },
-    red:     { bg: "rgba(255,80,80,0.15)",   text: "#ff5050",  border: "rgba(255,80,80,0.3)" },
-    yellow:  { bg: "rgba(255,200,0,0.15)",   text: "#ffc800",  border: "rgba(255,200,0,0.3)" },
-    cyan:    { bg: "rgba(0,229,200,0.15)",   text: "#00e5c8",  border: "rgba(0,229,200,0.3)" },
-    default: { bg: "rgba(255,255,255,0.08)", text: "var(--muted)", border: "var(--border)" },
+    green:   { bg: "rgba(74,222,128,0.13)",   text: "#4ade80",  border: "rgba(74,222,128,0.28)" },
+    red:     { bg: "rgba(248,113,113,0.13)",  text: "#f87171",  border: "rgba(248,113,113,0.28)" },
+    yellow:  { bg: "rgba(251,191,36,0.13)",   text: "#fbbf24",  border: "rgba(251,191,36,0.28)" },
+    cyan:    { bg: "rgba(129,140,248,0.14)",  text: "#818cf8",  border: "rgba(129,140,248,0.3)" },
+    violet:  { bg: "rgba(167,139,250,0.14)",  text: "#a78bfa",  border: "rgba(167,139,250,0.3)" },
+    default: { bg: "rgba(255,255,255,0.06)", text: "var(--muted)", border: "var(--border)" },
   };
   const c = colors[color] || colors.default;
   return (
@@ -940,12 +957,12 @@ function Btn({ variant = "default", size = "md", onClick, disabled, children, st
   };
   const variants = {
     default: { background: "var(--card-bg)", color: "var(--text)", border: "1px solid var(--border)" },
-    primary: { background: "var(--accent)", color: "#0a0f1e" },
-    success: { background: "#00e564", color: "#0a0f1e" },
-    danger:  { background: "#ff4444", color: "#fff" },
+    primary: { background: "var(--accent)", color: "#06061a" },
+    success: { background: "#4ade80", color: "#06061a" },
+    danger:  { background: "#f87171", color: "#06061a" },
     ghost:   { background: "transparent", color: "var(--muted)", border: "1px solid var(--border)" },
-    subtle:  { background: "rgba(255,255,255,0.06)", color: "var(--text)", border: "1px solid var(--border)" },
-    admin:   { background: "rgba(124,106,255,0.15)", color: "#a89aff", border: "1px solid rgba(124,106,255,0.35)" },
+    subtle:  { background: "rgba(255,255,255,0.05)", color: "var(--text)", border: "1px solid var(--border)" },
+    admin:   { background: "rgba(167,139,250,0.13)", color: "#a78bfa", border: "1px solid rgba(167,139,250,0.3)" },
   };
   return (
     <button
@@ -965,9 +982,9 @@ function Toast({ message, type = "error", onDismiss }) {
     return () => clearTimeout(t);
   }, [onDismiss]);
   const colors = {
-    error:   { bg: "rgba(255,60,60,0.12)",  border: "rgba(255,60,60,0.3)",  text: "#ff6666" },
-    success: { bg: "rgba(0,229,100,0.12)",  border: "rgba(0,229,100,0.3)",  text: "#00e564" },
-    info:    { bg: "rgba(0,229,200,0.12)",  border: "rgba(0,229,200,0.3)",  text: "#00e5c8" },
+    error:   { bg: "rgba(248,113,113,0.12)",  border: "rgba(248,113,113,0.3)",  text: "#f87171" },
+    success: { bg: "rgba(74,222,128,0.12)",  border: "rgba(74,222,128,0.3)",  text: "#4ade80" },
+    info:    { bg: "rgba(129,140,248,0.12)",  border: "rgba(129,140,248,0.3)",  text: "#818cf8" },
   };
   const c = colors[type] || colors.info;
   return (
@@ -998,7 +1015,7 @@ function Toast({ message, type = "error", onDismiss }) {
 }
 
 // ── DEVICE CARD ───────────────────────────────────────────────────────────────
-function DeviceCard({ device, selected, onSelect, onInfo }) {
+function DeviceCard({ device, selected, onSelect, onInfo, autoEnabled, autoIntervalHours }) {
   const [hovered, setHovered] = useState(false);
   return (
     <div
@@ -1009,11 +1026,11 @@ function DeviceCard({ device, selected, onSelect, onInfo }) {
         width: 220,
         borderRadius: 12,
         padding: "16px 14px",
-        background: selected ? "rgba(0,229,200,0.07)" : "var(--card-bg)",
-        border: `1px solid ${selected ? "var(--accent)" : hovered ? "rgba(0,229,200,0.3)" : "var(--border)"}`,
+        background: selected ? "var(--accent-dim)" : "var(--card-bg)",
+        border: `1px solid ${selected ? "var(--accent)" : hovered ? "var(--accent-border)" : "var(--border)"}`,
         transition: "all 0.2s",
         cursor: "default",
-        boxShadow: selected ? "0 0 16px rgba(0,229,200,0.12)" : "none",
+        boxShadow: selected ? "0 0 20px rgba(129,140,248,0.1)" : "none",
       }}
     >
       <input
@@ -1028,7 +1045,7 @@ function DeviceCard({ device, selected, onSelect, onInfo }) {
           position: "absolute",
           top: 10,
           right: 10,
-          background: "rgba(255,255,255,0.07)",
+          background: "rgba(255,255,255,0.05)",
           border: "1px solid var(--border)",
           borderRadius: 6,
           color: "var(--muted)",
@@ -1057,6 +1074,19 @@ function DeviceCard({ device, selected, onSelect, onInfo }) {
         <StatusRow label="Log Access" ok={device.logAccess} />
         <StatusRow label="Collecting" ok={device.collecting} pulseWhenTrue />
       </div>
+      {autoEnabled && (
+        <div style={{
+          marginTop: 10,
+          display: "inline-flex", alignItems: "center", gap: 5,
+          background: "rgba(129,140,248,0.12)", border: "1px solid rgba(129,140,248,0.3)",
+          borderRadius: 20, padding: "3px 9px",
+        }}>
+          <span style={{ fontSize: 10 }}>⏰</span>
+          <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--accent)", fontWeight: 600 }}>
+            AUTO {autoIntervalHours}h
+          </span>
+        </div>
+      )}
     </div>
   );
 }
@@ -1069,12 +1099,12 @@ function StatusRow({ label, ok, pulseWhenTrue }) {
           width: 8,
           height: 8,
           borderRadius: "50%",
-          background: ok ? "#00e564" : "#555",
-          boxShadow: ok && pulseWhenTrue ? "0 0 6px #00e564" : "none",
+          background: ok ? "#4ade80" : "#333",
+          boxShadow: ok && pulseWhenTrue ? "0 0 6px #4ade80" : "none",
         }}
       />
       <span style={{ color: "var(--muted)" }}>{label}</span>
-      <span style={{ marginLeft: "auto", color: ok ? "#00e564" : "#666" }}>{ok ? "OK" : "—"}</span>
+      <span style={{ marginLeft: "auto", color: ok ? "#4ade80" : "#444" }}>{ok ? "OK" : "—"}</span>
     </div>
   );
 }
@@ -1166,59 +1196,227 @@ function Spinner() {
 
 // ── REST API DOCS ─────────────────────────────────────────────────────────────
 function ApiDocs() {
-  const [copied, setCopied] = useState(null);
+  const [active, setActive]   = useState(0);
+  const [copied, setCopied]   = useState(null);
+
   const copy = (text, key) => {
-    navigator.clipboard.writeText(text).then(() => { setCopied(key); setTimeout(() => setCopied(null), 1500); });
+    navigator.clipboard.writeText(text).then(() => {
+      setCopied(key);
+      setTimeout(() => setCopied(null), 1600);
+    });
   };
+
   const pyCode = `import requests
 
+BASE = "${API_BASE}"
+
 # Start collection
-r = requests.post("${API_BASE}/api/start-logs-collection",
+r = requests.post(f"{BASE}/api/start-logs-collection",
     json={"selected_devices": ["device_1", "device_2"]})
 session_id = r.json()["session_id"]
 
 # Stop collection
-requests.post("${API_BASE}/api/stop-logs-collection",
+requests.post(f"{BASE}/api/stop-logs-collection",
     json={"selected_devices": ["device_1"], "session_id": session_id})`;
 
   const endpoints = [
-    { method: "GET",    path: "/api/devices",               desc: "List all managed devices with current statuses.", req: null, res: `[{ "id": "…", "name": "Router-Alpha", "connection": true, "logAccess": true, "collecting": false }]` },
-    { method: "POST",   path: "/api/devices",               desc: "Add a new device from a base64-encoded JSON config file.", req: `{ "contents": "<base64 data URI>" }`, res: `{ "device": { "id": "…", "name": "…" } }` },
-    { method: "DELETE", path: "/api/devices/:id",           desc: "Remove a device and stop its watchdog process.", req: null, res: `204 No Content` },
-    { method: "GET",    path: "/api/snapshots",             desc: "List snapshots. Supports ?search_param=&search_value=&log_type=text|chart", req: null, res: `[{ "id": 1, "deviceName": "…", "logName": "syslog", "sessionId": "…", "isChart": false }]` },
-    { method: "GET",    path: "/api/snapshots/:id/content", desc: "Retrieve full log content rows for a snapshot.", req: null, res: `{ "rows": [{ "timestamp": "…", "log_name": "syslog", "content": "INFO …" }] }` },
-    { method: "POST",   path: "/api/start-logs-collection", desc: "Start log collection on selected devices.", req: `{ "selected_devices": ["device_1"] }`, res: `{ "status": "logs collection started", "session_id": "8cd7112719ac" }` },
-    { method: "POST",   path: "/api/stop-logs-collection",  desc: "Stop log collection and save collected logs.", req: `{ "selected_devices": ["device_1"], "session_id": "8cd7112719ac" }`, res: `{ "status": "logs collection stopped", "text_logs_url": "…", "chart_logs_url": "…" }` },
+    {
+      method: "GET", path: "/api/devices",
+      desc: "Return the list of all managed devices with their current statuses.",
+      req: null,
+      res: `[\n  {\n    "id": "abc123",\n    "name": "Router-Alpha",\n    "connection": true,\n    "logAccess": true,\n    "collecting": false\n  }\n]`,
+    },
+    {
+      method: "POST", path: "/api/devices",
+      desc: "Add a new device from a base64-encoded JSON config file.",
+      req: `{\n  "contents": "data:application/json;base64,<data>"\n}`,
+      res: `{\n  "device": { "id": "abc123", "name": "Router-Alpha" }\n}`,
+    },
+    {
+      method: "DELETE", path: "/api/devices/:id",
+      desc: "Remove a device and terminate its watchdog process.",
+      req: null,
+      res: `204 No Content`,
+    },
+    {
+      method: "GET", path: "/api/snapshots",
+      desc: "List log snapshots. Supports optional filtering via query parameters: search_param (Device | Log Name | Session ID), search_value, log_type (text | chart).",
+      req: null,
+      res: `[\n  {\n    "id": 1,\n    "deviceName": "Router-Alpha",\n    "logName": "syslog",\n    "startTime": "2024-01-01 10:00:00",\n    "sessionId": "8cd7112719ac",\n    "isChart": false\n  }\n]`,
+    },
+    {
+      method: "GET", path: "/api/snapshots/:id/content",
+      desc: "Retrieve full log content rows for a single snapshot.",
+      req: null,
+      res: `{\n  "rows": [\n    {\n      "time": "2024-01-01 10:00:01",\n      "log_name": "syslog",\n      "content": "INFO kernel: started"\n    }\n  ]\n}`,
+    },
+    {
+      method: "POST", path: "/api/start-logs-collection",
+      desc: "Start log collection on the specified devices.",
+      req: `{\n  "selected_devices": ["device_1", "device_2"]\n}`,
+      res: `{\n  "status": "logs collection started",\n  "session_id": "8cd7112719ac"\n}`,
+    },
+    {
+      method: "POST", path: "/api/stop-logs-collection",
+      desc: "Stop log collection and persist the collected snapshots.",
+      req: `{\n  "selected_devices": ["device_1"],\n  "session_id": "8cd7112719ac"\n}`,
+      res: `{\n  "status": "logs collection stopped",\n  "session_id": "8cd7112719ac",\n  "text_logs_url": "http://...",\n  "chart_logs_url": "http://..."\n}`,
+    },
   ];
 
-  const methodColor = { GET: "cyan", POST: "green", DELETE: "red" };
+  const METHOD_COLORS = {
+    GET:    { bg: "rgba(74,222,128,0.12)",  text: "#4ade80",  border: "rgba(74,222,128,0.25)" },
+    POST:   { bg: "rgba(129,140,248,0.12)", text: "#818cf8",  border: "rgba(129,140,248,0.25)" },
+    DELETE: { bg: "rgba(248,113,113,0.12)", text: "#f87171",  border: "rgba(248,113,113,0.25)" },
+  };
+
+  const ep = endpoints[active];
+  const mc = METHOD_COLORS[ep.method] || METHOD_COLORS.GET;
+
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-      {endpoints.map((ep) => (
-        <div key={ep.path + ep.method} style={{ background: "var(--card-bg)", border: "1px solid var(--border)", borderRadius: 10, padding: 20 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 10 }}>
-            <Badge color={methodColor[ep.method] || "default"}>{ep.method}</Badge>
-            <code style={{ fontFamily: "var(--font-mono)", fontSize: 13, color: "var(--text)" }}>{ep.path}</code>
-          </div>
-          <p style={{ color: "var(--muted)", fontSize: 13, margin: "0 0 10px" }}>{ep.desc}</p>
-          {ep.req && (
-            <div style={{ marginBottom: 8 }}>
-              <div style={{ fontSize: 10, color: "var(--muted)", marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.06em" }}>Request body</div>
-              <pre style={{ background: "rgba(0,0,0,0.4)", border: "1px solid var(--border)", borderRadius: 6, padding: "10px 14px", margin: 0, fontFamily: "var(--font-mono)", fontSize: 12, color: "#00e5c8", overflowX: "auto" }}>{ep.req}</pre>
+    <div style={{ display: "flex", gap: 0, height: "100%", minHeight: 420 }}>
+
+      {/* ── Sidebar ── */}
+      <div style={{
+        width: 220, flexShrink: 0, borderRight: "1px solid var(--border)",
+        paddingRight: 0, display: "flex", flexDirection: "column", gap: 2, paddingTop: 2,
+      }}>
+        {endpoints.map((e, i) => {
+          const mc2 = METHOD_COLORS[e.method] || METHOD_COLORS.GET;
+          const isActive = i === active;
+          return (
+            <button key={i} onClick={() => setActive(i)}
+              style={{
+                display: "flex", alignItems: "center", gap: 8,
+                padding: "9px 14px", background: isActive ? "var(--accent-dim)" : "transparent",
+                border: "none", borderRight: isActive ? `2px solid var(--accent)` : "2px solid transparent",
+                cursor: "pointer", textAlign: "left", transition: "all 0.12s",
+                borderRadius: "6px 0 0 6px",
+              }}
+            >
+              <span style={{
+                fontSize: 9, fontWeight: 700, fontFamily: "var(--font-mono)",
+                padding: "2px 5px", borderRadius: 4,
+                background: mc2.bg, color: mc2.text, border: `1px solid ${mc2.border}`,
+                minWidth: 42, textAlign: "center", letterSpacing: "0.04em",
+              }}>{e.method}</span>
+              <span style={{
+                fontFamily: "var(--font-mono)", fontSize: 11,
+                color: isActive ? "var(--text)" : "var(--muted)",
+                whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+              }}>{e.path.replace("/api/", "")}</span>
+            </button>
+          );
+        })}
+
+        {/* Python example link */}
+        <button onClick={() => setActive(endpoints.length)}
+          style={{
+            display: "flex", alignItems: "center", gap: 8,
+            padding: "9px 14px", marginTop: 8,
+            background: active === endpoints.length ? "var(--accent-dim)" : "transparent",
+            border: "none", borderRight: active === endpoints.length ? `2px solid var(--accent)` : "2px solid transparent",
+            cursor: "pointer", textAlign: "left", transition: "all 0.12s",
+            borderTop: "1px solid var(--border)", borderRadius: "6px 0 0 6px",
+          }}
+        >
+          <span style={{ fontSize: 14 }}>🐍</span>
+          <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: active === endpoints.length ? "var(--text)" : "var(--muted)" }}>
+            Python example
+          </span>
+        </button>
+      </div>
+
+      {/* ── Detail panel ── */}
+      <div style={{ flex: 1, paddingLeft: 24, paddingTop: 2, overflowY: "auto", display: "flex", flexDirection: "column", gap: 18 }}>
+
+        {active < endpoints.length ? (
+          <>
+            {/* Endpoint title */}
+            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+              <span style={{
+                fontSize: 11, fontWeight: 700, fontFamily: "var(--font-mono)",
+                padding: "4px 10px", borderRadius: 6,
+                background: mc.bg, color: mc.text, border: `1px solid ${mc.border}`,
+                letterSpacing: "0.05em",
+              }}>{ep.method}</span>
+              <code style={{ fontFamily: "var(--font-mono)", fontSize: 14, color: "var(--text)", letterSpacing: "0.02em" }}>
+                {ep.path}
+              </code>
+              <button onClick={() => copy(ep.path, "path")}
+                style={{ marginLeft: "auto", background: "transparent", border: "none", cursor: "pointer", color: "var(--muted)", fontSize: 12, fontFamily: "var(--font-mono)", padding: "3px 8px" }}>
+                {copied === "path" ? "✓ copied" : "copy"}
+              </button>
             </div>
-          )}
-          <div>
-            <div style={{ fontSize: 10, color: "var(--muted)", marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.06em" }}>Response</div>
-            <pre style={{ background: "rgba(0,0,0,0.4)", border: "1px solid var(--border)", borderRadius: 6, padding: "10px 14px", margin: 0, fontFamily: "var(--font-mono)", fontSize: 12, color: "#a8ff78", overflowX: "auto" }}>{ep.res}</pre>
-          </div>
-        </div>
-      ))}
-      <div style={{ background: "var(--card-bg)", border: "1px solid var(--border)", borderRadius: 10, padding: 20 }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
-          <span style={{ fontFamily: "var(--font-display)", fontSize: 13, color: "var(--text)" }}>📋 Example Python code</span>
-          <Btn size="sm" variant="subtle" onClick={() => copy(pyCode, "py")}>{copied === "py" ? "✓ Copied" : "Copy"}</Btn>
-        </div>
-        <pre style={{ background: "rgba(0,0,0,0.4)", border: "1px solid var(--border)", borderRadius: 6, padding: "12px 14px", margin: 0, fontFamily: "var(--font-mono)", fontSize: 12, color: "#c9b1ff", overflowX: "auto" }}>{pyCode}</pre>
+
+            {/* Description */}
+            <p style={{ color: "var(--muted)", fontSize: 13, margin: 0, lineHeight: 1.7, fontFamily: "var(--font-mono)" }}>
+              {ep.desc}
+            </p>
+
+            {/* Request body */}
+            {ep.req && (
+              <div>
+                <div style={{ fontSize: 10, color: "var(--muted)", marginBottom: 8, textTransform: "uppercase", letterSpacing: "0.1em", fontFamily: "var(--font-mono)", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                  <span>Request Body</span>
+                  <button onClick={() => copy(ep.req, "req")}
+                    style={{ background: "transparent", border: "none", cursor: "pointer", color: "var(--muted)", fontSize: 11, fontFamily: "var(--font-mono)" }}>
+                    {copied === "req" ? "✓ copied" : "copy"}
+                  </button>
+                </div>
+                <pre style={{
+                  background: "rgba(0,0,0,0.35)", border: "1px solid var(--border)",
+                  borderLeft: "3px solid rgba(129,140,248,0.5)",
+                  borderRadius: "0 6px 6px 0", padding: "14px 16px", margin: 0,
+                  fontFamily: "var(--font-mono)", fontSize: 12, color: "#c4b5fd", overflowX: "auto", lineHeight: 1.6,
+                }}>{ep.req}</pre>
+              </div>
+            )}
+
+            {/* Response */}
+            <div>
+              <div style={{ fontSize: 10, color: "var(--muted)", marginBottom: 8, textTransform: "uppercase", letterSpacing: "0.1em", fontFamily: "var(--font-mono)", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                <span>Response</span>
+                <button onClick={() => copy(ep.res, "res")}
+                  style={{ background: "transparent", border: "none", cursor: "pointer", color: "var(--muted)", fontSize: 11, fontFamily: "var(--font-mono)" }}>
+                  {copied === "res" ? "✓ copied" : "copy"}
+                </button>
+              </div>
+              <pre style={{
+                background: "rgba(0,0,0,0.35)", border: "1px solid var(--border)",
+                borderLeft: "3px solid rgba(74,222,128,0.5)",
+                borderRadius: "0 6px 6px 0", padding: "14px 16px", margin: 0,
+                fontFamily: "var(--font-mono)", fontSize: 12, color: "#86efac", overflowX: "auto", lineHeight: 1.6,
+              }}>{ep.res}</pre>
+            </div>
+
+            {/* Base URL reference */}
+            <div style={{ marginTop: "auto", paddingTop: 12, borderTop: "1px solid var(--border)", fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--muted)" }}>
+              Base URL: <code style={{ color: "var(--accent)" }}>{API_BASE}</code>
+            </div>
+          </>
+        ) : (
+          /* Python example panel */
+          <>
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <span style={{ fontSize: 18 }}>🐍</span>
+              <span style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 14, color: "var(--text)" }}>Python Quick-Start</span>
+              <button onClick={() => copy(pyCode, "py")}
+                style={{ marginLeft: "auto", background: "var(--accent-dim)", border: "1px solid var(--accent-border)", borderRadius: 6, cursor: "pointer", color: "var(--accent)", fontSize: 11, fontFamily: "var(--font-mono)", padding: "4px 12px" }}>
+                {copied === "py" ? "✓ Copied" : "Copy"}
+              </button>
+            </div>
+            <p style={{ color: "var(--muted)", fontSize: 12, margin: 0, fontFamily: "var(--font-mono)", lineHeight: 1.7 }}>
+              Install <code style={{ color: "var(--accent)" }}>requests</code> via pip, then use the snippet below to start and stop log collection programmatically.
+            </p>
+            <pre style={{
+              background: "rgba(0,0,0,0.4)", border: "1px solid var(--border)",
+              borderLeft: "3px solid rgba(129,140,248,0.5)",
+              borderRadius: "0 8px 8px 0", padding: "16px 18px", margin: 0,
+              fontFamily: "var(--font-mono)", fontSize: 12, color: "#c4b5fd", overflowX: "auto", lineHeight: 1.7,
+            }}>{pyCode}</pre>
+          </>
+        )}
       </div>
     </div>
   );
@@ -1274,8 +1472,8 @@ function DeviceDetails({ device, isAdmin, onRequestLogin }) {
         {!isAdmin && (
           <div
             style={{
-              background: "rgba(124,106,255,0.07)",
-              border: "1px solid rgba(124,106,255,0.2)",
+              background: "rgba(129,140,248,0.07)",
+              border: "1px solid rgba(129,140,248,0.2)",
               borderRadius: 8,
               padding: "18px 20px",
               display: "flex",
@@ -1283,7 +1481,7 @@ function DeviceDetails({ device, isAdmin, onRequestLogin }) {
               gap: 14,
               fontFamily: "var(--font-mono)",
               fontSize: 12,
-              color: "#a89aff",
+              color: "#a78bfa",
             }}
           >
             <span style={{ fontSize: 22 }}>🔒</span>
@@ -1306,7 +1504,7 @@ function DeviceDetails({ device, isAdmin, onRequestLogin }) {
               padding: 16,
               fontFamily: "var(--font-mono)",
               fontSize: 12,
-              color: "#a8ff78",
+              color: "#86efac",
               overflowX: "auto",
               margin: 0,
             }}
@@ -1422,7 +1620,7 @@ function CollectionLoadingOverlay({ open }) {
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
-        background: "rgba(8,13,28,0.88)",
+        background: "rgba(9,9,15,0.88)",
         backdropFilter: "blur(8px)",
       }}
     >
@@ -1447,7 +1645,7 @@ function CollectionLoadingOverlay({ open }) {
             style={{ position: "absolute", inset: 0, animation: "lo-spin 3s linear infinite" }}
           >
             <circle cx="48" cy="48" r="44"
-              fill="none" stroke="rgba(0,229,200,0.18)" strokeWidth="2"
+              fill="none" stroke="rgba(129,140,248,0.18)" strokeWidth="2"
               strokeDasharray="40 8 20 8" />
           </svg>
           {/* Middle ring */}
@@ -1456,7 +1654,7 @@ function CollectionLoadingOverlay({ open }) {
             style={{ position: "absolute", inset: 0, animation: "lo-rspin 2s linear infinite" }}
           >
             <circle cx="48" cy="48" r="34"
-              fill="none" stroke="rgba(124,106,255,0.3)" strokeWidth="2.5"
+              fill="none" stroke="rgba(129,140,248,0.3)" strokeWidth="2.5"
               strokeDasharray="30 6" />
           </svg>
           {/* Inner pulsing core */}
@@ -1474,14 +1672,14 @@ function CollectionLoadingOverlay({ open }) {
                 width: 42,
                 height: 42,
                 borderRadius: "50%",
-                background: "radial-gradient(circle at 40% 40%, rgba(0,229,200,0.35), rgba(8,13,28,0.9))",
-                border: "1.5px solid rgba(0,229,200,0.5)",
+                background: "radial-gradient(circle at 40% 40%, rgba(129,140,248,0.35), rgba(9,9,15,0.9))",
+                border: "1.5px solid rgba(129,140,248,0.5)",
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "center",
                 fontSize: 20,
                 animation: "lo-pulse 1.6s ease-in-out infinite",
-                boxShadow: "0 0 24px rgba(0,229,200,0.25)",
+                boxShadow: "0 0 24px rgba(129,140,248,0.25)",
               }}
             >
               🐙
@@ -1839,7 +2037,7 @@ export default function App() {
         .map(
           (r) =>
             `<tr><td>${r.time ?? ""}</td><td>${r.device_name ?? ""}</td><td>${r.log_name ?? ""}</td><td style="color:${
-              (r.content ?? "").startsWith("ERROR") ? "#ff6666" : (r.content ?? "").startsWith("WARN") ? "#ffc800" : "inherit"
+              (r.content ?? "").startsWith("ERROR") ? "#f87171" : (r.content ?? "").startsWith("WARN") ? "#fbbf24" : "inherit"
             }">${(r.content ?? "").replace(/</g, "&lt;").replace(/>/g, "&gt;")}</td></tr>`
         )
         .join("\n");
@@ -1849,8 +2047,8 @@ export default function App() {
 <meta charset="UTF-8"/>
 <title>LogOctopus Export</title>
 <style>
-  body{font-family:'JetBrains Mono',monospace;background:#080d1c;color:#e8eaf0;margin:0;padding:24px}
-  h1{font-size:16px;color:#00e5c8;margin-bottom:16px}
+  body{font-family:'JetBrains Mono',monospace;background:#09090f;color:#e4e4f0;margin:0;padding:24px}
+  h1{font-size:16px;color:#818cf8;margin-bottom:16px}
   table{border-collapse:collapse;width:100%;font-size:12px}
   th{text-align:left;padding:8px 12px;border-bottom:2px solid rgba(255,255,255,0.12);color:#6b7280;text-transform:uppercase;font-size:10px;letter-spacing:.06em}
   td{padding:7px 12px;border-bottom:1px solid rgba(255,255,255,0.04);vertical-align:top;word-break:break-word}
@@ -1887,15 +2085,16 @@ ${rows}
   const cssVars = `
     @import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
     :root {
-      --bg: #080d1c; --surface: #0d1426; --card-bg: #111827; --modal-bg: #0f1625;
-      --border: rgba(255,255,255,0.08); --text: #e8eaf0; --muted: #6b7280; --accent: #00e5c8;
+      --bg: #09090f; --surface: #0e0e1a; --card-bg: #12121f; --modal-bg: #0f0f1c;
+      --border: rgba(255,255,255,0.07); --text: #e4e4f0; --muted: #64648a; --accent: #818cf8;
+      --accent-dim: rgba(129,140,248,0.12); --accent-border: rgba(129,140,248,0.3);
       --font-display: 'Syne', ui-sans-serif, sans-serif;
       --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
     }
     * { box-sizing: border-box; }
     body { margin: 0; background: var(--bg); color: var(--text); }
     ::-webkit-scrollbar { width: 6px; height: 6px; }
-    ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border-radius: 3px; }
+    ::-webkit-scrollbar-thumb { background: rgba(129,140,248,0.18); border-radius: 3px; }
     a { text-decoration: none; }
     ${PULSE_KF}
   `;
@@ -1951,15 +2150,9 @@ ${rows}
 
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8, marginRight: 12 }}>
-              <span style={{ width: 8, height: 8, borderRadius: "50%", background: "#00e564", boxShadow: "0 0 8px #00e564", animation: "pulse 2s infinite" }} />
+              <span style={{ width: 8, height: 8, borderRadius: "50%", background: "#4ade80", boxShadow: "0 0 8px #4ade80", animation: "pulse 2s infinite" }} />
               <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--muted)" }}>LIVE</span>
             </div>
-            {autoSchedule.enabled && autoSchedule.deviceIds.length > 0 && (
-              <div style={{ display: "flex", alignItems: "center", gap: 6, background: "rgba(0,229,200,0.08)", border: "1px solid rgba(0,229,200,0.2)", borderRadius: 20, padding: "3px 10px" }}>
-                <span style={{ fontSize: 11 }}>⏰</span>
-                <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--accent)" }}>AUTO {autoSchedule.intervalHours}h</span>
-              </div>
-            )}
             {/* Auth controls */}
             {auth.isAdmin ? (
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -1967,9 +2160,9 @@ ${rows}
                   style={{
                     fontFamily: "var(--font-mono)",
                     fontSize: 11,
-                    color: "#a89aff",
-                    background: "rgba(124,106,255,0.1)",
-                    border: "1px solid rgba(124,106,255,0.25)",
+                    color: "#a78bfa",
+                    background: "rgba(129,140,248,0.1)",
+                    border: "1px solid rgba(129,140,248,0.25)",
                     borderRadius: 20,
                     padding: "3px 10px",
                   }}
@@ -1983,7 +2176,7 @@ ${rows}
             )}
 
             <Btn variant="subtle" size="sm" onClick={() => setSettingsModal(true)}>⚙️ Settings</Btn>
-            <Btn variant="subtle" onClick={() => setApiModal(true)}>REST API</Btn>
+            <Btn variant="subtle" size="sm" onClick={() => setApiModal(true)}>⚡ REST API</Btn>
           </div>
         </header>
 
@@ -2023,6 +2216,8 @@ ${rows}
                     selected={selectedDevices.includes(d.id)}
                     onSelect={(checked) => toggleDevice(d.id, checked)}
                     onInfo={() => setDeviceModal(d)}
+                    autoEnabled={autoSchedule.enabled && autoSchedule.deviceIds.includes(d.id)}
+                    autoIntervalHours={autoSchedule.intervalHours}
                   />
                 ))}
               </div>
