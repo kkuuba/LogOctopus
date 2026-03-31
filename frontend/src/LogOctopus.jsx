@@ -308,16 +308,68 @@ function VirtualLogTable({ rows, colorMode }) {
             const bg = colorMode ? logColors[r.log_name] + "55" : "transparent";
             const isErr  = (r.content || "").startsWith("ERROR");
             const isWarn = (r.content || "").startsWith("WARN");
+
             return (
-              <tr key={absIdx} style={{ height: LOG_ROW_HEIGHT, borderBottom: "1px solid rgba(255,255,255,0.03)", background: bg }}>
-                <td style={{ padding: "0 12px", color: "var(--muted)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{r.time}</td>
-                <td style={{ padding: "0 12px", whiteSpace: "nowrap" }}>
+              <tr
+                key={absIdx}
+                style={{
+                  height: LOG_ROW_HEIGHT,
+                  borderBottom: "1px solid rgba(255,255,255,0.03)",
+                  background: bg
+                }}
+              >
+                {/* TIMESTAMP */}
+                <td style={{
+                  width: 180,
+                  padding: "0 12px",
+                  whiteSpace: "nowrap"
+                }}>
+                  {r.time}
+                </td>
+
+                {/* DEVICE */}
+                <td style={{
+                  width: 140,
+                  padding: "0 12px",
+                  whiteSpace: "nowrap",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis"
+                }}>
                   {r.device_name
                     ? <Badge color="default">{r.device_name}</Badge>
                     : <span style={{ color: "var(--muted)", fontSize: 11 }}>—</span>}
                 </td>
-                <td style={{ padding: "0 12px" }}><Badge color="cyan">{r.log_name}</Badge></td>
-                <td style={{ padding: "0 12px", color: isErr ? "#f87171" : isWarn ? "#fbbf24" : "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.content}</td>
+
+                {/* LOG NAME */}
+                <td style={{
+                  width: 130,
+                  padding: "0 12px",
+                  whiteSpace: "nowrap",
+                  overflow: "hidden"
+                }}>
+                  <div style={{
+                    overflow: "hidden",
+                    textOverflow: "ellipsis"
+                  }}>
+                    <Badge color="cyan">{r.log_name}</Badge>
+                  </div>
+                </td>
+
+                {/* CONTENT (critical fix) */}
+                <td style={{
+                  width: "auto",
+                  minWidth: 0,                 // 🔥 THIS FIXES OVERLAP
+                  padding: "0 12px",
+                }}>
+                  <div style={{
+                    color: isErr ? "#f87171" : isWarn ? "#fbbf24" : "var(--text)",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap"
+                  }}>
+                    {r.content}
+                  </div>
+                </td>
               </tr>
             );
           })}
