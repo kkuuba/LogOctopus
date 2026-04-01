@@ -243,85 +243,286 @@ function ChartContentView({ chartGroups }) {
   );
 }
 
-// ── LOG CONTENT VIEW (text) ───────────────────────────────────────────────────
-// Uses a simple virtual-scroll approach: only renders rows within the visible
-// viewport ± an overscan buffer, keeping the DOM lean for large log payloads.
-// ── LOG CONTENT VIEW (text) ───────────────────────────────────────────────────
+// ── MONACO LOADER HOOK ────────────────────────────────────────────────────────
+// Lazily injects the Monaco AMD bundle from jsDelivr the first time it is
+// needed, then resolves the global `monaco` object.  Subsequent calls return
+// immediately from the module-level promise cache.
+let _monacoPromise = null;
+function loadMonaco() {
+  if (_monacoPromise) return _monacoPromise;
+  _monacoPromise = new Promise((resolve, reject) => {
+    if (window.monaco) { resolve(window.monaco); return; }
+
+    // Loader script
+    const loaderScript = document.createElement("script");
+    loaderScript.src = "https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min/vs/loader.js";
+    loaderScript.onload = () => {
+      window.require.config({
+        paths: { vs: "https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min/vs" },
+      });
+      window.require(["vs/editor/editor.main"], () => {
+        // ── Register LogOctopus language ───────────────────────────────────
+        const LANG = "logoctopus";
+        if (!window.monaco.languages.getLanguages().some((l) => l.id === LANG)) {
+          window.monaco.languages.register({ id: LANG });
+
+          window.monaco.languages.setMonarchTokensProvider(LANG, {
+            tokenizer: {
+              root: [
+                // Timestamp  [2024-01-01 12:00:00]
+                [/\[\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}[^\]]*\]/, "log.timestamp"],
+                // Device column  [device_name]
+                [/\[[^\]]+\](?=\s*\[)/, "log.device"],
+                // Log-name column  [log_name]
+                [/\[[^\]]+\](?!\s*\[)/, "log.logname"],
+                // Severity keywords
+                [/\bERROR\b/, "log.error"],
+                [/\bWARN(?:ING)?\b/, "log.warn"],
+                [/\bINFO\b/, "log.info"],
+                [/\bDEBUG\b/, "log.debug"],
+                [/\bCRITICAL\b|\bFATAL\b/, "log.critical"],
+                // IP addresses
+                [/\b\d{1,3}(?:\.\d{1,3}){3}\b/, "log.ip"],
+                // Hex / numbers
+                [/\b0x[0-9a-fA-F]+\b/, "log.hex"],
+                [/\b\d+\b/, "log.number"],
+                // Quoted strings
+                [/"[^"]*"/, "log.string"],
+                [/'[^']*'/, "log.string"],
+              ],
+            },
+          });
+
+          // ── Dark theme ─────────────────────────────────────────────────
+          window.monaco.editor.defineTheme("logoctopus-dark", {
+            base: "vs-dark",
+            inherit: true,
+            rules: [
+              { token: "log.timestamp", foreground: "6b7280" },
+              { token: "log.device",    foreground: "818cf8", fontStyle: "bold" },
+              { token: "log.logname",   foreground: "22d3ee" },
+              { token: "log.error",     foreground: "f87171", fontStyle: "bold" },
+              { token: "log.critical",  foreground: "ff4444", fontStyle: "bold" },
+              { token: "log.warn",      foreground: "fbbf24", fontStyle: "bold" },
+              { token: "log.info",      foreground: "4ade80" },
+              { token: "log.debug",     foreground: "94a3b8" },
+              { token: "log.ip",        foreground: "fb923c" },
+              { token: "log.hex",       foreground: "a78bfa" },
+              { token: "log.number",    foreground: "f472b6" },
+              { token: "log.string",    foreground: "34d399" },
+            ],
+            colors: {
+              "editor.background":           "#09090f",
+              "editor.foreground":           "#e4e4f0",
+              "editorLineNumber.foreground": "#3f3f5a",
+              "editorLineNumber.activeForeground": "#818cf8",
+              "editor.lineHighlightBackground": "#ffffff0a",
+              "editorCursor.foreground":     "#818cf8",
+              "editor.selectionBackground":  "#818cf820",
+              "editorBracketMatch.background": "#818cf830",
+              "scrollbar.shadow":            "#00000000",
+              "scrollbarSlider.background":  "#ffffff14",
+              "scrollbarSlider.hoverBackground": "#ffffff22",
+            },
+          });
+
+          // ── Color-mode theme (per-logname background stripes) ──────────
+          window.monaco.editor.defineTheme("logoctopus-color", {
+            base: "vs-dark",
+            inherit: true,
+            rules: [
+              { token: "log.timestamp", foreground: "6b7280" },
+              { token: "log.device",    foreground: "c084fc", fontStyle: "bold" },
+              { token: "log.logname",   foreground: "67e8f9" },
+              { token: "log.error",     foreground: "fca5a5", fontStyle: "bold" },
+              { token: "log.critical",  foreground: "ff6666", fontStyle: "bold" },
+              { token: "log.warn",      foreground: "fde68a", fontStyle: "bold" },
+              { token: "log.info",      foreground: "86efac" },
+              { token: "log.debug",     foreground: "cbd5e1" },
+              { token: "log.ip",        foreground: "fdba74" },
+              { token: "log.hex",       foreground: "c4b5fd" },
+              { token: "log.number",    foreground: "f9a8d4" },
+              { token: "log.string",    foreground: "6ee7b7" },
+            ],
+            colors: {
+              "editor.background":           "#0d0d1a",
+              "editor.foreground":           "#f0f0ff",
+              "editorLineNumber.foreground": "#4040608",
+              "editorLineNumber.activeForeground": "#a78bfa",
+              "editor.lineHighlightBackground": "#ffffff0d",
+              "editorCursor.foreground":     "#a78bfa",
+              "editor.selectionBackground":  "#a78bfa25",
+              "scrollbarSlider.background":  "#ffffff18",
+              "scrollbarSlider.hoverBackground": "#ffffff28",
+            },
+          });
+        }
+        resolve(window.monaco);
+      });
+    };
+    loaderScript.onerror = reject;
+    document.head.appendChild(loaderScript);
+  });
+  return _monacoPromise;
+}
+
+// ── MONACO LOG VIEWER ─────────────────────────────────────────────────────────
+/**
+ * Renders log rows inside a Monaco Editor instance (read-only).
+ * Each row is formatted as:  [timestamp] [device] [log_name]  content
+ * Monaco tokenises the text with the logoctopus language for rich colouring.
+ *
+ * Props:
+ *   rows      – array of { time, device_name, log_name, content }
+ *   colorMode – bool; switches between logoctopus-dark and logoctopus-color themes
+ */
+function MonacoLogViewer({ rows, colorMode }) {
+  const containerRef  = useRef(null);
+  const editorRef     = useRef(null);
+  const modelRef      = useRef(null);
+  const [ready, setReady] = useState(false);
+  const [loadErr, setLoadErr] = useState(null);
+
+  // Build flat log text from rows
+  const logText = useRef("");
+  logText.current = rows && rows.length > 0
+    ? rows.map((r) =>
+        `[${r.time ?? ""}] [${r.device_name ?? ""}] [${r.log_name ?? ""}]  ${r.content ?? ""}`
+      ).join("\n")
+    : "";
+
+  // Load Monaco once, then create the editor
+  useEffect(() => {
+    let cancelled = false;
+    loadMonaco()
+      .then((monaco) => {
+        if (cancelled || !containerRef.current) return;
+
+        const model = monaco.editor.createModel(logText.current, "logoctopus");
+        modelRef.current = model;
+
+        const editor = monaco.editor.create(containerRef.current, {
+          model,
+          theme:             colorMode ? "logoctopus-color" : "logoctopus-dark",
+          readOnly:          true,
+          minimap:           { enabled: true, renderCharacters: false },
+          scrollBeyondLastLine: false,
+          wordWrap:          "off",
+          lineNumbers:       "on",
+          renderLineHighlight: "line",
+          fontFamily:        "'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace",
+          fontSize:          12,
+          lineHeight:        20,
+          padding:           { top: 12, bottom: 12 },
+          smoothScrolling:   true,
+          cursorBlinking:    "smooth",
+          scrollbar: {
+            verticalScrollbarSize:   10,
+            horizontalScrollbarSize: 10,
+            useShadows:              false,
+          },
+          overviewRulerLanes: 3,
+          folding:           false,
+          contextmenu:       true,
+          quickSuggestions:  false,
+          links:             false,
+          // Highlight find matches without the widget stealing focus
+          find: {
+            addExtraSpaceOnTop:       false,
+            autoFindInSelection:      "never",
+            seedSearchStringFromSelection: "never",
+          },
+        });
+        editorRef.current = editor;
+        setReady(true);
+      })
+      .catch((e) => {
+        if (!cancelled) setLoadErr(e?.message || "Monaco failed to load");
+      });
+
+    return () => {
+      cancelled = true;
+      editorRef.current?.dispose();
+      modelRef.current?.dispose();
+      editorRef.current = null;
+      modelRef.current  = null;
+    };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Sync model content when rows change (after initial mount)
+  useEffect(() => {
+    if (!modelRef.current) return;
+    const model = modelRef.current;
+    const newText = logText.current;
+    if (model.getValue() !== newText) {
+      model.setValue(newText);
+      // Jump to last line for live-appended logs
+      editorRef.current?.revealLine(model.getLineCount());
+    }
+  }, [rows]);
+
+  // Swap theme when colorMode toggles
+  useEffect(() => {
+    if (!ready || !window.monaco) return;
+    window.monaco.editor.setTheme(colorMode ? "logoctopus-color" : "logoctopus-dark");
+  }, [colorMode, ready]);
+
+  // Resize editor when the container resizes (e.g. modal expand)
+  useEffect(() => {
+    if (!ready || !editorRef.current || !containerRef.current) return;
+    const ro = new ResizeObserver(() => editorRef.current?.layout());
+    ro.observe(containerRef.current);
+    return () => ro.disconnect();
+  }, [ready]);
+
+  if (loadErr) {
+    return (
+      <div style={{
+        padding: 24, fontFamily: "var(--font-mono)", fontSize: 12,
+        color: "#f87171", background: "rgba(248,113,113,0.06)",
+        border: "1px solid rgba(248,113,113,0.2)", borderRadius: 8,
+      }}>
+        ⚠ Monaco failed to load: {loadErr}
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ position: "relative", flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
+      {!ready && (
+        <div style={{
+          position: "absolute", inset: 0, display: "flex",
+          alignItems: "center", justifyContent: "center",
+          background: "#09090f", borderRadius: 8, zIndex: 1,
+        }}>
+          <Spinner />
+        </div>
+      )}
+      <div
+        ref={containerRef}
+        style={{
+          flex: 1,
+          minHeight: 0,
+          borderRadius: 8,
+          overflow: "hidden",
+          opacity: ready ? 1 : 0,
+          transition: "opacity 0.2s",
+        }}
+      />
+    </div>
+  );
+}
+
+// ── LOG CONTENT VIEW ──────────────────────────────────────────────────────────
 function LogContentView({ rows, isChart, colorMode, chartGroups }) {
   if (isChart) return <ChartContentView chartGroups={chartGroups} />;
 
-  if (!rows || rows.length === 0) return <p style={{ color: "var(--muted)" }}>No data.</p>;
-
-  const logColors = {};
-  // const palette = ["#2d6a4f", "#1d3557", "#5c2d91", "#7b2d00", "#004e64", "#3d2645"];
-  const palette = ["#34d399", "#60a5fa", "#a78bfa", "#f87171", "#fbbf24", "#22d3ee", "#fb923c", "#e879f9", "#4ade80", "#004e64", "#3d2645"];
-  [...new Set(rows.map((r) => r.log_name))].forEach((n, i) => {
-    logColors[n] = palette[i % palette.length];
-  });
+  if (!rows || rows.length === 0)
+    return <p style={{ color: "var(--muted)" }}>No data.</p>;
 
   return (
-    <div style={{ overflowX: "auto" }}>
-      <table
-        style={{
-          width: "100%",
-          borderCollapse: "collapse",
-          fontFamily: "var(--font-mono)",
-          fontSize: 12,
-        }}
-      >
-        <thead>
-          <tr>
-            {["Timestamp", "Device Name", "Log Name", "Content"].map((h) => (
-              <th
-                key={h}
-                style={{
-                  padding: "8px 12px",
-                  textAlign: "left",
-                  color: "var(--muted)",
-                  borderBottom: "1px solid var(--border)",
-                  fontSize: 14,
-                  textTransform: "uppercase",
-                  letterSpacing: "0.06em",
-                  whiteSpace: "nowrap"
-                }}
-              >
-                {h}
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((r, i) => {
-            const bg = colorMode ? logColors[r.log_name] + "66" : "transparent";
-            const isErr = (r.content || "").startsWith("ERROR");
-            const isWarn = (r.content || "").startsWith("WARN");
-            return (
-              <tr
-                key={i}
-                style={{ borderBottom: "1px solid rgba(255,255,255,0.04)", background: bg }}
-              >
-                <td style={{ padding: "7px 12px", color: "var(--text)", whiteSpace: "nowrap" }}>
-                  {r.time}
-                </td>
-                <td style={{ padding: "7px 12px", color: "var(--text)", whiteSpace: "nowrap" }}>
-                  <strong>{r.device_name}</strong>
-                </td>
-                <td style={{ padding: "7px 12px", whiteSpace: "nowrap", color: "var(--text)"}}>
-                  <Badge color="cyan">{r.log_name}</Badge>
-                </td>
-                <td
-                  style={{
-                    padding: "7px 12px",
-                    color: isErr ? "#ff6666" : isWarn ? "#ffc800" : "var(--text)",
-                  }}
-                >
-                  {r.content}
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
+    <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
+      <MonacoLogViewer rows={rows} colorMode={colorMode} />
     </div>
   );
 }
@@ -828,7 +1029,8 @@ function Modal({ open, onClose, title, size = "lg", children, footer }) {
           borderRadius: 12,
           width: widths[size] || widths.lg,
           maxWidth: "calc(100vw - 40px)",
-          maxHeight: "calc(100vh - 40px)",
+          height:    size === "full" ? "calc(100vh - 40px)" : undefined,
+          maxHeight: size === "full" ? "calc(100vh - 40px)" : "calc(100vh - 40px)",
           display: "flex",
           flexDirection: "column",
           boxShadow: "0 24px 60px rgba(0,0,0,0.6)",
@@ -870,7 +1072,19 @@ function Modal({ open, onClose, title, size = "lg", children, footer }) {
             ×
           </button>
         </div>
-        <div data-log-scroll style={{ flex: 1, overflowY: "auto", padding: "20px 24px" }}>{children}</div>
+        <div
+          data-log-scroll
+          style={{
+            flex: 1,
+            overflowY: size === "full" ? "hidden" : "auto",
+            padding: size === "full" ? "12px 16px" : "20px 24px",
+            display: "flex",
+            flexDirection: "column",
+            minHeight: 0,
+          }}
+        >
+          {children}
+        </div>
         {footer && (
           <div
             style={{
@@ -2311,12 +2525,14 @@ ${rows}
         {logRowsLoading ? (
           <Spinner />
         ) : (
-          <LogContentView
-            rows={logRows}
-            isChart={isChart}
-            colorMode={colorMode}
-            chartGroups={chartGroups}
-          />
+          <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
+            <LogContentView
+              rows={logRows}
+              isChart={isChart}
+              colorMode={colorMode}
+              chartGroups={chartGroups}
+            />
+          </div>
         )}
       </Modal>
 
