@@ -246,149 +246,84 @@ function ChartContentView({ chartGroups }) {
 // ── LOG CONTENT VIEW (text) ───────────────────────────────────────────────────
 // Uses a simple virtual-scroll approach: only renders rows within the visible
 // viewport ± an overscan buffer, keeping the DOM lean for large log payloads.
-const LOG_ROW_HEIGHT = 30; // px – must match the tr height below
-const OVERSCAN       = 40; // extra rows rendered above/below viewport
+// ── LOG CONTENT VIEW (text) ───────────────────────────────────────────────────
+function LogContentView({ rows, isChart, colorMode, chartGroups }) {
+  if (isChart) return <ChartContentView chartGroups={chartGroups} />;
 
-function VirtualLogTable({ rows, colorMode }) {
-  const containerRef = useRef(null);
-  const [scrollTop,     setScrollTop]     = useState(0);
-  const [containerHeight, setContainerHeight] = useState(500);
-
-  useEffect(() => {
-    const el = containerRef.current;
-    if (!el) return;
-    // Observe the scrollable modal body (two levels up from the sticky header wrapper)
-    const scrollEl = el.closest('[data-log-scroll]') || el.parentElement;
-    const resizeObs = new ResizeObserver(() => setContainerHeight(scrollEl.clientHeight));
-    resizeObs.observe(scrollEl);
-    const onScroll = () => setScrollTop(scrollEl.scrollTop);
-    scrollEl.addEventListener('scroll', onScroll, { passive: true });
-    setContainerHeight(scrollEl.clientHeight);
-    return () => { scrollEl.removeEventListener('scroll', onScroll); resizeObs.disconnect(); };
-  }, []);
+  if (!rows || rows.length === 0) return <p style={{ color: "var(--muted)" }}>No data.</p>;
 
   const logColors = {};
-  const palette = ["#2d6a4f", "#1d3557", "#5c2d91", "#7b2d00", "#004e64", "#3d2645"];
+  // const palette = ["#2d6a4f", "#1d3557", "#5c2d91", "#7b2d00", "#004e64", "#3d2645"];
+  const palette = ["#34d399", "#60a5fa", "#a78bfa", "#f87171", "#fbbf24", "#22d3ee", "#fb923c", "#e879f9", "#4ade80", "#004e64", "#3d2645"];
   [...new Set(rows.map((r) => r.log_name))].forEach((n, i) => {
     logColors[n] = palette[i % palette.length];
   });
 
-  const totalHeight = rows.length * LOG_ROW_HEIGHT;
-  const startIdx = Math.max(0, Math.floor(scrollTop / LOG_ROW_HEIGHT) - OVERSCAN);
-  const endIdx   = Math.min(rows.length, Math.ceil((scrollTop + containerHeight) / LOG_ROW_HEIGHT) + OVERSCAN);
-  const visibleRows = rows.slice(startIdx, endIdx);
-
   return (
-    <div ref={containerRef} style={{ overflowX: "auto" }}>
-      <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: "var(--font-mono)", fontSize: 12, tableLayout: "fixed" }}>
-        <colgroup>
-          <col style={{ width: 160 }} />
-          <col style={{ width: 120 }} />
-          <col style={{ width: 130 }} />
-          <col />
-        </colgroup>
-        <thead style={{ position: "sticky", top: 0, background: "var(--modal-bg)", zIndex: 2 }}>
+    <div style={{ overflowX: "auto" }}>
+      <table
+        style={{
+          width: "100%",
+          borderCollapse: "collapse",
+          fontFamily: "var(--font-mono)",
+          fontSize: 12,
+        }}
+      >
+        <thead>
           <tr>
-            {["Timestamp", "Device", "Log Name", "Content"].map((h) => (
-              <th key={h} style={{ padding: "8px 12px", textAlign: "left", color: "var(--muted)", borderBottom: "1px solid var(--border)", fontSize: 10, textTransform: "uppercase", letterSpacing: "0.06em" }}>
+            {["Timestamp", "Device Name", "Log Name", "Content"].map((h) => (
+              <th
+                key={h}
+                style={{
+                  padding: "8px 12px",
+                  textAlign: "left",
+                  color: "var(--muted)",
+                  borderBottom: "1px solid var(--border)",
+                  fontSize: 14,
+                  textTransform: "uppercase",
+                  letterSpacing: "0.06em",
+                  whiteSpace: "nowrap"
+                }}
+              >
                 {h}
               </th>
             ))}
           </tr>
         </thead>
         <tbody>
-          {/* Spacer above visible rows */}
-          {startIdx > 0 && (
-            <tr style={{ height: startIdx * LOG_ROW_HEIGHT }}>
-              <td colSpan={4} />
-            </tr>
-          )}
-          {visibleRows.map((r, localIdx) => {
-            const absIdx = startIdx + localIdx;
-            const bg = colorMode ? logColors[r.log_name] + "55" : "transparent";
-            const isErr  = (r.content || "").startsWith("ERROR");
+          {rows.map((r, i) => {
+            const bg = colorMode ? logColors[r.log_name] + "66" : "transparent";
+            const isErr = (r.content || "").startsWith("ERROR");
             const isWarn = (r.content || "").startsWith("WARN");
-
             return (
               <tr
-                key={absIdx}
-                style={{
-                  height: LOG_ROW_HEIGHT,
-                  borderBottom: "1px solid rgba(255,255,255,0.03)",
-                  background: bg
-                }}
+                key={i}
+                style={{ borderBottom: "1px solid rgba(255,255,255,0.04)", background: bg }}
               >
-                {/* TIMESTAMP */}
-                <td style={{
-                  width: 180,
-                  padding: "0 12px",
-                  whiteSpace: "nowrap"
-                }}>
+                <td style={{ padding: "7px 12px", color: "var(--text)", whiteSpace: "nowrap" }}>
                   {r.time}
                 </td>
-
-                {/* DEVICE */}
-                <td style={{
-                  width: 140,
-                  padding: "0 12px",
-                  whiteSpace: "nowrap",
-                  overflow: "hidden",
-                  textOverflow: "ellipsis"
-                }}>
-                  {r.device_name
-                    ? <Badge color="default">{r.device_name}</Badge>
-                    : <span style={{ color: "var(--muted)", fontSize: 11 }}>—</span>}
+                <td style={{ padding: "7px 12px", color: "var(--text)", whiteSpace: "nowrap" }}>
+                  <strong>{r.device_name}</strong>
                 </td>
-
-                {/* LOG NAME */}
-                <td style={{
-                  width: 130,
-                  padding: "0 12px",
-                  whiteSpace: "nowrap",
-                  overflow: "hidden"
-                }}>
-                  <div style={{
-                    overflow: "hidden",
-                    textOverflow: "ellipsis"
-                  }}>
-                    <Badge color="cyan">{r.log_name}</Badge>
-                  </div>
+                <td style={{ padding: "7px 12px", whiteSpace: "nowrap", color: "var(--text)"}}>
+                  <Badge color="cyan">{r.log_name}</Badge>
                 </td>
-
-                {/* CONTENT (critical fix) */}
-                <td style={{
-                  width: "auto",
-                  minWidth: 0,                 // 🔥 THIS FIXES OVERLAP
-                  padding: "0 12px",
-                }}>
-                  <div style={{
-                    color: isErr ? "#f87171" : isWarn ? "#fbbf24" : "var(--text)",
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    whiteSpace: "nowrap"
-                  }}>
-                    {r.content}
-                  </div>
+                <td
+                  style={{
+                    padding: "7px 12px",
+                    color: isErr ? "#ff6666" : isWarn ? "#ffc800" : "var(--text)",
+                  }}
+                >
+                  {r.content}
                 </td>
               </tr>
             );
           })}
-          {/* Spacer below visible rows */}
-          {endIdx < rows.length && (
-            <tr style={{ height: (rows.length - endIdx) * LOG_ROW_HEIGHT }}>
-              <td colSpan={4} />
-            </tr>
-          )}
         </tbody>
       </table>
     </div>
   );
-}
-
-function LogContentView({ rows, isChart, colorMode, chartGroups }) {
-  if (isChart) return <ChartContentView chartGroups={chartGroups} />;
-  if (!rows || rows.length === 0) return <p style={{ color: "var(--muted)" }}>No data.</p>;
-  return <VirtualLogTable rows={rows} colorMode={colorMode} />;
 }
 
 // ── DOWNLOAD MENU ─────────────────────────────────────────────────────────────
@@ -1135,7 +1070,7 @@ function DeviceCard({ device, selected, onSelect, onInfo, autoEnabled, autoInter
         }}>
           <span style={{ fontSize: 10 }}>⏰</span>
           <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--accent)", fontWeight: 600 }}>
-            AUTO-COLLECTION {autoIntervalHours}h
+            AUTO {autoIntervalHours}h
           </span>
         </div>
       )}
