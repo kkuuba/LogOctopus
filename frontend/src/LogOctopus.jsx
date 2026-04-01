@@ -366,20 +366,67 @@ function loadMonaco() {
   return _monacoPromise;
 }
 
+// ── LINE-NUMBER COLOR PALETTE ─────────────────────────────────────────────────
+// Each unique (device_name, log_name) pair gets a stable color from this list.
+const LN_COLOR_PALETTE = [
+  "#818cf8", // indigo
+  "#34d399", // emerald
+  "#fb923c", // orange
+  "#f472b6", // pink
+  "#60a5fa", // blue
+  "#a78bfa", // violet
+  "#facc15", // yellow
+  "#2dd4bf", // teal
+  "#f87171", // red
+  "#c084fc", // purple
+];
+
+// Singleton <style> element that holds .lo-ln-N rules injected once.
+let _lnStyleEl = null;
+function ensureLnStyleEl() {
+  if (_lnStyleEl) return _lnStyleEl;
+  _lnStyleEl = document.createElement("style");
+  _lnStyleEl.id = "lo-ln-colors";
+  document.head.appendChild(_lnStyleEl);
+  // Generate one CSS rule per palette slot up front.
+  _lnStyleEl.textContent = LN_COLOR_PALETTE.map(
+    (color, i) =>
+      // Monaco renders the gutter decoration as a child span inside .cgmr
+      // Using !important to override the theme's editorLineNumber.foreground
+      `.lo-ln-${i} { color: ${color} !important; }`
+  ).join("\n");
+  return _lnStyleEl;
+}
+
+// Build a key→colorIndex map from the current rows, preserving insertion order.
+function buildPairColorMap(rows) {
+  const map = new Map(); // key → index
+  if (!rows) return map;
+  for (const r of rows) {
+    const key = `${r.device_name ?? ""}|${r.log_name ?? ""}`;
+    if (!map.has(key)) map.set(key, map.size % LN_COLOR_PALETTE.length);
+  }
+  return map;
+}
+
 // ── MONACO LOG VIEWER ─────────────────────────────────────────────────────────
 /**
  * Renders log rows inside a Monaco Editor instance (read-only).
  * Each row is formatted as:  [timestamp] [device] [log_name]  content
  * Monaco tokenises the text with the logoctopus language for rich colouring.
  *
+ * When colorMode is on, each unique (device_name, log_name) pair gets its own
+ * line-number color applied via Monaco gutter decorations + injected CSS classes.
+ *
  * Props:
  *   rows      – array of { time, device_name, log_name, content }
  *   colorMode – bool; switches between logoctopus-dark and logoctopus-color themes
  */
 function MonacoLogViewer({ rows, colorMode }) {
-  const containerRef  = useRef(null);
-  const editorRef     = useRef(null);
-  const modelRef      = useRef(null);
+  const containerRef      = useRef(null);
+  const editorRef         = useRef(null);
+  const modelRef          = useRef(null);
+  const decorationsRef    = useRef([]); // current decoration IDs
   const [ready, setReady] = useState(false);
   const [loadErr, setLoadErr] = useState(null);
 
@@ -390,6 +437,47 @@ function MonacoLogViewer({ rows, colorMode }) {
         `[${r.time ?? ""}] [${r.device_name ?? ""}] [${r.log_name ?? ""}]  ${r.content ?? ""}`
       ).join("\n")
     : "";
+
+  // ── Apply / clear line-number decorations ────────────────────────────────
+  const applyLineNumberDecorations = useCallback((rowsData, isColor) => {
+    const editor = editorRef.current;
+    if (!editor) return;
+
+    if (!isColor) {
+      // Clear all decorations in raw mode
+      decorationsRef.current = editor.deltaDecorations(decorationsRef.current, []);
+      return;
+    }
+
+    ensureLnStyleEl();
+    const pairColorMap = buildPairColorMap(rowsData);
+
+    const newDecorations = (rowsData ?? []).map((r, lineIndex) => {
+      const key = `${r.device_name ?? ""}|${r.log_name ?? ""}`;
+      const colorIndex = pairColorMap.get(key) ?? 0;
+      return {
+        range: {
+          startLineNumber: lineIndex + 1,
+          startColumn: 1,
+          endLineNumber: lineIndex + 1,
+          endColumn: 1,
+        },
+        options: {
+          // linesDecorationsClassName adds the class to the gutter decoration
+          // element (the thin strip left of the line number), but we can also
+          // target the line-number text itself via the lineNumberClassName option
+          // available in newer Monaco. We use both for maximum compatibility.
+          linesDecorationsClassName: `lo-ln-${colorIndex}`,
+          lineNumberClassName: `lo-ln-${colorIndex}`,
+        },
+      };
+    });
+
+    decorationsRef.current = editor.deltaDecorations(
+      decorationsRef.current,
+      newDecorations
+    );
+  }, []);
 
   // Load Monaco once, then create the editor
   useEffect(() => {
@@ -446,6 +534,7 @@ function MonacoLogViewer({ rows, colorMode }) {
       modelRef.current?.dispose();
       editorRef.current = null;
       modelRef.current  = null;
+      decorationsRef.current = [];
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -460,6 +549,12 @@ function MonacoLogViewer({ rows, colorMode }) {
       editorRef.current?.revealLine(model.getLineCount());
     }
   }, [rows]);
+
+  // Apply decorations whenever rows or colorMode change (and editor is ready)
+  useEffect(() => {
+    if (!ready) return;
+    applyLineNumberDecorations(rows, colorMode);
+  }, [rows, colorMode, ready, applyLineNumberDecorations]);
 
   // Swap theme when colorMode toggles
   useEffect(() => {
