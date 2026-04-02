@@ -9,7 +9,7 @@ services:
     environment:
       HOST: "0.0.0.0"
       PORT: "8050"
-      FRONTEND_BASE: "http://192.168.100.49:8100"
+      FRONTEND_BASE: "http://${HOST_IP}:8100"
     volumes:
       - ./data:/app/data
       - ./settings.json:/app/settings.json
@@ -22,7 +22,7 @@ services:
       context: .
       dockerfile: Dockerfile.frontend
       args:
-        VITE_API_BASE: "http://192.168.100.49:8050"
+        VITE_API_BASE: "http://${HOST_IP}:8050"
     restart: unless-stopped
     ports:
       - "8100:8100"

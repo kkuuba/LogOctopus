@@ -389,11 +389,18 @@ function ensureLnStyleEl() {
   _lnStyleEl.id = "lo-ln-colors";
   document.head.appendChild(_lnStyleEl);
   // Generate one CSS rule per palette slot up front.
+  // .lo-ln-N targets the full line content area (via Monaco's className option).
+  // The left-border acts as a color indicator; background tints the whole line.
   _lnStyleEl.textContent = LN_COLOR_PALETTE.map(
-    (color, i) =>
-      // Monaco renders the gutter decoration as a child span inside .cgmr
-      // Using !important to override the theme's editorLineNumber.foreground
-      `.lo-ln-${i} { color: ${color} !important; }`
+    (color, i) => [
+      // isWholeLine:true makes Monaco render a single <div> spanning the full
+      // editor width — setting background on it gives the full-line tint.
+      `.lo-ln-${i} { background: ${color}22 !important; }`,
+      // Line number colored to match the line's accent color
+      `.lo-ln-num-${i} { color: ${color} !important; }`,
+      // Gutter strip — thin colored bar left of the line number
+      `.lo-ln-gutter-${i} { background: ${color} !important; width: 3px !important; margin-left: 2px; }`,
+    ].join("\n")
   ).join("\n");
   return _lnStyleEl;
 }
@@ -416,7 +423,8 @@ function buildPairColorMap(rows) {
  * Monaco tokenises the text with the logoctopus language for rich colouring.
  *
  * When colorMode is on, each unique (device_name, log_name) pair gets its own
- * line-number color applied via Monaco gutter decorations + injected CSS classes.
+ * full-line background tint + gutter color strip applied via Monaco decorations
+ * (isWholeLine:true + className) and injected CSS classes.
  *
  * Props:
  *   rows      – array of { time, device_name, log_name, content }
@@ -463,12 +471,14 @@ function MonacoLogViewer({ rows, colorMode }) {
           endColumn: 1,
         },
         options: {
-          // linesDecorationsClassName adds the class to the gutter decoration
-          // element (the thin strip left of the line number), but we can also
-          // target the line-number text itself via the lineNumberClassName option
-          // available in newer Monaco. We use both for maximum compatibility.
-          linesDecorationsClassName: `lo-ln-${colorIndex}`,
-          lineNumberClassName: `lo-ln-${colorIndex}`,
+          // isWholeLine stretches the decoration div across the full editor
+          // width so the background tint covers the entire line, not just tokens.
+          isWholeLine:               true,
+          className:                `lo-ln-${colorIndex}`,
+          // Color the line number to match the line's accent color
+          lineNumberClassName:      `lo-ln-num-${colorIndex}`,
+          // Separate class for the gutter strip (left of line numbers)
+          linesDecorationsClassName: `lo-ln-gutter-${colorIndex}`,
         },
       };
     });
@@ -1171,7 +1181,7 @@ function Modal({ open, onClose, title, size = "lg", children, footer }) {
           data-log-scroll
           style={{
             flex: 1,
-            overflowY: size === "full" ? "hidden" : "auto",
+            overflowY: "auto",
             padding: size === "full" ? "12px 16px" : "20px 24px",
             display: "flex",
             flexDirection: "column",
