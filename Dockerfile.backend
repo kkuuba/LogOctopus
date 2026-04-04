@@ -24,4 +24,12 @@ ENV PYTHONUNBUFFERED=1
 
 EXPOSE 8050
 
-CMD ["python", "-m", "backend.app"]
+# Gunicorn serves the Flask app over HTTPS.
+# The WSGI callable is expected at backend.app:app — adjust if yours differs.
+CMD gunicorn \
+      --bind "0.0.0.0:${PORT}" \
+      --workers "${GUNICORN_WORKERS:-4}" \
+      --threads "${GUNICORN_THREADS:-2}" \
+      --access-logfile - \
+      --error-logfile  - \
+      backend.app:app
