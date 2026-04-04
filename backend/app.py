@@ -1,6 +1,7 @@
 """
 LogOctopus – Flask REST API backend
 Replaces the Dash app.py with pure REST endpoints consumable by the React frontend.
+Served by Gunicorn in production; import `app` directly.
 """
 
 import os
@@ -19,10 +20,7 @@ from backend.utils.device_config_loader import DeviceConfigLoader
 from backend.utils.config_helper import ConfigurationHelper
 
 
-
 SETTINGS_FILE = Path("settings.json")
-HOST = os.getenv("HOST", "localhost")
-PORT = int(os.getenv("PORT", 8050))
 FRONTEND_BASE = os.getenv("FRONTEND_BASE", "http://localhost:8100")
 
 app = Flask(__name__)
@@ -46,7 +44,6 @@ def get_target_device(device_id: str) -> Device | None:
 
 def device_to_dict(device: Device) -> dict:
     """Serialise a Device to a JSON-safe dict for the frontend."""
-
     return {
         "id":          device.device_config_id,
         "name":        device.device_name,
@@ -66,9 +63,9 @@ def snapshot_to_dict(snapshot) -> dict:
         "startTime":   str(snapshot.start_time),
         "finishTime":  str(snapshot.finish_time),
         "duration":    snapshot.logs_collection_duration,
-        "sizeKb":      int(snapshot.size_in_bytes/1000),
+        "sizeKb":      int(snapshot.size_in_bytes / 1000),
         "sessionId":   snapshot.session_id,
-        "isChart":     snapshot.log_type
+        "isChart":     snapshot.log_type,
     }
 
 
@@ -184,10 +181,10 @@ def list_snapshots():
     Response 200:
         [{ id, deviceName, logName, startTime, finishTime, duration, sizeKb, sessionId, isChart }, …]
     """
-    search_param  = request.args.get("search_param")
-    search_value  = request.args.get("search_value")
-    log_type      = request.args.get("log_type", "text")
-    is_chart      = log_type == "chart"
+    search_param = request.args.get("search_param")
+    search_value = request.args.get("search_value")
+    log_type     = request.args.get("log_type", "text")
+    is_chart     = log_type == "chart"
 
     devices = get_current_devices()
 
@@ -302,7 +299,7 @@ def set_auto_collection():
         }
 
     Response 200:
-        { "status": "ok", "scheduler_active": true | false }
+        { "status": "ok", "auto_collection_active": true | false }
     """
     body           = request.get_json(force=True)
     enabled        = bool(body.get("enabled", False))
@@ -326,8 +323,6 @@ def set_auto_collection():
 def change_password():
     """
     Update the admin password hash stored in settings.json.
-    The frontend validates the current password client-side; this endpoint
-    only persists the new hash for future reference and server-side tooling.
 
     Request body:
         { "new_password": "…" }
@@ -349,9 +344,3 @@ def change_password():
     _save_settings(settings)
 
     return jsonify({"status": "ok"})
-
-
-# ── entry point ───────────────────────────────────────────────────────────────
-
-if __name__ == "__main__":
-    app.run(host=HOST, port=PORT, debug=True, use_reloader=False)

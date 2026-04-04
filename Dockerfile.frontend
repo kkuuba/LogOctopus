@@ -8,10 +8,9 @@ RUN npm ci
 
 COPY frontend/ ./
 
-# VITE_API_BASE points directly at the backend — must be reachable from the
-# user's browser, so use the server's public IP or hostname, not "backend".
-# Override via --build-arg or the build.args section in docker-compose.yml.
-ARG VITE_API_BASE=http://localhost:8050
+# VITE_API_BASE is supplied at build time from docker-compose.yml, which reads
+# HOST_IP and BACKEND_PORT from .env – no value is baked in here by default.
+ARG VITE_API_BASE
 ENV VITE_API_BASE=$VITE_API_BASE
 
 RUN npm run build
@@ -19,6 +18,6 @@ RUN npm run build
 # 'serve' handles SPA client-side routing (falls back to index.html)
 RUN npm install -g serve
 
-EXPOSE 8100
+EXPOSE ${FRONTEND_PORT}
 
-CMD ["serve", "-s", "dist", "-l", "8100"]
+CMD ["sh", "-c", "serve -s dist -l ${FRONTEND_PORT}"]
