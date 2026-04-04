@@ -1576,8 +1576,8 @@ requests.post(f"{BASE}/api/stop-logs-collection",
     DELETE: { bg: "rgba(248,113,113,0.12)", text: "#f87171",  border: "rgba(248,113,113,0.25)" },
   };
 
-  const ep = endpoints[active];
-  const mc = METHOD_COLORS[ep.method] || METHOD_COLORS.GET;
+  const ep = active < endpoints.length ? endpoints[active] : null;
+  const mc = ep ? METHOD_COLORS[ep.method] || METHOD_COLORS.GET : METHOD_COLORS.GET;
 
   return (
     <div style={{ display: "flex", gap: 0, height: "100%", minHeight: 420 }}>
