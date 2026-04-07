@@ -78,8 +78,6 @@ class ConfigurationHelper:
 
         filtered_log_snapshots_list = []
         for log_snapshot_info in filterable_log_snapshots_list:
-            print(search_value)
-            print(log_snapshot_info[search_paramter])
             if search_value in log_snapshot_info[search_paramter]:
                 filtered_log_snapshots_list.append(log_snapshot_info["object_instance"])
 

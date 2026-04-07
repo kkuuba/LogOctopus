@@ -71,7 +71,7 @@ class LogSnapshot:
         Returns:
             str: Data file path for LogSnapshot in 'parqet' format.
         """
-        data_file_path = f"data/{device_name}/{self.log_name}_#$#_{self.session_id}_#$#{self.session_scenario}_#$#_{self.log_type}_#$#_{self.creation_time.strftime('%Y%m%d_%H%M%S')}.parquet"
+        data_file_path = f"data/{device_name}/{self.log_name}_#$#_{self.session_id}_#$#_{self.session_scenario}_#$#_{self.log_type}_#$#_{self.creation_time.strftime('%Y%m%d_%H%M%S')}.parquet"
         self.collected_data.to_parquet(data_file_path, engine="pyarrow", index=False)
 
         return data_file_path

@@ -54,6 +54,7 @@ def _make_snapshot(
     duration=300.0,
     size_bytes=42_000,
     session_id="abc123def456",
+    session_scenario="test_1",
     log_type=False,
 ):
     """Return a mock snapshot with sensible defaults."""
@@ -66,6 +67,7 @@ def _make_snapshot(
     snap.logs_collection_duration = duration
     snap.size_in_bytes            = size_bytes
     snap.session_id               = session_id
+    snap.session_scenario         = session_scenario
     snap.log_type                 = log_type
     return snap
 
@@ -327,24 +329,24 @@ class TestStartLogsCollection:
     def test_starts_collection_on_matching_devices(self, client):
         device = _make_device(name="Router-A")
         with patch("backend.app.get_current_devices", return_value=[device]):
-            resp = self._post(client, {"selected_devices": ["Router-A"]})
+            resp = self._post(client, {"selected_devices": ["Router-A"], "session_scenario": "test_1"})
 
         assert resp.status_code == 200
         data = resp.get_json()
         assert data["status"] == "logs collection started"
         assert len(data["session_id"]) == 12
-        device.start_logs_collection.assert_called_once_with(data["session_id"])
+        device.start_logs_collection.assert_called_once_with(data["session_id"], "test_1")
 
     def test_skips_devices_not_in_selection(self, client):
         device = _make_device(name="Router-A")
         with patch("backend.app.get_current_devices", return_value=[device]):
-            resp = self._post(client, {"selected_devices": ["Router-B"]})
+            resp = self._post(client, {"selected_devices": ["Router-B"], "session_scenario": "test_1"})
 
         assert resp.status_code == 200
         device.start_logs_collection.assert_not_called()
 
     def test_returns_400_when_selected_devices_is_not_list(self, client):
-        resp = self._post(client, {"selected_devices": "Router-A"})
+        resp = self._post(client, {"selected_devices": "Router-A", "session_scenario": "test_1"})
         assert resp.status_code == 400
         assert "selected_devices" in resp.get_json()["error"]
 

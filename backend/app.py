@@ -416,11 +416,11 @@ def start_logs_collection():
     """
     body             = request.get_json(force=True)
     selected_devices = body.get("selected_devices", [])
-    session_scenario = body.get("session_scenario")
+    session_scenario = body.get("session_scenario", "")
 
     if not isinstance(selected_devices, list):
         return _bad("selected_devices must be a list")
-    if not session_scenario or not isinstance(session_scenario, str):
+    if not isinstance(session_scenario, str):
         return _bad("session_scenario is required and must be a non-empty string")
 
     session_id = uuid.uuid1().hex[:12]
