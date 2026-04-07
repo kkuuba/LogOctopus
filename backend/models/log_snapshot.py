@@ -1,5 +1,7 @@
 from datetime import datetime
 import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 import hashlib
 
 class LogSnapshot:
@@ -71,7 +73,21 @@ class LogSnapshot:
         Returns:
             str: Data file path for LogSnapshot in 'parqet' format.
         """
-        data_file_path = f"data/{device_name}/{self.log_name}_#$#_{self.session_id}_#$#_{self.session_scenario}_#$#_{self.log_type}_#$#_{self.creation_time.strftime('%Y%m%d_%H%M%S')}.parquet"
-        self.collected_data.to_parquet(data_file_path, engine="pyarrow", index=False)
+        metadata = {
+            "log_name": self.log_name,
+            "session_id": self.session_id,
+            "session_scenario": self.session_scenario,
+            "log_type": self.log_type,
+        }
+        collected_data_table = pa.Table.from_pandas(self.collected_data)
+        existing_metadata = collected_data_table.schema.metadata or {}
+        new_metadata = {
+            **existing_metadata,
+            **{k.encode(): v.encode() for k, v in metadata.items()}
+        }
+        collected_data_table_with_metadata = collected_data_table.replace_schema_metadata(new_metadata)
+
+        data_file_path = f"data/{device_name}/{self.id}_{self.creation_time.strftime('%Y%m%d_%H%M%S')}.parquet"
+        pq.write_table(collected_data_table_with_metadata, data_file_path)
 
         return data_file_path

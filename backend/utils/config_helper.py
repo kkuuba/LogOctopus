@@ -72,6 +72,7 @@ class ConfigurationHelper:
                         "Duration": f"{log_snapshot.logs_collection_duration} s",
                         "Size": f"{int(log_snapshot.size_in_bytes)/1000} kB",
                         "Session ID": log_snapshot.session_id,
+                        "Scenario": log_snapshot.session_scenario,
                         "object_instance": log_snapshot
                     }
                     filterable_log_snapshots_list.append(log_snapshot_list_info)
