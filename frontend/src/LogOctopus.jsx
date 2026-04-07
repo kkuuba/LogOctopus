@@ -1424,7 +1424,7 @@ function SnapshotsTable({ snapshots, selected, onSelect, onView }) {
       </div>
     );
   }
-  const cols = ["", "Device", "Log Name", "Started", "Finished", "Duration", "Size", "Session ID", ""];
+  const cols = ["", "Device", "Log Name", "Started", "Finished", "Duration", "Size", "Session ID", "Scenario", ""];
   return (
     <div style={{ overflowX: "auto" }}>
       <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: "var(--font-mono)", fontSize: 12 }}>
@@ -1476,6 +1476,13 @@ function SnapshotsTable({ snapshots, selected, onSelect, onView }) {
                 <code style={{ fontSize: 10, color: "var(--muted)", background: "rgba(255,255,255,0.05)", padding: "2px 6px", borderRadius: 4 }}>
                   {s.sessionId}
                 </code>
+              </td>
+              <td style={{ padding: "10px 14px" }}>
+                {s.sessionScenario ? (
+                  <Badge color="violet">{s.sessionScenario}</Badge>
+                ) : (
+                  <span style={{ color: "var(--muted)", fontFamily: "var(--font-mono)", fontSize: 10 }}>—</span>
+                )}
               </td>
               <td style={{ padding: "10px 14px" }}>
                 <Btn size="sm" variant="subtle" onClick={() => onView([s])}>View</Btn>
@@ -2102,8 +2109,11 @@ export default function App() {
   const [deviceModal,     setDeviceModal]     = useState(null);
   const [sessionModal,    setSessionModal]    = useState(null);
   const [apiModal,        setApiModal]        = useState(false);
-  const [loginModal,      setLoginModal]      = useState(false);
-  const [settingsModal,   setSettingsModal]   = useState(false);
+  const [loginModal,              setLoginModal]              = useState(false);
+  const [settingsModal,           setSettingsModal]           = useState(false);
+  const [scenarioModal,           setScenarioModal]           = useState(false);
+  const [scenarioInput,           setScenarioInput]           = useState("");
+  const [scenarioError,           setScenarioError]           = useState(false);
 
   // Auto-collection schedule — persisted in localStorage, re-hydrated on mount.
   // Timer runs while this tab is open. Also pushed to /api/settings/auto-collection
@@ -2212,10 +2222,21 @@ export default function App() {
   const toggleDevice = (id, checked) =>
     setSelectedDevices((prev) => (checked ? [...prev, id] : prev.filter((x) => x !== id)));
 
-  const startCollection = async () => {
+  const startCollection = () => {
+    setScenarioInput("");
+    setScenarioError(false);
+    setScenarioModal(true);
+  };
+
+  const confirmStartCollection = async () => {
+    if (!scenarioInput.trim()) { setScenarioError(true); return; }
     const names = devices.filter((d) => selectedDevices.includes(d.id)).map((d) => d.name);
+    setScenarioModal(false);
     try {
-      await apiFetch("/api/start-logs-collection", { method: "POST", body: JSON.stringify({ selected_devices: names }) });
+      await apiFetch("/api/start-logs-collection", {
+        method: "POST",
+        body: JSON.stringify({ selected_devices: names, session_scenario: scenarioInput.trim() }),
+      });
       addToast("Log collection started.", "success");
       fetchDevices();
       fetchSnapshots(filterActive ? searchParam : "", filterActive ? searchValue : "", isChart);
@@ -2549,7 +2570,7 @@ ${rows}
                 style={{ background: "var(--card-bg)", border: "1px solid var(--border)", borderRadius: 7, color: "var(--text)", fontFamily: "var(--font-mono)", fontSize: 12, padding: "7px 12px" }}
               >
                 <option value="">Filter by…</option>
-                <option>Device</option><option>Log Name</option><option>Session ID</option><option>Started</option><option>Finished</option>
+                <option>Device</option><option>Log Name</option><option>Session ID</option><option>Scenario</option><option>Started</option><option>Finished</option>
               </select>
               <span style={{ color: "var(--muted)", fontWeight: 700, fontSize: 16 }}>=</span>
               <input
@@ -2588,6 +2609,54 @@ ${rows}
       <CollectionLoadingOverlay open={stoppingCollection} />
 
       {/* MODALS */}
+
+      {/* Session scenario modal — shown when the user clicks ▶ Start Collection */}
+      <Modal
+        open={scenarioModal}
+        onClose={() => setScenarioModal(false)}
+        title="Start Logs Collection"
+        size="sm"
+        footer={
+          <>
+            <Btn variant="success" onClick={confirmStartCollection}>▶ Start</Btn>
+            <Btn variant="ghost" onClick={() => setScenarioModal(false)}>Cancel</Btn>
+          </>
+        }
+      >
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
+            <p style={{ margin: 0, fontFamily: "var(--font-mono)", fontSize: 13, color: "var(--muted)" }}>
+              Session scenario
+            </p>
+            <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "#f87171" }}>* required</span>
+          </div>
+          <input
+            autoFocus
+            value={scenarioInput}
+            onChange={(e) => { setScenarioInput(e.target.value); if (e.target.value.trim()) setScenarioError(false); }}
+            onKeyDown={(e) => { if (e.key === "Enter") confirmStartCollection(); }}
+            placeholder="e.g. reboot-test, baseline, stress-run…"
+            style={{
+              background: "var(--card-bg)",
+              border: `1px solid ${scenarioError ? "#f87171" : "var(--border)"}`,
+              borderRadius: 7,
+              color: "var(--text)",
+              fontFamily: "var(--font-mono)",
+              fontSize: 13,
+              padding: "9px 14px",
+              outline: "none",
+              width: "100%",
+              boxSizing: "border-box",
+              transition: "border-color 0.15s",
+            }}
+          />
+          {scenarioError && (
+            <p style={{ margin: 0, fontFamily: "var(--font-mono)", fontSize: 11, color: "#f87171" }}>
+              Please enter a scenario before starting collection.
+            </p>
+          )}
+        </div>
+      </Modal>
 
       {/* Settings modal */}
       <SettingsModal

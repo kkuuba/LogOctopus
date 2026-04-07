@@ -33,6 +33,7 @@ class DeviceConfig:
             watchdog_data = {
                 "logs_collection": False,
                 "current_session_id": "no_active_session",
+                "session_scenario": "no_active_session",
                 "connected": False,
                 "logs_available": False,
                 "watchdog_process_pid": 0,

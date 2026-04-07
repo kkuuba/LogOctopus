@@ -94,18 +94,20 @@ def snapshot_to_dict(snapshot) -> dict:
         - duration (float) - Collection duration in seconds.
         - sizeKb (int) - Snapshot file size in kilobytes.
         - sessionId (str) - Session identifier shared across a collection run.
+        - sessionScenario (str) - Scenario label provided when the session was started.
         - isChart (bool) - 'True' when the snapshot contains chart data, 'False' for plain text.
     """
     return {
-        "id":         snapshot.id,
-        "deviceName": snapshot.device_name,
-        "logName":    snapshot.log_name,
-        "startTime":  str(snapshot.start_time),
-        "finishTime": str(snapshot.finish_time),
-        "duration":   snapshot.logs_collection_duration,
-        "sizeKb":     int(snapshot.size_in_bytes / 1000),
-        "sessionId":  snapshot.session_id,
-        "isChart":    snapshot.log_type,
+        "id":              snapshot.id,
+        "deviceName":      snapshot.device_name,
+        "logName":         snapshot.log_name,
+        "startTime":       str(snapshot.start_time),
+        "finishTime":      str(snapshot.finish_time),
+        "duration":        snapshot.logs_collection_duration,
+        "sizeKb":          int(snapshot.size_in_bytes / 1000),
+        "sessionId":       snapshot.session_id,
+        "sessionScenario": getattr(snapshot, "session_scenario", ""),
+        "isChart":         snapshot.log_type,
     }
 
 
@@ -395,6 +397,10 @@ def start_logs_collection():
 
     Request body (JSON):
         - selected_devices (list[str]) - Device names to start collecting from.
+        - session_scenario (str, **required**) - A label describing the scenario
+          under which this collection session is being started.  Must be a
+          non-empty string.  Passed as the second argument to
+          ``device.start_logs_collection``.
 
     Returns:
         200 OK:
@@ -406,17 +412,21 @@ def start_logs_collection():
 
         400 Bad Request:
             '{ "error": "selected_devices must be a list" }'
+            or '{ "error": "session_scenario must be a string" }'
     """
     body             = request.get_json(force=True)
     selected_devices = body.get("selected_devices", [])
+    session_scenario = body.get("session_scenario")
 
     if not isinstance(selected_devices, list):
         return _bad("selected_devices must be a list")
+    if not session_scenario or not isinstance(session_scenario, str):
+        return _bad("session_scenario is required and must be a non-empty string")
 
     session_id = uuid.uuid1().hex[:12]
     for device in get_current_devices():
         if device.device_name in selected_devices:
-            device.start_logs_collection(session_id)
+            device.start_logs_collection(session_id, session_scenario)
 
     return jsonify({"status": "logs collection started", "session_id": session_id})
 

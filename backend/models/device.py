@@ -34,14 +34,16 @@ class Device:
         """
         self.errors = pd.read_parquet(f"data/{self.device_name}/errors.feather")
 
-    def start_logs_collection(self, session_id):
+    def start_logs_collection(self, session_id, session_scenario):
         """
         Start logs collection thread on target device.
 
         Args:
             session_id (str): Unique logs collection session ID.
+            session_scenario (str): Scenario ID for logs collection session.
         """
         self.device_config_instance.update_runtime_parameter("current_session_id", session_id)
+        self.device_config_instance.update_runtime_parameter("session_scenario", session_scenario)
         self.device_config_instance.update_runtime_parameter("logs_collection", True)
 
     def stop_logs_collection(self):

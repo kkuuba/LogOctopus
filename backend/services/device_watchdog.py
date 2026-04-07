@@ -153,15 +153,19 @@ class DeviceWatchdog:
             self.collection_stop_event.wait(timeout=interval)
             self.get_all_log_files_content()
 
-    def save_log_snapshots(self, session_id):
+    def save_log_snapshots(self, session_id, session_scenario):
         """
         Save all logs collected by device watchdog and save it in LogSnapshot object with all info about collected data.
         Data will be save info file and added to logsnapshots list.
+
+        Args:
+            session_id (str): Unique logs collection session ID.
+            session_scenario (str): Scenario ID for logs collection session.
         """
         for log_name, log_content in self.collected_data.items():
             log_type = self.get_target_log_type_based_on_log_name(log_name)
             if not log_content.empty:
-                self.log_snapshots.append(LogSnapshot(self.device_name, log_name, session_id, log_type, log_content))
+                self.log_snapshots.append(LogSnapshot(self.device_name, log_name, session_id, session_scenario, log_type, log_content))
 
     def get_target_log_type_based_on_log_name(self, log_name):
         """
@@ -247,7 +251,7 @@ if __name__ == '__main__':
             device_watchdog.start_logs_collection()
         if not current_device_config["logs_collection"] and device_watchdog.collection_ongoing:
             device_watchdog.stop_logs_collection()
-            device_watchdog.save_log_snapshots(current_device_config["current_session_id"])
+            device_watchdog.save_log_snapshots(current_device_config["current_session_id"], current_device_config["session_scenario"])
             update_device_config_parameter(args.device_config_file_path, "current_session_id", "no_active_session")
         if current_device_config["auto_collection_enabled"] and not device_watchdog.collection_ongoing:
             auto_collection_timer = time.time()

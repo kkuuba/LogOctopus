@@ -6,13 +6,14 @@ class LogSnapshot:
     """
     A class to perform basic operations on collected logs.
     """
-    def __init__(self, device_name, log_name, session_id, log_type, collected_data, loaded_from_file=False):
+    def __init__(self, device_name, log_name, session_id, session_scenario, log_type, collected_data, loaded_from_file=False):
         self.device_name = device_name
         self.log_name = log_name
         self.id = hashlib.md5(f"{log_name}_{session_id}".encode()).hexdigest()[:16]
         self.collected_data = collected_data
         self.creation_time =datetime.now()
         self.session_id = session_id
+        self.session_scenario = session_scenario
         self.log_type = log_type
         self.start_time, self.finish_time = self.get_start_and_finish_timestamps()
         self.logs_collection_duration = self.calcaute_logs_collection_duration()
@@ -70,7 +71,7 @@ class LogSnapshot:
         Returns:
             str: Data file path for LogSnapshot in 'parqet' format.
         """
-        data_file_path = f"data/{device_name}/{self.log_name}_#$#_{self.session_id}_#$#_{self.log_type}_#$#_{self.creation_time.strftime('%Y%m%d_%H%M%S')}.parquet"
+        data_file_path = f"data/{device_name}/{self.log_name}_#$#_{self.session_id}_#$#{self.session_scenario}_#$#_{self.log_type}_#$#_{self.creation_time.strftime('%Y%m%d_%H%M%S')}.parquet"
         self.collected_data.to_parquet(data_file_path, engine="pyarrow", index=False)
 
         return data_file_path
