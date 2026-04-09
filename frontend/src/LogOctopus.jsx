@@ -713,7 +713,7 @@ function DownloadMenu({ onDownload }) {
  *     which persists the schedule and uses APScheduler to execute collections.
  *  2. Security — admin password change (stored in localStorage).
  */
-function SettingsModal({ open, onClose, isAdmin, onRequestLogin, devices, auth, addToast, autoSchedule, setAutoSchedule }) {
+function SettingsModal({ open, onClose, isAdmin, onRequestLogin, devices, auth, addToast }) {
   const [tab, setTab] = useState("schedule");
 
   // ── Password change state ──
@@ -722,6 +722,55 @@ function SettingsModal({ open, onClose, isAdmin, onRequestLogin, devices, auth, 
   const [confPass, setConfPass] = useState("");
   const [pwError,  setPwError]  = useState("");
   const [pwShake,  setPwShake]  = useState(false);
+
+  // ── Auto-collection state — sourced exclusively from /api/settings/auto-collection ──
+  const [schedule, setSchedule] = useState({ enabled: false, interval_hours: 1, device_ids: [] });
+  const [schedLoading, setSchedLoading] = useState(false);
+  const [schedSaving,  setSchedSaving]  = useState(false);
+
+  // Fetch current settings from API whenever modal opens
+  useEffect(() => {
+    if (!open) return;
+    setSchedLoading(true);
+    apiFetch("/api/settings/auto-collection")
+      .then((data) => {
+        if (data) setSchedule({
+          enabled:        data.enabled        ?? false,
+          interval_hours: data.interval_hours ?? 1,
+          device_ids:     data.device_ids     ?? [],
+        });
+      })
+      .catch(() => {/* endpoint optional — keep defaults */})
+      .finally(() => setSchedLoading(false));
+  }, [open]);
+
+  const saveSchedule = async () => {
+    setSchedSaving(true);
+    try {
+      await apiFetch("/api/settings/auto-collection", {
+        method: "POST",
+        body: JSON.stringify(schedule),
+      });
+      addToast(
+        schedule.enabled
+          ? `Auto-collection active — every ${schedule.interval_hours}h.`
+          : "Auto-collection disabled.",
+        "success"
+      );
+    } catch (e) {
+      addToast(`Failed to save schedule: ${e.message}`);
+    } finally {
+      setSchedSaving(false);
+    }
+  };
+
+  const toggleDeviceId = (id) =>
+    setSchedule(prev => ({
+      ...prev,
+      device_ids: prev.device_ids.includes(id)
+        ? prev.device_ids.filter(x => x !== id)
+        : [...prev.device_ids, id],
+    }));
 
   const submitPasswordChange = () => {
     if (newPass.length < 6)      { setPwError("New password must be at least 6 characters."); shake(); return; }
@@ -738,35 +787,6 @@ function SettingsModal({ open, onClose, isAdmin, onRequestLogin, devices, auth, 
   };
 
   const shake = () => { setPwShake(true); setTimeout(() => setPwShake(false), 420); };
-
-  // ── Schedule state ──
-  // autoSchedule shape: { enabled: bool, intervalHours: number, deviceIds: string[] }
-  const toggleDevice = (id) =>
-    setAutoSchedule(prev => ({
-      ...prev,
-      deviceIds: prev.deviceIds.includes(id)
-        ? prev.deviceIds.filter(x => x !== id)
-        : [...prev.deviceIds, id],
-    }));
-
-  const saveSchedule = async () => {
-    // Persist to localStorage (client-side scheduler)
-    localStorage.setItem("lo_auto_schedule", JSON.stringify(autoSchedule));
-    // Best-effort push to backend (server-side APScheduler)
-    try {
-      await apiFetch("/api/settings/auto-collection", {
-        method: "POST",
-        body: JSON.stringify({
-          enabled:        autoSchedule.enabled,
-          interval_hours: autoSchedule.intervalHours,
-          device_ids:     autoSchedule.deviceIds,
-        }),
-      });
-    } catch {
-      // Backend endpoint optional — client-side schedule still works
-    }
-    addToast("Schedule saved. Collection will run every " + autoSchedule.intervalHours + "h while this tab is open.", "success");
-  };
 
   if (!open) return null;
 
@@ -818,85 +838,120 @@ function SettingsModal({ open, onClose, isAdmin, onRequestLogin, devices, auth, 
 
           {/* ── AUTO-COLLECTION TAB ── */}
           {tab === "schedule" && (
+            schedLoading ? (
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: "48px 0", gap: 10, color: "var(--muted)", fontFamily: "var(--font-mono)", fontSize: 12 }}>
+                <svg width="14" height="14" viewBox="0 0 14 14" style={{ animation: "spin 1s linear infinite" }}>
+                  <circle cx="7" cy="7" r="5" fill="none" stroke="var(--accent)" strokeWidth="2" strokeDasharray="18" strokeDashoffset="9" />
+                </svg>
+                Loading settings…
+              </div>
+            ) : (
             <div>
-              <div style={{ ...card, borderColor: autoSchedule.enabled ? "rgba(129,140,248,0.3)" : "var(--border)" }}>
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: autoSchedule.enabled ? 16 : 0 }}>
+              {/* Enable/disable card */}
+              <div style={{
+                ...card,
+                borderColor: schedule.enabled ? "rgba(129,140,248,0.35)" : "var(--border)",
+                background: schedule.enabled ? "rgba(129,140,248,0.04)" : "var(--card-bg)",
+                transition: "all 0.2s",
+              }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
                   <div>
-                    <div style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 14, color: "var(--text)", marginBottom: 3 }}>Scheduled Auto-Collection</div>
+                    <div style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 14, color: "var(--text)", marginBottom: 3 }}>
+                      Scheduled Auto-Collection
+                    </div>
                     <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--muted)" }}>
-                      Automatically collect logs from selected devices on a recurring interval.
+                      Controlled server-side via <code style={{ color: "var(--accent)", background: "rgba(129,140,248,0.1)", padding: "1px 5px", borderRadius: 3 }}>POST /api/settings/auto-collection</code>
                     </div>
                   </div>
                   <Toggle
-                    checked={autoSchedule.enabled}
-                    onChange={v => setAutoSchedule(prev => ({ ...prev, enabled: v }))}
+                    checked={schedule.enabled}
+                    onChange={v => setSchedule(prev => ({ ...prev, enabled: v }))}
                   />
                 </div>
+              </div>
 
-                {autoSchedule.enabled && (
-                  <>
-                    <div style={{ ...sectionLabel }}>Collection Interval</div>
-                    <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 20 }}>
-                      {[1, 2, 4, 6, 12, 24].map(h => (
-                        <button key={h} onClick={() => setAutoSchedule(prev => ({ ...prev, intervalHours: h }))}
+              {/* Interval selection */}
+              <div style={{ ...card, opacity: schedule.enabled ? 1 : 0.45, pointerEvents: schedule.enabled ? "auto" : "none", transition: "opacity 0.2s" }}>
+                <div style={{ ...sectionLabel, marginBottom: 14 }}>Collection Interval</div>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(6, 1fr)", gap: 8 }}>
+                  {[1, 2, 4, 6, 12, 24].map(h => {
+                    const active = schedule.interval_hours === h;
+                    return (
+                      <button key={h} onClick={() => setSchedule(prev => ({ ...prev, interval_hours: h }))}
+                        style={{
+                          padding: "10px 0", borderRadius: 8, border: "1px solid",
+                          fontFamily: "var(--font-mono)", fontSize: 13, fontWeight: 600,
+                          cursor: "pointer", textAlign: "center",
+                          background: active ? "rgba(129,140,248,0.16)" : "rgba(255,255,255,0.03)",
+                          color: active ? "var(--accent)" : "var(--muted)",
+                          borderColor: active ? "rgba(129,140,248,0.45)" : "var(--border)",
+                          boxShadow: active ? "0 0 12px rgba(129,140,248,0.12)" : "none",
+                          transition: "all 0.15s",
+                        }}>
+                        {h}h
+                      </button>
+                    );
+                  })}
+                </div>
+                <div style={{ marginTop: 10, fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--muted)", textAlign: "center" }}>
+                  Runs every <span style={{ color: "var(--accent)", fontWeight: 600 }}>{schedule.interval_hours} hour{schedule.interval_hours > 1 ? "s" : ""}</span> — managed by APScheduler on the backend
+                </div>
+              </div>
+
+              {/* Device selection */}
+              <div style={{ ...card, opacity: schedule.enabled ? 1 : 0.45, pointerEvents: schedule.enabled ? "auto" : "none", transition: "opacity 0.2s" }}>
+                <div style={{ ...sectionLabel, marginBottom: 14 }}>
+                  Devices to Collect From
+                  {schedule.device_ids.length > 0 && (
+                    <span style={{ marginLeft: 8, color: "var(--accent)", background: "rgba(129,140,248,0.12)", border: "1px solid rgba(129,140,248,0.25)", borderRadius: 10, padding: "1px 7px", fontSize: 10 }}>
+                      {schedule.device_ids.length} selected
+                    </span>
+                  )}
+                </div>
+                {devices.length === 0 ? (
+                  <div style={{ fontFamily: "var(--font-mono)", fontSize: 12, color: "var(--muted)", padding: "16px 0", textAlign: "center" }}>
+                    No devices added yet.
+                  </div>
+                ) : (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                    {devices.map(d => {
+                      const checked = schedule.device_ids.includes(d.id);
+                      return (
+                        <div key={d.id} onClick={() => toggleDeviceId(d.id)}
                           style={{
-                            padding: "6px 14px", borderRadius: 7, border: "1px solid",
-                            fontFamily: "var(--font-mono)", fontSize: 12, cursor: "pointer",
-                            background: autoSchedule.intervalHours === h ? "rgba(129,140,248,0.15)" : "rgba(255,255,255,0.04)",
-                            color: autoSchedule.intervalHours === h ? "var(--accent)" : "var(--muted)",
-                            borderColor: autoSchedule.intervalHours === h ? "rgba(129,140,248,0.4)" : "var(--border)",
+                            display: "flex", alignItems: "center", gap: 12, padding: "11px 14px",
+                            borderRadius: 8, border: "1px solid", cursor: "pointer",
+                            background: checked ? "rgba(129,140,248,0.07)" : "rgba(255,255,255,0.02)",
+                            borderColor: checked ? "rgba(129,140,248,0.3)" : "var(--border)",
                             transition: "all 0.12s",
                           }}>
-                          {h}h
-                        </button>
-                      ))}
-                    </div>
-
-                    <div style={{ ...sectionLabel }}>Devices to collect from</div>
-                    {devices.length === 0 ? (
-                      <div style={{ fontFamily: "var(--font-mono)", fontSize: 12, color: "var(--muted)" }}>No devices added yet.</div>
-                    ) : (
-                      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                        {devices.map(d => {
-                          const checked = autoSchedule.deviceIds.includes(d.id);
-                          return (
-                            <div key={d.id} onClick={() => toggleDevice(d.id)}
-                              style={{
-                                display: "flex", alignItems: "center", gap: 12, padding: "10px 14px",
-                                borderRadius: 8, border: "1px solid", cursor: "pointer",
-                                background: checked ? "rgba(129,140,248,0.06)" : "rgba(255,255,255,0.02)",
-                                borderColor: checked ? "rgba(129,140,248,0.3)" : "var(--border)",
-                                transition: "all 0.12s",
-                              }}>
-                              <input type="checkbox" checked={checked} readOnly
-                                style={{ accentColor: "var(--accent)", width: 14, height: 14, pointerEvents: "none" }} />
-                              <span style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 13, color: "var(--text)", flex: 1 }}>{d.name}</span>
-                              <span style={{ width: 8, height: 8, borderRadius: "50%", background: d.connection ? "#4ade80" : "#555", flexShrink: 0 }} />
-                              <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--muted)" }}>{d.connection ? "Online" : "Offline"}</span>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </>
+                          {/* Custom checkbox */}
+                          <div style={{
+                            width: 16, height: 16, borderRadius: 4, flexShrink: 0,
+                            border: `1.5px solid ${checked ? "var(--accent)" : "var(--border)"}`,
+                            background: checked ? "var(--accent)" : "transparent",
+                            display: "flex", alignItems: "center", justifyContent: "center",
+                            transition: "all 0.12s",
+                          }}>
+                            {checked && <svg width="9" height="7" viewBox="0 0 9 7" fill="none"><polyline points="1,3.5 3.5,6 8,1" stroke="#06061a" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+                          </div>
+                          <span style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 13, color: "var(--text)", flex: 1 }}>{d.name}</span>
+                          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                            <span style={{ width: 7, height: 7, borderRadius: "50%", background: d.connection ? "#4ade80" : "#444", flexShrink: 0, boxShadow: d.connection ? "0 0 5px #4ade80" : "none" }} />
+                            <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: d.connection ? "#4ade80" : "var(--muted)" }}>{d.connection ? "Online" : "Offline"}</span>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
                 )}
               </div>
 
-              {/* Info box about server-side persistence */}
-              {/* <div style={{
-                background: "rgba(255,200,0,0.06)", border: "1px solid rgba(255,200,0,0.2)",
-                borderRadius: 8, padding: "12px 16px", marginBottom: 16,
-                fontFamily: "var(--font-mono)", fontSize: 11, color: "#fbbf24", lineHeight: 1.6,
-              }}>
-                <strong>ℹ Browser-tab scheduling:</strong> The interval timer runs while this tab is open.
-                For server-side scheduling (runs even when the browser is closed), the schedule is also
-                pushed to <code style={{ background: "rgba(255,200,0,0.1)", padding: "1px 5px", borderRadius: 3 }}>POST /api/settings/auto-collection</code> — add APScheduler to the Flask backend to activate it.
-              </div> */}
-
-              <Btn variant="primary" onClick={saveSchedule} style={{ width: "100%", justifyContent: "center" }}>
-                💾 Save Schedule
+              <Btn variant="primary" onClick={saveSchedule} disabled={schedSaving} style={{ width: "100%", justifyContent: "center" }}>
+                {schedSaving ? "Saving…" : "💾 Save to Server"}
               </Btn>
             </div>
+            )
           )}
 
           {/* ── SECURITY TAB ── */}
@@ -1321,7 +1376,7 @@ function Toast({ message, type = "error", onDismiss }) {
 }
 
 // ── DEVICE CARD ───────────────────────────────────────────────────────────────
-function DeviceCard({ device, selected, onSelect, onInfo, autoEnabled, autoIntervalHours }) {
+function DeviceCard({ device, selected, onSelect, onInfo }) {
   const [hovered, setHovered] = useState(false);
   return (
     <div
@@ -1380,19 +1435,6 @@ function DeviceCard({ device, selected, onSelect, onInfo, autoEnabled, autoInter
         <StatusRow label="Log Access" ok={device.logAccess} />
         <StatusRow label="Collecting" ok={device.collecting} pulseWhenTrue />
       </div>
-      {autoEnabled && (
-        <div style={{
-          marginTop: 10,
-          display: "inline-flex", alignItems: "center", gap: 5,
-          background: "rgba(129,140,248,0.12)", border: "1px solid rgba(129,140,248,0.3)",
-          borderRadius: 20, padding: "3px 9px",
-        }}>
-          <span style={{ fontSize: 10 }}>⏰</span>
-          <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--accent)", fontWeight: 600 }}>
-            AUTO {autoIntervalHours}h
-          </span>
-        </div>
-      )}
     </div>
   );
 }
@@ -1525,7 +1567,7 @@ BASE = "${API_BASE}"
 
 # Start collection
 r = requests.post(f"{BASE}/api/start-logs-collection",
-    json={"selected_devices": ["device_1", "device_2"]})
+    json={"selected_devices": ["device_1", "device_2"], "session_scenario": "example_test_scenario"})
 session_id = r.json()["session_id"]
 
 # Stop collection
@@ -1950,7 +1992,7 @@ function CollectionLoadingOverlay({ open }) {
 
       <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 28 }}>
 
-        {/* Animated concentric rings */}
+        {/* Animated concentric rings + logo */}
         <div style={{ position: "relative", width: 96, height: 96 }}>
           {/* Outer ring */}
           <svg
@@ -1970,7 +2012,7 @@ function CollectionLoadingOverlay({ open }) {
               fill="none" stroke="rgba(129,140,248,0.3)" strokeWidth="2.5"
               strokeDasharray="30 6" />
           </svg>
-          {/* Inner pulsing core */}
+          {/* Inner pulsing core — same SVG as the header logo */}
           <div
             style={{
               position: "absolute",
@@ -1978,25 +2020,24 @@ function CollectionLoadingOverlay({ open }) {
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
+              animation: "lo-pulse 1.6s ease-in-out infinite",
+              filter: "drop-shadow(0 0 12px rgba(129,140,248,0.45))",
             }}
           >
-            <div
-              style={{
-                width: 42,
-                height: 42,
-                borderRadius: "50%",
-                background: "radial-gradient(circle at 40% 40%, rgba(129,140,248,0.35), rgba(9,9,15,0.9))",
-                border: "1.5px solid rgba(129,140,248,0.5)",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                fontSize: 20,
-                animation: "lo-pulse 1.6s ease-in-out infinite",
-                boxShadow: "0 0 24px rgba(129,140,248,0.25)",
-              }}
-            >
-              🐙
-            </div>
+            <svg width="36" height="36" viewBox="0 0 36 36">
+              <circle cx="18" cy="18" r="17" fill="none" stroke="#818cf8" strokeWidth="1.5" />
+              <circle cx="18" cy="18" r="6" fill="#818cf8" />
+              {[0, 45, 90, 135, 180, 225, 270, 315].map((a, i) => {
+                const rad = (a * Math.PI) / 180;
+                return (
+                  <line key={i}
+                    x1={18 + 7 * Math.cos(rad)} y1={18 + 7 * Math.sin(rad)}
+                    x2={18 + 15 * Math.cos(rad)} y2={18 + 15 * Math.sin(rad)}
+                    stroke="#818cf8" strokeWidth="1.8" strokeLinecap="round"
+                  />
+                );
+              })}
+            </svg>
           </div>
         </div>
 
@@ -2115,16 +2156,6 @@ export default function App() {
   const [scenarioInput,           setScenarioInput]           = useState("");
   const [scenarioError,           setScenarioError]           = useState(false);
 
-  // Auto-collection schedule — persisted in localStorage, re-hydrated on mount.
-  // Timer runs while this tab is open. Also pushed to /api/settings/auto-collection
-  // for server-side APScheduler support (backend must implement that endpoint).
-  const [autoSchedule, setAutoSchedule] = useState(() => {
-    try {
-      const saved = localStorage.getItem("lo_auto_schedule");
-      return saved ? JSON.parse(saved) : { enabled: false, intervalHours: 1, deviceIds: [] };
-    } catch { return { enabled: false, intervalHours: 1, deviceIds: [] }; }
-  });
-
   // toasts
   const [toasts, setToasts] = useState([]);
   const addToast    = useCallback((message, type = "error") => setToasts((prev) => [...prev, { id: Date.now(), message, type }]), []);
@@ -2179,34 +2210,6 @@ export default function App() {
       fetchSnapshots(sp, sv, lt);
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // Auto-collection interval — client-side scheduler
-  useEffect(() => {
-    if (!autoSchedule.enabled || autoSchedule.deviceIds.length === 0) return;
-    const ms = autoSchedule.intervalHours * 60 * 60 * 1000;
-    const id = setInterval(async () => {
-      const names = devices
-        .filter(d => autoSchedule.deviceIds.includes(d.id))
-        .map(d => d.name);
-      if (names.length === 0) return;
-      try {
-        const { session_id } = await apiFetch("/api/start-logs-collection", {
-          method: "POST", body: JSON.stringify({ selected_devices: names }),
-        });
-        // Give collection 30 s then stop
-        setTimeout(async () => {
-          try {
-            await apiFetch("/api/stop-logs-collection", {
-              method: "POST", body: JSON.stringify({ selected_devices: names, session_id }),
-            });
-            fetchDevices();
-            fetchSnapshots("", "", false);
-          } catch (e) { console.warn("Auto-collect stop failed", e); }
-        }, 30000);
-      } catch (e) { console.warn("Auto-collect start failed", e); }
-    }, ms);
-    return () => clearInterval(id);
-  }, [autoSchedule.enabled, autoSchedule.intervalHours, autoSchedule.deviceIds, devices, fetchDevices, fetchSnapshots]);
 
   // ── handlers ───────────────────────────────────────────────────────────────
   const handleUpload = async (contents) => {
@@ -2408,6 +2411,30 @@ ${rows}
     ? `Chart Data — ${chartGroups.length} snapshot${chartGroups.length > 1 ? "s" : ""}`
     : "Logs Content";
 
+  // ── Inject SVG favicon matching the header logo color ──────────────────────
+  useEffect(() => {
+    const svgFavicon = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 36 36">
+      <circle cx="18" cy="18" r="17" fill="none" stroke="#818cf8" stroke-width="1.5"/>
+      <circle cx="18" cy="18" r="6" fill="#818cf8"/>
+      ${[0, 45, 90, 135, 180, 225, 270, 315].map((a) => {
+        const rad = (a * Math.PI) / 180;
+        const x1 = (18 + 7 * Math.cos(rad)).toFixed(3);
+        const y1 = (18 + 7 * Math.sin(rad)).toFixed(3);
+        const x2 = (18 + 15 * Math.cos(rad)).toFixed(3);
+        const y2 = (18 + 15 * Math.sin(rad)).toFixed(3);
+        return `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="#818cf8" stroke-width="1.8" stroke-linecap="round"/>`;
+      }).join("")}
+    </svg>`;
+    const encoded = `data:image/svg+xml,${encodeURIComponent(svgFavicon)}`;
+    let link = document.querySelector("link[rel~='icon']");
+    if (!link) {
+      link = document.createElement("link");
+      link.rel = "icon";
+      document.head.appendChild(link);
+    }
+    link.href = encoded;
+  }, []);
+
   // ── CSS ────────────────────────────────────────────────────────────────────
   const cssVars = `
     @import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
@@ -2543,8 +2570,6 @@ ${rows}
                     selected={selectedDevices.includes(d.id)}
                     onSelect={(checked) => toggleDevice(d.id, checked)}
                     onInfo={() => setDeviceModal(d)}
-                    autoEnabled={autoSchedule.enabled && autoSchedule.deviceIds.includes(d.id)}
-                    autoIntervalHours={autoSchedule.intervalHours}
                   />
                 ))}
               </div>
@@ -2667,8 +2692,6 @@ ${rows}
         devices={devices}
         auth={auth}
         addToast={addToast}
-        autoSchedule={autoSchedule}
-        setAutoSchedule={setAutoSchedule}
       />
 
 

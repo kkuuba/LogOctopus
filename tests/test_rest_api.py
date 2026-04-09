@@ -33,15 +33,19 @@ def _make_device(
     log_access=True,
     collecting=False,
     config=None,
+    auto_collection_enabled=False,
+    auto_collection_interval=0.0
 ):
     """Return a mock Device with sensible defaults."""
     device = MagicMock()
-    device.device_config_id   = device_id
-    device.device_name        = name
-    device.connection_status  = connection
-    device.log_access         = log_access
-    device.collection_ongoing = collecting
-    device.device_config      = config or {}
+    device.device_config_id         = device_id
+    device.device_name              = name
+    device.connection_status        = connection
+    device.log_access               = log_access
+    device.collection_ongoing       = collecting
+    device.device_config            = config or {}
+    device.auto_collection_enabled  = auto_collection_enabled
+    device.auto_collection_interval = auto_collection_interval
     return device
 
 

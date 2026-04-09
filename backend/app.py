@@ -66,14 +66,18 @@ def device_to_dict(device: Device) -> dict:
         - logAccess (bool) - Whether log access is available on the device.
         - collecting (bool) - Whether log collection is currently in progress.
         - config (dict) - Raw device configuration mapping.
+        - auto_collection_enabled (bool) - Define if auto logs collection enabled on device.
+        - auto_collection_interval (float) - Define auto logs collection interval in hours.
     """
     return {
-        "id":         device.device_config_id,
-        "name":       device.device_name,
-        "connection": device.connection_status,
-        "logAccess":  device.log_access,
-        "collecting": device.collection_ongoing,
-        "config":     device.device_config,
+        "id":                       device.device_config_id,
+        "name":                     device.device_name,
+        "connection":               device.connection_status,
+        "logAccess":                device.log_access,
+        "collecting":               device.collection_ongoing,
+        "config":                   device.device_config,
+        "auto_collection_enabled":  device.auto_collection_enabled,
+        "auto_collection_interval": device.auto_collection_interval
     }
 
 
@@ -533,6 +537,7 @@ def set_auto_collection():
     for device in get_current_devices():
         if device.device_config_id in device_ids:
             device.device_config_instance.update_runtime_parameter("auto_collection_enabled", enabled)
+            device.device_config_instance.update_runtime_parameter("session_scenario", "auto_logs_collection")
             device.device_config_instance.update_runtime_parameter("auto_collection_interval", interval_hours)
 
     return jsonify({"status": "ok", "auto_collection_active": enabled})

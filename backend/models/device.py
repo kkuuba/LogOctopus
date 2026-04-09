@@ -19,6 +19,8 @@ class Device:
         self.device_name = self.device_config["device_name"]
         self.collection_ongoing = self.device_config["logs_collection"]
         self.watchdog_process_pid = self.device_config["watchdog_process_pid"]
+        self.auto_collection_enabled = self.device_config["auto_collection_enabled"]
+        self.auto_collection_interval = self.device_config["auto_collection_interval"]
         self.log_snapshots = LogSnapshotsLoader(os.path.join("data", self.device_name)).load_all_log_snapshots()
         self.errors = pd.DataFrame({"time": [], "error_info": []})
         if  self.watchdog_process_pid == 0 or not self.is_process_active():
