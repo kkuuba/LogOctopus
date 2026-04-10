@@ -713,8 +713,8 @@ function DownloadMenu({ onDownload }) {
  *     which persists the schedule and uses APScheduler to execute collections.
  *  2. Security — admin password change (stored in localStorage).
  */
-function SettingsModal({ open, onClose, isAdmin, onRequestLogin, devices, auth, addToast }) {
-  const [tab, setTab] = useState("schedule");
+function SettingsModal({ open, onClose, isAdmin, onRequestLogin, auth, addToast }) {
+  const [tab, setTab] = useState("security");
 
   // ── Password change state ──
   const [curPass,  setCurPass]  = useState("");
@@ -722,55 +722,6 @@ function SettingsModal({ open, onClose, isAdmin, onRequestLogin, devices, auth, 
   const [confPass, setConfPass] = useState("");
   const [pwError,  setPwError]  = useState("");
   const [pwShake,  setPwShake]  = useState(false);
-
-  // ── Auto-collection state — sourced exclusively from /api/settings/auto-collection ──
-  const [schedule, setSchedule] = useState({ enabled: false, interval_hours: 1, device_ids: [] });
-  const [schedLoading, setSchedLoading] = useState(false);
-  const [schedSaving,  setSchedSaving]  = useState(false);
-
-  // Fetch current settings from API whenever modal opens
-  useEffect(() => {
-    if (!open) return;
-    setSchedLoading(true);
-    apiFetch("/api/settings/auto-collection")
-      .then((data) => {
-        if (data) setSchedule({
-          enabled:        data.enabled        ?? false,
-          interval_hours: data.interval_hours ?? 1,
-          device_ids:     data.device_ids     ?? [],
-        });
-      })
-      .catch(() => {/* endpoint optional — keep defaults */})
-      .finally(() => setSchedLoading(false));
-  }, [open]);
-
-  const saveSchedule = async () => {
-    setSchedSaving(true);
-    try {
-      await apiFetch("/api/settings/auto-collection", {
-        method: "POST",
-        body: JSON.stringify(schedule),
-      });
-      addToast(
-        schedule.enabled
-          ? `Auto-collection active — every ${schedule.interval_hours}h.`
-          : "Auto-collection disabled.",
-        "success"
-      );
-    } catch (e) {
-      addToast(`Failed to save schedule: ${e.message}`);
-    } finally {
-      setSchedSaving(false);
-    }
-  };
-
-  const toggleDeviceId = (id) =>
-    setSchedule(prev => ({
-      ...prev,
-      device_ids: prev.device_ids.includes(id)
-        ? prev.device_ids.filter(x => x !== id)
-        : [...prev.device_ids, id],
-    }));
 
   const submitPasswordChange = () => {
     if (newPass.length < 6)      { setPwError("New password must be at least 6 characters."); shake(); return; }
@@ -829,130 +780,11 @@ function SettingsModal({ open, onClose, isAdmin, onRequestLogin, devices, auth, 
 
         {/* Tabs */}
         <div style={{ display: "flex", gap: 4, padding: "12px 20px 0", borderBottom: "1px solid var(--border)", flexShrink: 0 }}>
-          <button style={tabStyle(tab === "schedule")} onClick={() => setTab("schedule")}>⏰ Auto-Collection</button>
           <button style={tabStyle(tab === "security")} onClick={() => setTab("security")}>🔐 Security</button>
         </div>
 
         {/* Body */}
         <div style={{ flex: 1, overflowY: "auto", padding: "20px 24px" }}>
-
-          {/* ── AUTO-COLLECTION TAB ── */}
-          {tab === "schedule" && (
-            schedLoading ? (
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: "48px 0", gap: 10, color: "var(--muted)", fontFamily: "var(--font-mono)", fontSize: 12 }}>
-                <svg width="14" height="14" viewBox="0 0 14 14" style={{ animation: "spin 1s linear infinite" }}>
-                  <circle cx="7" cy="7" r="5" fill="none" stroke="var(--accent)" strokeWidth="2" strokeDasharray="18" strokeDashoffset="9" />
-                </svg>
-                Loading settings…
-              </div>
-            ) : (
-            <div>
-              {/* Enable/disable card */}
-              <div style={{
-                ...card,
-                borderColor: schedule.enabled ? "rgba(129,140,248,0.35)" : "var(--border)",
-                background: schedule.enabled ? "rgba(129,140,248,0.04)" : "var(--card-bg)",
-                transition: "all 0.2s",
-              }}>
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                  <div>
-                    <div style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 14, color: "var(--text)", marginBottom: 3 }}>
-                      Scheduled Auto-Collection
-                    </div>
-                    <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--muted)" }}>
-                      Controlled server-side via <code style={{ color: "var(--accent)", background: "rgba(129,140,248,0.1)", padding: "1px 5px", borderRadius: 3 }}>POST /api/settings/auto-collection</code>
-                    </div>
-                  </div>
-                  <Toggle
-                    checked={schedule.enabled}
-                    onChange={v => setSchedule(prev => ({ ...prev, enabled: v }))}
-                  />
-                </div>
-              </div>
-
-              {/* Interval selection */}
-              <div style={{ ...card, opacity: schedule.enabled ? 1 : 0.45, pointerEvents: schedule.enabled ? "auto" : "none", transition: "opacity 0.2s" }}>
-                <div style={{ ...sectionLabel, marginBottom: 14 }}>Collection Interval</div>
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(6, 1fr)", gap: 8 }}>
-                  {[1, 2, 4, 6, 12, 24].map(h => {
-                    const active = schedule.interval_hours === h;
-                    return (
-                      <button key={h} onClick={() => setSchedule(prev => ({ ...prev, interval_hours: h }))}
-                        style={{
-                          padding: "10px 0", borderRadius: 8, border: "1px solid",
-                          fontFamily: "var(--font-mono)", fontSize: 13, fontWeight: 600,
-                          cursor: "pointer", textAlign: "center",
-                          background: active ? "rgba(129,140,248,0.16)" : "rgba(255,255,255,0.03)",
-                          color: active ? "var(--accent)" : "var(--muted)",
-                          borderColor: active ? "rgba(129,140,248,0.45)" : "var(--border)",
-                          boxShadow: active ? "0 0 12px rgba(129,140,248,0.12)" : "none",
-                          transition: "all 0.15s",
-                        }}>
-                        {h}h
-                      </button>
-                    );
-                  })}
-                </div>
-                <div style={{ marginTop: 10, fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--muted)", textAlign: "center" }}>
-                  Runs every <span style={{ color: "var(--accent)", fontWeight: 600 }}>{schedule.interval_hours} hour{schedule.interval_hours > 1 ? "s" : ""}</span> — managed by APScheduler on the backend
-                </div>
-              </div>
-
-              {/* Device selection */}
-              <div style={{ ...card, opacity: schedule.enabled ? 1 : 0.45, pointerEvents: schedule.enabled ? "auto" : "none", transition: "opacity 0.2s" }}>
-                <div style={{ ...sectionLabel, marginBottom: 14 }}>
-                  Devices to Collect From
-                  {schedule.device_ids.length > 0 && (
-                    <span style={{ marginLeft: 8, color: "var(--accent)", background: "rgba(129,140,248,0.12)", border: "1px solid rgba(129,140,248,0.25)", borderRadius: 10, padding: "1px 7px", fontSize: 10 }}>
-                      {schedule.device_ids.length} selected
-                    </span>
-                  )}
-                </div>
-                {devices.length === 0 ? (
-                  <div style={{ fontFamily: "var(--font-mono)", fontSize: 12, color: "var(--muted)", padding: "16px 0", textAlign: "center" }}>
-                    No devices added yet.
-                  </div>
-                ) : (
-                  <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                    {devices.map(d => {
-                      const checked = schedule.device_ids.includes(d.id);
-                      return (
-                        <div key={d.id} onClick={() => toggleDeviceId(d.id)}
-                          style={{
-                            display: "flex", alignItems: "center", gap: 12, padding: "11px 14px",
-                            borderRadius: 8, border: "1px solid", cursor: "pointer",
-                            background: checked ? "rgba(129,140,248,0.07)" : "rgba(255,255,255,0.02)",
-                            borderColor: checked ? "rgba(129,140,248,0.3)" : "var(--border)",
-                            transition: "all 0.12s",
-                          }}>
-                          {/* Custom checkbox */}
-                          <div style={{
-                            width: 16, height: 16, borderRadius: 4, flexShrink: 0,
-                            border: `1.5px solid ${checked ? "var(--accent)" : "var(--border)"}`,
-                            background: checked ? "var(--accent)" : "transparent",
-                            display: "flex", alignItems: "center", justifyContent: "center",
-                            transition: "all 0.12s",
-                          }}>
-                            {checked && <svg width="9" height="7" viewBox="0 0 9 7" fill="none"><polyline points="1,3.5 3.5,6 8,1" stroke="#06061a" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>}
-                          </div>
-                          <span style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 13, color: "var(--text)", flex: 1 }}>{d.name}</span>
-                          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                            <span style={{ width: 7, height: 7, borderRadius: "50%", background: d.connection ? "#4ade80" : "#444", flexShrink: 0, boxShadow: d.connection ? "0 0 5px #4ade80" : "none" }} />
-                            <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: d.connection ? "#4ade80" : "var(--muted)" }}>{d.connection ? "Online" : "Offline"}</span>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-
-              <Btn variant="primary" onClick={saveSchedule} disabled={schedSaving} style={{ width: "100%", justifyContent: "center" }}>
-                {schedSaving ? "Saving…" : "💾 Save to Server"}
-              </Btn>
-            </div>
-            )
-          )}
 
           {/* ── SECURITY TAB ── */}
           {tab === "security" && (
@@ -1376,8 +1208,42 @@ function Toast({ message, type = "error", onDismiss }) {
 }
 
 // ── DEVICE CARD ───────────────────────────────────────────────────────────────
-function DeviceCard({ device, selected, onSelect, onInfo }) {
-  const [hovered, setHovered] = useState(false);
+function DeviceCard({ device, selected, onSelect, onInfo, onAutoCollectionSave, addToast }) {
+  const [hovered,       setHovered]       = useState(false);
+  const [settingsOpen,  setSettingsOpen]  = useState(false);
+  const [autoEnabled,   setAutoEnabled]   = useState(device.autoCollectionEnabled ?? false);
+  const [intervalHours, setIntervalHours] = useState(device.autoCollectionInterval ?? 1);
+  const [saving,        setSaving]        = useState(false);
+
+  // Sync if device prop changes (e.g. after a poll refresh)
+  useEffect(() => {
+    setAutoEnabled(device.autoCollectionEnabled ?? false);
+    setIntervalHours(device.autoCollectionInterval ?? 1);
+  }, [device.autoCollectionEnabled, device.autoCollectionInterval]);
+
+  const saveAutoCollection = async () => {
+    setSaving(true);
+    try {
+      await apiFetch("/api/settings/auto-collection", {
+        method: "POST",
+        body: JSON.stringify({ enabled: autoEnabled, interval_hours: intervalHours, device_ids: [device.id] }),
+      });
+      onAutoCollectionSave?.(device.id, autoEnabled, intervalHours);
+      addToast?.(
+        autoEnabled
+          ? `Auto-collection on "${device.name}" — every ${intervalHours}h.`
+          : `Auto-collection disabled for "${device.name}".`,
+        "success"
+      );
+    } catch (e) {
+      addToast?.(`Failed to save: ${e.message}`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const INTERVALS = [1, 2, 4, 6, 12, 24];
+
   return (
     <div
       onMouseEnter={() => setHovered(true)}
@@ -1386,55 +1252,129 @@ function DeviceCard({ device, selected, onSelect, onInfo }) {
         position: "relative",
         width: 220,
         borderRadius: 12,
-        padding: "16px 14px",
         background: selected ? "var(--accent-dim)" : "var(--card-bg)",
         border: `1px solid ${selected ? "var(--accent)" : hovered ? "var(--accent-border)" : "var(--border)"}`,
         transition: "all 0.2s",
         cursor: "default",
         boxShadow: selected ? "0 0 20px rgba(129,140,248,0.1)" : "none",
+        overflow: "hidden",
       }}
     >
-      <input
-        type="checkbox"
-        checked={selected}
-        onChange={(e) => onSelect(e.target.checked)}
-        style={{ position: "absolute", top: 12, left: 12, width: 16, height: 16, accentColor: "var(--accent)", cursor: "pointer" }}
-      />
-      <button
-        onClick={onInfo}
-        style={{
-          position: "absolute",
-          top: 10,
-          right: 10,
-          background: "rgba(255,255,255,0.05)",
-          border: "1px solid var(--border)",
-          borderRadius: 6,
-          color: "var(--muted)",
-          cursor: "pointer",
-          fontSize: 13,
-          padding: "2px 7px",
-        }}
-      >
-        ⚙
-      </button>
-      <div
-        style={{
-          marginTop: 20,
-          marginBottom: 10,
-          fontFamily: "var(--font-display)",
-          fontSize: 15,
-          fontWeight: 700,
-          color: "var(--text)",
-          letterSpacing: "0.03em",
-        }}
-      >
-        {device.name}
+      {/* ── Card header ── */}
+      <div style={{ padding: "16px 14px" }}>
+        <input
+          type="checkbox"
+          checked={selected}
+          onChange={(e) => onSelect(e.target.checked)}
+          style={{ position: "absolute", top: 12, left: 12, width: 16, height: 16, accentColor: "var(--accent)", cursor: "pointer" }}
+        />
+
+        {/* Info + Settings toggle buttons */}
+        <div style={{ position: "absolute", top: 10, right: 10, display: "flex", gap: 4 }}>
+          <button
+            onClick={onInfo}
+            title="Device details"
+            style={{ background: "rgba(255,255,255,0.05)", border: "1px solid var(--border)", borderRadius: 6, color: "var(--muted)", cursor: "pointer", fontSize: 13, padding: "2px 7px" }}
+          >
+            ℹ
+          </button>
+          <button
+            onClick={() => setSettingsOpen(v => !v)}
+            title="Auto-collection settings"
+            style={{
+              background: settingsOpen ? "rgba(129,140,248,0.15)" : "rgba(255,255,255,0.05)",
+              border: `1px solid ${settingsOpen ? "rgba(129,140,248,0.4)" : "var(--border)"}`,
+              borderRadius: 6, color: settingsOpen ? "var(--accent)" : "var(--muted)",
+              cursor: "pointer", fontSize: 13, padding: "2px 7px",
+              transition: "all 0.15s",
+            }}
+          >
+            ⚙
+          </button>
+        </div>
+
+        <div style={{ marginTop: 20, marginBottom: 10, fontFamily: "var(--font-display)", fontSize: 15, fontWeight: 700, color: "var(--text)", letterSpacing: "0.03em" }}>
+          {device.name}
+        </div>
+
+        <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+          <StatusRow label="Connection" ok={device.connection} />
+          <StatusRow label="Log Access" ok={device.logAccess} />
+          <StatusRow label="Collecting"  ok={device.collecting} pulseWhenTrue />
+        </div>
+
+        {/* Auto-collection active badge */}
+        {autoEnabled && (
+          <div style={{ marginTop: 10 }}>
+            <span style={{
+              display: "inline-flex", alignItems: "center", gap: 5,
+              background: "rgba(129,140,248,0.13)", border: "1px solid rgba(129,140,248,0.35)",
+              borderRadius: 20, padding: "3px 9px",
+              fontFamily: "var(--font-mono)", fontSize: 10, fontWeight: 600, color: "var(--accent)",
+            }}>
+              <span style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--accent)", boxShadow: "0 0 5px var(--accent)", display: "inline-block" }} />
+              ⏰ Auto · {intervalHours}h
+            </span>
+          </div>
+        )}
       </div>
-      <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
-        <StatusRow label="Connection" ok={device.connection} />
-        <StatusRow label="Log Access" ok={device.logAccess} />
-        <StatusRow label="Collecting" ok={device.collecting} pulseWhenTrue />
-      </div>
+
+      {/* ── Auto-collection settings panel ── */}
+      {settingsOpen && (
+        <div style={{
+          borderTop: "1px solid var(--border)",
+          padding: "14px 14px 12px",
+          background: "rgba(0,0,0,0.18)",
+        }}>
+          {/* Enable toggle */}
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+            <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--muted)" }}>Auto-collection</span>
+            <Toggle checked={autoEnabled} onChange={setAutoEnabled} />
+          </div>
+
+          {/* Interval grid */}
+          <div style={{ opacity: autoEnabled ? 1 : 0.4, pointerEvents: autoEnabled ? "auto" : "none", transition: "opacity 0.15s" }}>
+            <div style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 7 }}>
+              Interval
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 5 }}>
+              {INTERVALS.map(h => {
+                const active = intervalHours === h;
+                return (
+                  <button key={h} onClick={() => setIntervalHours(h)}
+                    style={{
+                      padding: "6px 0", borderRadius: 6, border: "1px solid",
+                      fontFamily: "var(--font-mono)", fontSize: 11, fontWeight: 600,
+                      cursor: "pointer", textAlign: "center",
+                      background: active ? "rgba(129,140,248,0.16)" : "rgba(255,255,255,0.03)",
+                      color: active ? "var(--accent)" : "var(--muted)",
+                      borderColor: active ? "rgba(129,140,248,0.45)" : "var(--border)",
+                      transition: "all 0.12s",
+                    }}>
+                    {h}h
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Save button */}
+          <button
+            onClick={saveAutoCollection}
+            disabled={saving}
+            style={{
+              marginTop: 11, width: "100%", padding: "7px 0",
+              borderRadius: 7, border: "1px solid rgba(129,140,248,0.35)",
+              background: "rgba(129,140,248,0.12)", color: "var(--accent)",
+              fontFamily: "var(--font-mono)", fontSize: 11, fontWeight: 600,
+              cursor: saving ? "not-allowed" : "pointer", opacity: saving ? 0.6 : 1,
+              transition: "all 0.15s",
+            }}
+          >
+            {saving ? "Saving…" : "💾 Save"}
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -2570,6 +2510,14 @@ ${rows}
                     selected={selectedDevices.includes(d.id)}
                     onSelect={(checked) => toggleDevice(d.id, checked)}
                     onInfo={() => setDeviceModal(d)}
+                    onAutoCollectionSave={(id, enabled, interval) => {
+                      setDevices(prev => prev.map(dev =>
+                        dev.id === id
+                          ? { ...dev, autoCollectionEnabled: enabled, autoCollectionInterval: interval }
+                          : dev
+                      ));
+                    }}
+                    addToast={addToast}
                   />
                 ))}
               </div>
@@ -2689,7 +2637,6 @@ ${rows}
         onClose={() => setSettingsModal(false)}
         isAdmin={auth.isAdmin}
         onRequestLogin={() => { setSettingsModal(false); setLoginModal(true); }}
-        devices={devices}
         auth={auth}
         addToast={addToast}
       />

@@ -253,6 +253,7 @@ if __name__ == '__main__':
             device_watchdog.stop_logs_collection()
             device_watchdog.save_log_snapshots(current_device_config["current_session_id"], current_device_config["session_scenario"])
             update_device_config_parameter(args.device_config_file_path, "current_session_id", "no_active_session")
+            sleep(2)
         if current_device_config["auto_collection_enabled"] and not device_watchdog.collection_ongoing:
             auto_collection_timer = time.time()
             update_device_config_parameter(args.device_config_file_path, "logs_collection", True)

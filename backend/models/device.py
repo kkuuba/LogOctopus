@@ -86,4 +86,4 @@ class Device:
             device_config = self.device_config_instance.get_device_config()
             if device_config["current_session_id"] == "no_active_session":
                 break
-            time.sleep(3)
+            time.sleep(1)

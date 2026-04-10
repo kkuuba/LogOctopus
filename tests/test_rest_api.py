@@ -422,7 +422,7 @@ class TestSetAutoCollection:
             resp = self._post(client, body)
 
         assert resp.status_code == 200
-        assert resp.get_json() == {"status": "ok", "auto_collection_active": True}
+        assert resp.get_json() == {"status": "ok", "devices": [{ "device_id": "dev-001", "enabled": True, "interval_hours": 6.0 }]}
         device.device_config_instance.update_runtime_parameter.assert_any_call(
             "auto_collection_enabled", True
         )
@@ -443,7 +443,8 @@ class TestSetAutoCollection:
     def test_reflects_enabled_false_in_response(self, client):
         with patch("backend.app.get_current_devices", return_value=[]):
             resp = self._post(client, {"enabled": False, "interval_hours": 1, "device_ids": []})
-        assert resp.get_json()["auto_collection_active"] is False
+        print(resp.get_json())
+        assert resp.get_json()["devices"] == []
 
 
 # ── POST /api/settings/change-password ───────────────────────────────────────

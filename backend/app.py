@@ -66,18 +66,16 @@ def device_to_dict(device: Device) -> dict:
         - logAccess (bool) - Whether log access is available on the device.
         - collecting (bool) - Whether log collection is currently in progress.
         - config (dict) - Raw device configuration mapping.
-        - auto_collection_enabled (bool) - Define if auto logs collection enabled on device.
-        - auto_collection_interval (float) - Define auto logs collection interval in hours.
     """
     return {
-        "id":                       device.device_config_id,
-        "name":                     device.device_name,
-        "connection":               device.connection_status,
-        "logAccess":                device.log_access,
-        "collecting":               device.collection_ongoing,
-        "config":                   device.device_config,
-        "auto_collection_enabled":  device.auto_collection_enabled,
-        "auto_collection_interval": device.auto_collection_interval
+        "id":                      device.device_config_id,
+        "name":                    device.device_name,
+        "connection":              device.connection_status,
+        "logAccess":               device.log_access,
+        "collecting":              device.collection_ongoing,
+        "config":                  device.device_config,
+        "autoCollectionEnabled":   device.auto_collection_enabled,
+        "autoCollectionInterval":  device.auto_collection_interval
     }
 
 
@@ -494,31 +492,76 @@ def stop_logs_collection():
     })
 
 
+@app.get("/api/settings/auto-collection")
+def get_auto_collection():
+    """Return the current auto-collection settings for all devices.
+
+    GET '/api/settings/auto-collection'
+
+    Returns:
+        200 OK:
+            - devices (list[dict]) - Per-device auto-collection config.
+              Each entry contains:
+
+              - device_id (str) - Device config ID.
+              - enabled (bool) - Whether auto-collection is active.
+              - interval_hours (float) - Configured collection interval.
+
+            Example::
+
+                {
+                    "devices": [
+                        {
+                            "device_id": "abc123",
+                            "enabled": true,
+                            "interval_hours": 4.0
+                        }
+                    ]
+                }
+    """
+    result = []
+    for device in get_current_devices():
+        cfg = device.device_config or {}
+        result.append({
+            "device_id":      device.device_config_id,
+            "enabled":        bool(cfg.get("auto_collection_enabled", False)),
+            "interval_hours": float(cfg.get("auto_collection_interval", 1)),
+        })
+    return jsonify({"devices": result})
+
+
 @app.post("/api/settings/auto-collection")
 def set_auto_collection():
     """Persist the auto-collection schedule and register the server-side interval job.
 
     POST '/api/settings/auto-collection'
 
-    If APScheduler is installed, a recurring interval job is registered (or
-    updated if one already exists) using the provided interval_hours.
+    Configures auto-collection for one or more devices independently.
+    Each device can have its own enabled flag and interval.
 
     Request body (JSON):
-        - enabled (bool) - Whether auto-collection should be active.
-        - interval_hours (float) - Collection interval.
-          Typical values: '1', '2', '4', '6', '12', '24'.
-          Must be positive.
+        - enabled (bool) - Whether auto-collection should be active for these devices.
+        - interval_hours (float) - Collection interval in hours.
+          Typical values: '1', '2', '4', '6', '12', '24'.  Must be positive.
         - device_ids (list[str]) - Config IDs of devices to configure.
 
     Returns:
         200 OK:
             - status (str) - '"ok"'.
-            - auto_collection_active (bool) - Reflects the enabled value
-              that was persisted.
+            - devices (list[dict]) - Updated per-device state, each containing:
+
+              - device_id (str) - Device config ID.
+              - enabled (bool) - The enabled value that was persisted.
+              - interval_hours (float) - The interval that was persisted.
 
             Example::
 
-                { "status": "ok", "auto_collection_active": true }
+                {
+                    "status": "ok",
+                    "devices": [
+                        { "device_id": "abc123", "enabled": true, "interval_hours": 4.0 }
+                    ]
+                }
 
         400 Bad Request:
             '{ "error": "device_ids must be a list" }'
@@ -534,13 +577,19 @@ def set_auto_collection():
     if interval_hours <= 0:
         return _bad("interval_hours must be positive")
 
+    updated = []
     for device in get_current_devices():
         if device.device_config_id in device_ids:
             device.device_config_instance.update_runtime_parameter("auto_collection_enabled", enabled)
-            device.device_config_instance.update_runtime_parameter("session_scenario", "auto_logs_collection")
             device.device_config_instance.update_runtime_parameter("auto_collection_interval", interval_hours)
+            device.device_config_instance.update_runtime_parameter("session_scenario", "auto-logs-collection")
+            updated.append({
+                "device_id":      device.device_config_id,
+                "enabled":        enabled,
+                "interval_hours": interval_hours,
+            })
 
-    return jsonify({"status": "ok", "auto_collection_active": enabled})
+    return jsonify({"status": "ok", "devices": updated})
 
 
 @app.post("/api/settings/change-password")
