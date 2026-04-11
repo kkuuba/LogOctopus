@@ -187,7 +187,9 @@ class DeviceWatchdog:
         """
         Get status of connection to target device.
         """
-        if len(self.ssh_channels.keys()) > 0:
+        ssh_channel_id = self.device_config["log_file_configs"][0]["log_name"]
+        ssh_channel = self.ssh_channels[ssh_channel_id]
+        if ssh_channel.is_connected:
             self.connection_status = True
         else:
             self.connection_status = False
@@ -197,15 +199,12 @@ class DeviceWatchdog:
         Validate if first 3 log files defined in configuration can be accessed via SSH. If any of first 3 log files cannot be accessed
         method return False.
         """
-        for log_file_config in self.device_config["log_file_configs"][:3]:
-            current_log_content = self.execute_cmd(log_file_config["log_file_cmd"], log_file_config["log_name"])
-            if current_log_content:
-                continue
-            else:
-                self.log_access = False
-
-        self.log_access = True
-
+        log_file_config = self.device_config["log_file_configs"][0]
+        current_log_content = self.execute_cmd(log_file_config["log_file_cmd"], log_file_config["log_name"])
+        if current_log_content:
+            self.log_access = True
+        else:
+            self.log_access = False
 
 def get_current_device_config(path_to_config_file):
     """
@@ -260,8 +259,8 @@ if __name__ == '__main__':
             update_device_config_parameter(args.device_config_file_path, "current_session_id", f"auto_{uuid.uuid1().hex[:12]}")
         if current_device_config["auto_collection_enabled"] and time.time() - auto_collection_timer > current_device_config["auto_collection_interval"] * 3600:
             update_device_config_parameter(args.device_config_file_path, "logs_collection", False)
-        device_watchdog.get_connection_status()
         device_watchdog.test_log_files_access()
+        device_watchdog.get_connection_status()
         update_device_config_parameter(args.device_config_file_path, "connected", device_watchdog.connection_status)
         update_device_config_parameter(args.device_config_file_path, "logs_available", device_watchdog.log_access)
         errors_file_path = f"data/{device_watchdog.device_name}/errors.feather"

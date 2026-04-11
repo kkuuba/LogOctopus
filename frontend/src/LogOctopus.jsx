@@ -1387,12 +1387,12 @@ function StatusRow({ label, ok, pulseWhenTrue }) {
           width: 8,
           height: 8,
           borderRadius: "50%",
-          background: ok ? "#4ade80" : "#333",
+          background: ok ? "#4ade80" : "#cb0f0f",
           boxShadow: ok && pulseWhenTrue ? "0 0 6px #4ade80" : "none",
         }}
       />
       <span style={{ color: "var(--muted)" }}>{label}</span>
-      <span style={{ marginLeft: "auto", color: ok ? "#4ade80" : "#444" }}>{ok ? "OK" : "—"}</span>
+      <span style={{ marginLeft: "auto", color: ok ? "#4ade80" : "#cb0f0f" }}>{ok ? "OK" : "❌"}</span>
     </div>
   );
 }
