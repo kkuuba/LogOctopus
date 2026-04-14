@@ -5,9 +5,11 @@ import pandas as pd
 from datetime import datetime
 from dateutil import parser
 import re
+import io
 import uuid
 import time
 import threading
+from paramiko import RSAKey
 from time import sleep
 import argparse
 import json
@@ -50,11 +52,7 @@ class DeviceWatchdog:
         """
         try:
             if ssh_channel_id not in self.ssh_channels.keys():
-                self.ssh_channels[ssh_channel_id] = Connection(
-                    host=self.device_config["ip_address"],
-                    user=self.device_config["user"],
-                    port=self.device_config["port"],
-                    connect_kwargs={"password": self.device_config["password"]})
+                self.ssh_channels[ssh_channel_id] = self.create_device_connection()
             root_requried = True if "sudo " in cmd else False
             if root_requried:
                 cmd_result = self.ssh_channels[ssh_channel_id].sudo(cmd, password=self.device_config["password"], hide=True, timeout=10)
@@ -205,6 +203,81 @@ class DeviceWatchdog:
             self.log_access = True
         else:
             self.log_access = False
+
+    def create_device_connection(self):
+        """
+        Create Fabric SSH connection object based on data in device config object.
+
+        Returns:
+            Connection: Fabric SSH connection object with all needed parameters.
+        """
+        connect_kwargs = self._build_connect_kwargs(self.device_config)
+        gateway = self._build_gateway(self.device_config.get("gateway", None))
+
+        return Connection(
+            host=self.device_config["ip_address"],
+            user=self.device_config["user"],
+            port=self.device_config.get("port", 22),
+            connect_kwargs=connect_kwargs,
+            gateway=gateway,
+        )
+
+    @staticmethod
+    def _build_connect_kwargs(config: dict):
+        """
+        Create connect kwargs based on provided data.
+
+        Args:
+            config (dict): Source config data for connection kwargs.        
+
+        Returns:
+            dict: Data for connection kwargs with ssh key or password info.
+        """
+        connect_kwargs = {}
+
+        if "ssh_key_path" in config:
+            connect_kwargs["key_filename"] = config["ssh_key_path"]
+
+        elif "ssh_key_string" in config:
+            passphrase = config.get("ssh_key_passphrase")
+            private_key = RSAKey.from_private_key(
+                io.StringIO(config["ssh_key_string"]),
+                password=passphrase,
+            )
+            connect_kwargs["pkey"] = private_key
+
+        if "password" in config:
+            connect_kwargs["password"] = config["password"]
+
+        if "ssh_key_passphrase" in config and "ssh_key_path" in config:
+            connect_kwargs["passphrase"] = config["ssh_key_passphrase"]
+
+        return connect_kwargs
+
+    @classmethod
+    def _build_gateway(cls, gateway_config: dict | None):
+        """
+        Create Fabric SSH connection object based on data provided gateway device config.
+
+        Args:
+            gateway_config (dict): Connection paramters for gateway device.
+
+        Returns:
+            (Connection|None): Fabric SSH connection object.
+        """
+        if not gateway_config:
+            return None
+
+        nested_gateway = cls._build_gateway(gateway_config.get("gateway"))
+
+        return Connection(
+            host=gateway_config["ip_address"],
+            user=gateway_config["user"],
+            port=gateway_config.get("port", 22),
+            connect_kwargs=cls._build_connect_kwargs(gateway_config),
+            gateway=nested_gateway,
+        )
+
 
 def get_current_device_config(path_to_config_file):
     """
