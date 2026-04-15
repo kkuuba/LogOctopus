@@ -1,15 +1,15 @@
 # LogOctopus
 
-<picture>
-  <img src="docs/logo.png" width="300" alt="LogOctopus logo">
-</picture>
+<p align="center">
+  <img src="docs/logo.png" alt="LogOctopus logo">
+</p>
 
 <p align="center">
   <a href="https://github.com/kkuuba/LogOctopus/actions/workflows/ci.yml">
     <img src="https://github.com/kkuuba/LogOctopus/actions/workflows/ci.yml/badge.svg" alt="CI">
   </a>
-  <a href="https://github.com/kkuuba/LogOctopus/blob/new_react_ui/LICENSE">
-    <img src="https://img.shields.io/github/license/YOUR_ORG/YOUR_REPO?color=f472b6" alt="License">
+  <a href="https://github.com/kkuuba/LogOctopus/blob/main/LICENSE">
+    <img src="https://img.shields.io/github/license/kkuuba/LogOctopus?color=f472b6" alt="License">
   </a>
 </p>
 
