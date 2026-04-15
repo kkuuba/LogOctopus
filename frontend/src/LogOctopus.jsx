@@ -1313,7 +1313,7 @@ function DeviceCard({ device, selected, onSelect, onInfo, onAutoCollectionSave, 
               fontFamily: "var(--font-mono)", fontSize: 10, fontWeight: 600, color: "var(--accent)",
             }}>
               <span style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--accent)", boxShadow: "0 0 5px var(--accent)", display: "inline-block" }} />
-              ⏰ Auto · {intervalHours}h
+              Auto collection - {intervalHours}h
             </span>
           </div>
         )}
@@ -1392,7 +1392,7 @@ function StatusRow({ label, ok, pulseWhenTrue }) {
         }}
       />
       <span style={{ color: "var(--muted)" }}>{label}</span>
-      <span style={{ marginLeft: "auto", color: ok ? "#4ade80" : "#cb0f0f" }}>{ok ? "OK" : "❌"}</span>
+      <span style={{ marginLeft: "auto", color: ok ? "#4ade80" : "#cb0f0f", fontSize: 16 }}>{ok ? "✔" : "✖"}</span>
     </div>
   );
 }
