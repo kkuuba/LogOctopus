@@ -1,32 +1,14 @@
-<p align="center">
-  <svg width="64" height="64" viewBox="0 0 36 36" xmlns="http://www.w3.org/2000/svg">
-    <circle cx="18" cy="18" r="17" fill="none" stroke="#818cf8" stroke-width="1.5"/>
-    <circle cx="18" cy="18" r="6" fill="#818cf8"/>
-    <line x1="25" y1="18" x2="33" y2="18" stroke="#818cf8" stroke-width="1.8" stroke-linecap="round"/>
-    <line x1="22.95" y1="22.95" x2="28.59" y2="28.59" stroke="#818cf8" stroke-width="1.8" stroke-linecap="round"/>
-    <line x1="18" y1="25" x2="18" y2="33" stroke="#818cf8" stroke-width="1.8" stroke-linecap="round"/>
-    <line x1="13.05" y1="22.95" x2="7.41" y2="28.59" stroke="#818cf8" stroke-width="1.8" stroke-linecap="round"/>
-    <line x1="11" y1="18" x2="3" y2="18" stroke="#818cf8" stroke-width="1.8" stroke-linecap="round"/>
-    <line x1="13.05" y1="13.05" x2="7.41" y2="7.41" stroke="#818cf8" stroke-width="1.8" stroke-linecap="round"/>
-    <line x1="18" y1="11" x2="18" y2="3" stroke="#818cf8" stroke-width="1.8" stroke-linecap="round"/>
-    <line x1="22.95" y1="13.05" x2="28.59" y2="7.41" stroke="#818cf8" stroke-width="1.8" stroke-linecap="round"/>
-  </svg>
-</p>
+# LogOctopus
 
-<h1 align="center">LogOctopus</h1>
-<p align="center"><em>Automated log collection and monitoring tool for multi-device test environments.</em></p>
+<picture>
+  <img src="docs/logo.png" width="300" alt="LogOctopus logo">
+</picture>
 
 <p align="center">
-  <a href="https://github.com/YOUR_ORG/YOUR_REPO/actions/workflows/ci.yml">
-    <img src="https://github.com/YOUR_ORG/YOUR_REPO/actions/workflows/ci.yml/badge.svg" alt="CI">
+  <a href="https://github.com/kkuuba/LogOctopus/actions/workflows/ci.yml">
+    <img src="https://github.com/kkuuba/LogOctopus/actions/workflows/ci.yml/badge.svg" alt="CI">
   </a>
-  <a href="https://github.com/YOUR_ORG/YOUR_REPO/graphs/contributors">
-    <img src="https://img.shields.io/github/contributors/YOUR_ORG/YOUR_REPO?color=818cf8" alt="Contributors">
-  </a>
-  <a href="https://github.com/YOUR_ORG/YOUR_REPO/commits/main">
-    <img src="https://img.shields.io/github/last-commit/YOUR_ORG/YOUR_REPO?color=34d399" alt="Last Commit">
-  </a>
-  <a href="https://github.com/YOUR_ORG/YOUR_REPO/blob/main/LICENSE">
+  <a href="https://github.com/kkuuba/LogOctopus/blob/new_react_ui/LICENSE">
     <img src="https://img.shields.io/github/license/YOUR_ORG/YOUR_REPO?color=f472b6" alt="License">
   </a>
 </p>
