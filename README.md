@@ -1,4 +1,3 @@
-# LogOctopus
 
 <p align="center">
   <img src="docs/logo.png" alt="LogOctopus logo">
@@ -8,12 +7,12 @@
   <a href="https://github.com/kkuuba/LogOctopus/actions/workflows/ci.yml">
     <img src="https://github.com/kkuuba/LogOctopus/actions/workflows/ci.yml/badge.svg" alt="CI">
   </a>
-  <a href="https://github.com/kkuuba/LogOctopus/blob/main/LICENSE">
+  <a href="https://github.com/kkuuba/LogOctopus/blob/new_react_ui/LICENSE">
     <img src="https://img.shields.io/github/license/kkuuba/LogOctopus?color=f472b6" alt="License">
   </a>
 </p>
 
-LogOctopus collects, stores, and visualises logs from remote devices over SSH. It is designed for use in automated test pipelines where you need to capture system events, performance metrics, and application logs from multiple machines simultaneously — and then analyse them through a web UI or query them programmatically via REST API.
+LogOctopus collects, stores, and visualises logs from remote devices over SSH. It is designed for use in automated test pipelines where you need to capture system events, performance metrics, and application/hardware logs from multiple machines simultaneously — and then analyse them through a web UI or query them programmatically via REST API.
 
 ---
 
@@ -29,11 +28,11 @@ LogOctopus collects, stores, and visualises logs from remote devices over SSH. I
   - [Log Types](#log-types)
   - [Environment Variables](#environment-variables)
 - [Running the Application](#running-the-application)
+- [Deploy the Application](#deploy-the-application)
 - [Web Interface](#web-interface)
 - [REST API](#rest-api)
 - [Integrating with Automated Tests](#integrating-with-automated-tests)
 - [Auto-Collection](#auto-collection)
-- [Project Structure](#project-structure)
 - [Contributing](#contributing)
 - [License](#license)
 
@@ -97,11 +96,13 @@ Snapshot data is persisted locally under `data/` as files managed by the backend
 
 **Backend**
 - Python 3.11+
-- Flask
-- flask-cors
-- paramiko (SSH)
+- fabric
 - pandas
-- *(add any additional dependencies here)*
+- python-dateutil
+- pytest
+- fastapi
+- pyarrow
+- flask_cors
 
 **Frontend**
 - Node.js 18+ (for development builds)
@@ -113,12 +114,12 @@ Snapshot data is persisted locally under `data/` as files managed by the backend
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/<your-org>/logoctopus.git
-cd logoctopus
+git clone https://github.com/kkuuba/LogOctopus.git
+cd LogOctopus
 
 # 2. Create and activate a virtual environment
 python -m venv .venv
-source .venv/bin/activate      # Windows: .venv\Scripts\activate
+source .venv/bin/activate
 
 # 3. Install Python dependencies
 pip install -r requirements.txt
@@ -134,7 +135,7 @@ npm install
 
 ### device_config.json
 
-Each device is described by a single JSON file that you upload through the UI or drop into the `data/` directory. Below is a commented breakdown of every field:
+Each device is described by a single JSON file that you upload through the UI. Below is a commented breakdown of every field:
 
 ```jsonc
 {
@@ -147,7 +148,7 @@ Each device is described by a single JSON file that you upload through the UI or
   "user": "example_user",
   "password": "example_password",   // or omit and use an SSH key
 
-  // How often auto-collection fires (seconds) — used when auto-collection is enabled
+  // How often cmds for all log configs should be executed. Interaval in seconds.
   "collection_interval": 30,
 
   // Optional: jump/gateway host (if the device is not directly reachable)
@@ -171,8 +172,8 @@ Each device is described by a single JSON file that you upload through the UI or
       // Required groups: TIME (timestamp) and ENTRY (payload).
       "data_extraction_regex": "^(?P<TIME>\\d+-\\d+-\\d+ \\d+:\\d+:\\d+)\\s(?P<ENTRY>.*)",
 
-      // Command run once before collection starts (e.g. to activate a log sink)
-      "log_activation_cmd": "dir",
+      // Command run once before collection starts (e.g. to clear current logs content before target scenario execution)
+      "log_activation_cmd": "sudo journalctl --rotate;sudo journalctl --vacuum-time=1s",
 
       // "text" → event/audit logs   |   "chart" → numeric time-series
       "log_type": "text"
@@ -205,10 +206,10 @@ For `chart` logs the regex `ENTRY` group must capture a single number (integer o
 
 ## Running the Application
 
-**Backend**
+**Backend (development)**
 
 ```bash
-python app.py
+python -m backend.app
 # Starts Flask on http://localhost:8050 by default
 ```
 
@@ -220,12 +221,30 @@ npm run dev
 # Vite dev server on http://localhost:8100
 ```
 
+**Backend (production build)**
+
+```bash
+gunicorn --bind "localhost:8050"  backend.app:app
+# Starts Flask on http://localhost:8050 by default
+```
+
 **Frontend (production build)**
 
 ```bash
 cd frontend
 npm run build
 # Serve the dist/ folder with any static file server
+```
+
+---
+
+## Deploy the Application
+
+```bash
+nano .env
+# Edit this file with correct values for your Docker host
+docker compose up -d
+# Above cmds should build and start 2 containers for frontend and backend.
 ```
 
 ---
@@ -353,32 +372,7 @@ Auto-collection sessions are labelled with the scenario `auto-logs-collection`.
 
 ---
 
-## Project Structure
-
-```
-logoctopus/
-├── app.py                   # Flask application entry point
-├── settings.json            # Runtime settings (auto-generated)
-├── data/                    # Persisted device configs and snapshots
-├── backend/
-│   ├── models/
-│   │   ├── device.py
-│   │   └── device_config.py
-│   └── utils/
-│       ├── config_helper.py
-│       └── device_config_loader.py
-└── frontend/
-    ├── index.html           # Loads Plotly CDN script
-    ├── src/
-    │   └── LogOctopus.jsx   # Single-file React application
-    └── vite.config.js
-```
-
----
-
 ## Contributing
-
-<!-- TODO: fill in your contribution guidelines, branch strategy, and PR process -->
 
 Pull requests are welcome. Please open an issue first to discuss significant changes.
 
@@ -390,7 +384,5 @@ Pull requests are welcome. Please open an issue first to discuss significant cha
 ---
 
 ## License
-
-<!-- TODO: add your licence (MIT, Apache-2.0, proprietary, etc.) -->
 
 This project is licensed under the [MIT License](LICENSE).
