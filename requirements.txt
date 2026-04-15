@@ -3,11 +3,5 @@ pandas
 python-dateutil
 pytest
 fastapi
-uvicorn
 pyarrow
-dash
-dash_bootstrap_components
-dash_daq
-plotly
-gunicorn
-flask_caching
+flask_cors

@@ -1,0 +1,33 @@
+services:
+
+  # ── Flask REST API (served by Gunicorn) ───────────────────────────────────
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    restart: unless-stopped
+    environment:
+      HOST: "0.0.0.0"
+      PORT: "${BACKEND_PORT}"
+      FRONTEND_BASE: "http://${HOST_IP}:${FRONTEND_PORT}"
+      GUNICORN_WORKERS: "${GUNICORN_WORKERS}"
+    volumes:
+      - ./data:/app/data
+      - ./settings.json:/app/settings.json
+    ports:
+      - "${BACKEND_PORT}:${BACKEND_PORT}"
+
+  # ── React (served by 'serve') ─────────────────────────────────────────────
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+      args:
+        VITE_API_BASE: "http://${HOST_IP}:${BACKEND_PORT}"
+    restart: unless-stopped
+    environment:
+      FRONTEND_PORT: "${FRONTEND_PORT}"
+    ports:
+      - "${FRONTEND_PORT}:${FRONTEND_PORT}"
+    depends_on:
+      - backend

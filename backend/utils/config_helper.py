@@ -20,6 +20,7 @@ class ConfigurationHelper:
             elif not selected_log_content.empty:
                 final_data_frame = pd.concat([final_data_frame, selected_log_content], ignore_index=True)
         final_data_frame = final_data_frame.sort_values(by="time", ascending=True)
+        final_data_frame["time"] = final_data_frame["time"].dt.strftime("%Y-%m-%d %H:%M:%S")
 
         return final_data_frame
 
@@ -65,12 +66,13 @@ class ConfigurationHelper:
                 if target_log_type == log_snapshot.log_type:
                     log_snapshot_list_info = {
                         "Device": log_snapshot.device_name,
-                        "Log name": log_snapshot.log_name,
+                        "Log Name": log_snapshot.log_name,
                         "Started": str(log_snapshot.start_time),
                         "Finished": str(log_snapshot.finish_time),
                         "Duration": f"{log_snapshot.logs_collection_duration} s",
                         "Size": f"{int(log_snapshot.size_in_bytes)/1000} kB",
                         "Session ID": log_snapshot.session_id,
+                        "Scenario": log_snapshot.session_scenario,
                         "object_instance": log_snapshot
                     }
                     filterable_log_snapshots_list.append(log_snapshot_list_info)

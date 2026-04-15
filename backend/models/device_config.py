@@ -33,9 +33,12 @@ class DeviceConfig:
             watchdog_data = {
                 "logs_collection": False,
                 "current_session_id": "no_active_session",
+                "session_scenario": "no_active_session",
                 "connected": False,
                 "logs_available": False,
                 "watchdog_process_pid": 0,
+                "auto_collection_enabled": False,
+                "auto_collection_interval": 0
             }
             config_data.update(watchdog_data)
             with open(self.device_config_path, 'w', encoding='utf-8') as config_file:
