@@ -32,25 +32,28 @@ jobs:
       - name: Login to GHCR
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
 
-      # 🏗 Build & push BACKEND
+      - name: Normalize image name
+        run: echo "IMAGE_NAME=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
+
+      # Backend
       - name: Build and push backend
         uses: docker/build-push-action@v5
         with:
           context: ./backend
           push: true
           tags: |
-            ghcr.io/${{ github.repository }}/backend:${{ env.VERSION }}
-            ghcr.io/${{ github.repository }}/backend:latest
+            ghcr.io/${{ env.IMAGE_NAME }}/backend:${{ env.VERSION }}
+            ghcr.io/${{ env.IMAGE_NAME }}/backend:latest
 
-      # 🏗 Build & push FRONTEND
+      # Frontend
       - name: Build and push frontend
         uses: docker/build-push-action@v5
         with:
           context: ./frontend
           push: true
           tags: |
-            ghcr.io/${{ github.repository }}/frontend:${{ env.VERSION }}
-            ghcr.io/${{ github.repository }}/frontend:latest
+            ghcr.io/${{ env.IMAGE_NAME }}/frontend:${{ env.VERSION }}
+            ghcr.io/${{ env.IMAGE_NAME }}/frontend:latest
 
       # 🏷 Create Git tag
       - name: Create tag
