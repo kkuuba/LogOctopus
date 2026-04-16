@@ -1,0 +1,123 @@
+{
+  "device_name": "Cisco-Switch",
+  "ip_address": "192.168.1.2",
+  "port": 22,
+  "user": "admin",
+  "password": "changeme",
+  "collection_interval": 60,
+  "_comment": "Compatible with Cisco Catalyst IOS and IOS-XE switches. Requires 'ip ssh version 2' and user with privilege 15. Adjust interface names (GigabitEthernet, FastEthernet, TenGigabitEthernet) to match your hardware.",
+  "log_file_configs": [
+    {
+      "log_file_cmd": "show logging",
+      "log_name": "syslog",
+      "data_extraction_regex": "^(?P<TIME>\\*?\\w+\\s+\\d+\\s+\\d+\\:\\d+\\:\\d+\\.?\\d*(?:\\s+\\w+)?):\\s+(?P<ENTRY>.*)",
+      "log_activation_cmd": "show version | include Cisco",
+      "log_type": "text"
+    },
+    {
+      "log_file_cmd": "show interfaces status",
+      "log_name": "port_status",
+      "data_extraction_regex": "^(?P<TIME>)(?P<ENTRY>(?:Gi|Fa|Te|Po)\\S+\\s+.*)",
+      "log_activation_cmd": "show version | include Cisco",
+      "log_type": "text"
+    },
+    {
+      "log_file_cmd": "show mac address-table",
+      "log_name": "mac_address_table",
+      "data_extraction_regex": "^(?P<TIME>)(?P<ENTRY>\\s+\\d+\\s+[0-9a-f]{4}\\.[0-9a-f]{4}\\.[0-9a-f]{4}\\s+.*)",
+      "log_activation_cmd": "show version | include Cisco",
+      "log_type": "text"
+    },
+    {
+      "log_file_cmd": "show spanning-tree summary",
+      "log_name": "spanning_tree_summary",
+      "data_extraction_regex": "^(?P<TIME>)(?P<ENTRY>.*(?:Root|Blocking|Forwarding|Learning|Listening).*)",
+      "log_activation_cmd": "show spanning-tree summary | include Total",
+      "log_type": "text"
+    },
+    {
+      "log_file_cmd": "show etherchannel summary",
+      "log_name": "port_channel_status",
+      "data_extraction_regex": "^(?P<TIME>)(?P<ENTRY>\\d+\\s+Po\\d+.*)",
+      "log_activation_cmd": "show etherchannel summary | include Po",
+      "log_type": "text"
+    },
+    {
+      "log_file_cmd": "show vlan brief",
+      "log_name": "vlan_table",
+      "data_extraction_regex": "^(?P<TIME>)(?P<ENTRY>\\d+\\s+\\S+\\s+(?:active|act\\/unsup).*)",
+      "log_activation_cmd": "show version | include Cisco",
+      "log_type": "text"
+    },
+    {
+      "log_file_cmd": "show cdp neighbors",
+      "log_name": "cdp_neighbors",
+      "data_extraction_regex": "^(?P<TIME>)(?P<ENTRY>\\S+\\s+\\S+\\s+\\d+.*)",
+      "log_activation_cmd": "show cdp neighbors | include Device",
+      "log_type": "text"
+    },
+    {
+      "log_file_cmd": "show interfaces | include ^[A-Z].*line|input errors|output errors|CRC|collision",
+      "log_name": "interface_errors",
+      "data_extraction_regex": "^(?P<TIME>)(?P<ENTRY>.*(?:error|CRC|collision|reset).*)",
+      "log_activation_cmd": "show version | include Cisco",
+      "log_type": "text"
+    },
+    {
+      "log_file_cmd": "show processes cpu | include CPU",
+      "log_name": "cpu_usage_percent",
+      "data_extraction_regex": "^(?P<TIME>)CPU utilization for five seconds:\\s+(?P<ENTRY>\\d+).*",
+      "log_activation_cmd": "show version | include Cisco",
+      "log_type": "chart"
+    },
+    {
+      "log_file_cmd": "show processes memory | include Processor",
+      "log_name": "memory_used_kb",
+      "data_extraction_regex": "^(?P<TIME>)Processor\\s+\\S+\\s+(?P<ENTRY>\\d+)\\s+.*",
+      "log_activation_cmd": "show version | include Cisco",
+      "log_type": "chart"
+    },
+    {
+      "log_file_cmd": "show mac address-table count | include Total",
+      "log_name": "mac_table_entry_count",
+      "data_extraction_regex": "^(?P<TIME>)Total Mac Addresses for this criterion:\\s+(?P<ENTRY>\\d+).*",
+      "log_activation_cmd": "show version | include Cisco",
+      "log_type": "chart"
+    },
+    {
+      "log_file_cmd": "show interfaces GigabitEthernet1/0/1 | include rate",
+      "log_name": "uplink_input_rate_bps",
+      "data_extraction_regex": "^(?P<TIME>)\\s+\\d+ (?:second input rate|minute input rate)\\s+(?P<ENTRY>\\d+)\\s+bits.*",
+      "log_activation_cmd": "show interfaces GigabitEthernet1/0/1 | include rate",
+      "log_type": "chart"
+    },
+    {
+      "log_file_cmd": "show interfaces GigabitEthernet1/0/1 | include rate",
+      "log_name": "uplink_output_rate_bps",
+      "data_extraction_regex": "^(?P<TIME>)\\s+\\d+ (?:second output rate|minute output rate)\\s+(?P<ENTRY>\\d+)\\s+bits.*",
+      "log_activation_cmd": "show interfaces GigabitEthernet1/0/1 | include rate",
+      "log_type": "chart"
+    },
+    {
+      "log_file_cmd": "show power inline | include Total",
+      "log_name": "poe_power_used_watts",
+      "data_extraction_regex": "^(?P<TIME>)Total:\\s+\\S+\\s+(?P<ENTRY>[\\d\\.]+)\\s+.*",
+      "log_activation_cmd": "show power inline | include Total",
+      "log_type": "chart"
+    },
+    {
+      "log_file_cmd": "show version | include uptime",
+      "log_name": "device_uptime",
+      "data_extraction_regex": "^(?P<TIME>)(?P<ENTRY>.*uptime.*)",
+      "log_activation_cmd": "show version | include Cisco",
+      "log_type": "text"
+    },
+    {
+      "log_file_cmd": "show environment temperature",
+      "log_name": "chassis_temperature",
+      "data_extraction_regex": "^(?P<TIME>)(?P<ENTRY>.*(?:Temperature|Inlet|Outlet).*\\d+.*)",
+      "log_activation_cmd": "show environment temperature | include Temp",
+      "log_type": "text"
+    }
+  ]
+}

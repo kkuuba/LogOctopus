@@ -1,0 +1,109 @@
+{
+  "device_name": "Cisco-Router",
+  "ip_address": "192.168.1.1",
+  "port": 22,
+  "user": "admin",
+  "password": "changeme",
+  "collection_interval": 60,
+  "_comment": "Compatible with Cisco IOS and IOS-XE. Requires 'ip ssh version 2' and 'aaa new-model' configured on the device. Enable privilege level 15 for the user or adjust commands to available privilege level.",
+  "log_file_configs": [
+    {
+      "log_file_cmd": "show logging",
+      "log_name": "syslog",
+      "data_extraction_regex": "^(?P<TIME>\\*?\\w+\\s+\\d+\\s+\\d+\\:\\d+\\:\\d+\\.?\\d*(?:\\s+\\w+)?):\\s+(?P<ENTRY>.*)",
+      "log_activation_cmd": "show version | include Cisco",
+      "log_type": "text"
+    },
+    {
+      "log_file_cmd": "show interfaces",
+      "log_name": "interfaces_status",
+      "data_extraction_regex": "^(?P<TIME>)(?P<ENTRY>.*(?:is up|is down|line protocol).*)",
+      "log_activation_cmd": "show version | include Cisco",
+      "log_type": "text"
+    },
+    {
+      "log_file_cmd": "show ip route",
+      "log_name": "routing_table",
+      "data_extraction_regex": "^(?P<TIME>)(?P<ENTRY>[CSODRBE*]\\s+.*)",
+      "log_activation_cmd": "show version | include Cisco",
+      "log_type": "text"
+    },
+    {
+      "log_file_cmd": "show ip bgp summary",
+      "log_name": "bgp_summary",
+      "data_extraction_regex": "^(?P<TIME>)(?P<ENTRY>\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\s+.*)",
+      "log_activation_cmd": "show ip bgp summary | include BGP",
+      "log_type": "text"
+    },
+    {
+      "log_file_cmd": "show ip ospf neighbor",
+      "log_name": "ospf_neighbors",
+      "data_extraction_regex": "^(?P<TIME>)(?P<ENTRY>\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\s+.*)",
+      "log_activation_cmd": "show ip ospf | include Routing Process",
+      "log_type": "text"
+    },
+    {
+      "log_file_cmd": "show crypto isakmp sa",
+      "log_name": "vpn_ipsec_sessions",
+      "data_extraction_regex": "^(?P<TIME>)(?P<ENTRY>\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\s+.*)",
+      "log_activation_cmd": "show crypto isakmp sa | include dst",
+      "log_type": "text"
+    },
+    {
+      "log_file_cmd": "show ip access-lists",
+      "log_name": "acl_hit_counters",
+      "data_extraction_regex": "^(?P<TIME>)(?P<ENTRY>.*(?:permit|deny).*matches.*)",
+      "log_activation_cmd": "show version | include Cisco",
+      "log_type": "text"
+    },
+    {
+      "log_file_cmd": "show processes cpu | include CPU",
+      "log_name": "cpu_usage_percent",
+      "data_extraction_regex": "^(?P<TIME>)CPU utilization for five seconds:\\s+(?P<ENTRY>\\d+).*",
+      "log_activation_cmd": "show version | include Cisco",
+      "log_type": "chart"
+    },
+    {
+      "log_file_cmd": "show processes memory | include Processor",
+      "log_name": "memory_used_kb",
+      "data_extraction_regex": "^(?P<TIME>)Processor\\s+\\S+\\s+(?P<ENTRY>\\d+)\\s+.*",
+      "log_activation_cmd": "show version | include Cisco",
+      "log_type": "chart"
+    },
+    {
+      "log_file_cmd": "show interfaces GigabitEthernet0/0 | include rate",
+      "log_name": "gi0_input_rate_bps",
+      "data_extraction_regex": "^(?P<TIME>)\\s+\\d+ (?:second input rate|minute input rate)\\s+(?P<ENTRY>\\d+)\\s+bits.*",
+      "log_activation_cmd": "show interfaces GigabitEthernet0/0 | include rate",
+      "log_type": "chart"
+    },
+    {
+      "log_file_cmd": "show interfaces GigabitEthernet0/0 | include rate",
+      "log_name": "gi0_output_rate_bps",
+      "data_extraction_regex": "^(?P<TIME>)\\s+\\d+ (?:second output rate|minute output rate)\\s+(?P<ENTRY>\\d+)\\s+bits.*",
+      "log_activation_cmd": "show interfaces GigabitEthernet0/0 | include rate",
+      "log_type": "chart"
+    },
+    {
+      "log_file_cmd": "show interfaces | include ^[A-Z].*line|input errors|output errors|CRC",
+      "log_name": "interface_errors",
+      "data_extraction_regex": "^(?P<TIME>)(?P<ENTRY>.*(?:error|CRC|reset).*)",
+      "log_activation_cmd": "show version | include Cisco",
+      "log_type": "text"
+    },
+    {
+      "log_file_cmd": "show version | include uptime",
+      "log_name": "device_uptime",
+      "data_extraction_regex": "^(?P<TIME>)(?P<ENTRY>.*uptime.*)",
+      "log_activation_cmd": "show version | include Cisco",
+      "log_type": "text"
+    },
+    {
+      "log_file_cmd": "show ip nat translations total",
+      "log_name": "nat_translations_count",
+      "data_extraction_regex": "^(?P<TIME>)Total active translations:\\s+(?P<ENTRY>\\d+).*",
+      "log_activation_cmd": "show ip nat translations total | include Total",
+      "log_type": "chart"
+    }
+  ]
+}

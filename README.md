@@ -7,7 +7,7 @@
   <a href="https://github.com/kkuuba/LogOctopus/actions/workflows/ci.yml">
     <img src="https://github.com/kkuuba/LogOctopus/actions/workflows/ci.yml/badge.svg" alt="CI">
   </a>
-  <a href="https://github.com/kkuuba/LogOctopus/blob/new_react_ui/LICENSE">
+  <a href="https://github.com/kkuuba/LogOctopus/blob/main/LICENSE">
     <img src="https://img.shields.io/github/license/kkuuba/LogOctopus?color=f472b6" alt="License">
   </a>
 </p>
@@ -91,8 +91,6 @@ Snapshot data is persisted locally under `data/` as files managed by the backend
 ---
 
 ## Requirements
-
-<!-- TODO: fill in exact version constraints from your pyproject.toml / requirements.txt -->
 
 **Backend**
 - Python 3.11+
@@ -182,7 +180,26 @@ Each device is described by a single JSON file that you upload through the UI. B
 }
 ```
 
-A full working example for a Windows PC (system log, app log, hardware, network, security, RDP sessions, installed updates, running services, CPU/memory/disk/network metrics) is provided in [`device_config.json`](device_config.json).
+In directory 'docs/example_configs/' there is about 10 example device configs for multiple device types. These files can be treated as example to create own custom configs for specialized devices which can have diferent sets of commands for target metrics.
+
+```bash
+docs/example_configs/
+├── config_cisco_router.json
+├── config_cisco_switch.json
+├── config_linux_server.json
+├── config_mikrotik.json
+├── config_pfsense.json
+├── config_proxmox.json
+├── config_raspberry_pi.json
+├── config_synology_nas.json
+└── config_windows_server.json
+```
+
+### WARNING
+
+Before adding of some device config in web UI, make sure that provided commands are safe to use.
+Commands used in this configuration must be validated on a real device before deployment to ensure 
+correctness, compatibility, and to prevent unintended impact on system.
 
 ### Log Types
 

@@ -1,0 +1,130 @@
+{
+  "device_name": "Windows-Server",
+  "ip_address": "192.168.1.30",
+  "port": 22,
+  "user": "Administrator",
+  "password": "changeme",
+  "collection_interval": 30,
+  "_comment": "Requires OpenSSH Server on Windows. Default shell must be PowerShell: New-ItemProperty -Path 'HKLM:\\SOFTWARE\\OpenSSH' -Name DefaultShell -Value 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe' -PropertyType String -Force",
+  "log_file_configs": [
+    {
+      "log_file_cmd": "Get-EventLog -LogName System -Newest 200 | Select-Object TimeGenerated,EntryType,Source,Message | Format-List",
+      "log_name": "system_event_log",
+      "data_extraction_regex": "^TimeGenerated\\s*:\\s*(?P<TIME>[^\\n]+)\\s*\\nEntryType[^\\n]*\\nSource[^\\n]*\\nMessage\\s*:\\s*(?P<ENTRY>[^\\n]+)",
+      "log_activation_cmd": "echo ok",
+      "log_type": "text"
+    },
+    {
+      "log_file_cmd": "Get-EventLog -LogName Application -Newest 200 -EntryType Error,Warning | Select-Object TimeGenerated,EntryType,Source,Message | Format-List",
+      "log_name": "application_event_log",
+      "data_extraction_regex": "^TimeGenerated\\s*:\\s*(?P<TIME>[^\\n]+)\\s*\\nEntryType[^\\n]*\\nSource[^\\n]*\\nMessage\\s*:\\s*(?P<ENTRY>[^\\n]+)",
+      "log_activation_cmd": "echo ok",
+      "log_type": "text"
+    },
+    {
+      "log_file_cmd": "Get-EventLog -LogName Security -Newest 200 | Where-Object {$_.EventID -in @(4624,4625,4648,4720,4726)} | Select-Object TimeGenerated,EventID,Message | Format-List",
+      "log_name": "security_event_log",
+      "data_extraction_regex": "^TimeGenerated\\s*:\\s*(?P<TIME>[^\\n]+)\\s*\\nEventID[^\\n]*\\nMessage\\s*:\\s*(?P<ENTRY>[^\\n]+)",
+      "log_activation_cmd": "echo ok",
+      "log_type": "text"
+    },
+    {
+      "log_file_cmd": "Get-WinEvent -LogName 'Microsoft-Windows-WindowsUpdateClient/Operational' -MaxEvents 50 | Select-Object TimeCreated,Message | Format-List",
+      "log_name": "windows_update_log",
+      "data_extraction_regex": "^TimeCreated\\s*:\\s*(?P<TIME>[^\\n]+)\\s*\\nMessage\\s*:\\s*(?P<ENTRY>[^\\n]+)",
+      "log_activation_cmd": "echo ok",
+      "log_type": "text"
+    },
+    {
+      "log_file_cmd": "Get-WinEvent -LogName 'System' -MaxEvents 100 | Where-Object {$_.Id -in @(6005,6006,6008,41)} | Select-Object TimeCreated,Message | Format-List",
+      "log_name": "startup_shutdown_log",
+      "data_extraction_regex": "^TimeCreated\\s*:\\s*(?P<TIME>[^\\n]+)\\s*\\nMessage\\s*:\\s*(?P<ENTRY>[^\\n]+)",
+      "log_activation_cmd": "echo ok",
+      "log_type": "text"
+    },
+    {
+      "log_file_cmd": "Write-Output \"$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss'),$(Get-CimInstance Win32_Processor | Measure-Object -Property LoadPercentage -Average | Select-Object -ExpandProperty Average)\"",
+      "log_name": "cpu_usage_percent",
+      "data_extraction_regex": "^(?P<TIME>\\d+\\-\\d+\\-\\d+\\s\\d+\\:\\d+\\:\\d+)\\,(?P<ENTRY>.*)",
+      "log_activation_cmd": "echo true",
+      "log_type": "chart"
+    },
+    {
+      "log_file_cmd": "Write-Output \"$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss'),$([math]::Round((Get-CimInstance Win32_OperatingSystem | Select-Object -ExpandProperty FreePhysicalMemory) / 1024))\"",
+      "log_name": "free_memory_mb",
+      "data_extraction_regex": "^(?P<TIME>\\d+\\-\\d+\\-\\d+\\s\\d+\\:\\d+\\:\\d+)\\,(?P<ENTRY>.*)",
+      "log_activation_cmd": "echo true",
+      "log_type": "chart"
+    },
+    {
+      "log_file_cmd": "$os = Get-CimInstance Win32_OperatingSystem; $used = [math]::Round(($os.TotalVisibleMemorySize - $os.FreePhysicalMemory) / 1024); Write-Output \"$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss'),$used\"",
+      "log_name": "used_memory_mb",
+      "data_extraction_regex": "^(?P<TIME>\\d+\\-\\d+\\-\\d+\\s\\d+\\:\\d+\\:\\d+)\\,(?P<ENTRY>.*)",
+      "log_activation_cmd": "echo true",
+      "log_type": "chart"
+    },
+    {
+      "log_file_cmd": "$os = Get-CimInstance Win32_OperatingSystem; $pct = [math]::Round((($os.TotalVisibleMemorySize - $os.FreePhysicalMemory) / $os.TotalVisibleMemorySize) * 100, 1); Write-Output \"$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss'),$pct\"",
+      "log_name": "memory_usage_percent",
+      "data_extraction_regex": "^(?P<TIME>\\d+\\-\\d+\\-\\d+\\s\\d+\\:\\d+\\:\\d+)\\,(?P<ENTRY>.*)",
+      "log_activation_cmd": "echo true",
+      "log_type": "chart"
+    },
+    {
+      "log_file_cmd": "$d = Get-PSDrive C; $pct = [math]::Round(($d.Used / ($d.Used + $d.Free)) * 100, 1); Write-Output \"$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss'),$pct\"",
+      "log_name": "disk_c_usage_percent",
+      "data_extraction_regex": "^(?P<TIME>\\d+\\-\\d+\\-\\d+\\s\\d+\\:\\d+\\:\\d+)\\,(?P<ENTRY>.*)",
+      "log_activation_cmd": "echo true",
+      "log_type": "chart"
+    },
+    {
+      "log_file_cmd": "Write-Output \"$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss'),$((Get-CimInstance Win32_PerfFormattedData_PerfDisk_LogicalDisk -Filter \"Name='C:'\").DiskReadBytesPersec)\"",
+      "log_name": "disk_read_bytes_per_s",
+      "data_extraction_regex": "^(?P<TIME>\\d+\\-\\d+\\-\\d+\\s\\d+\\:\\d+\\:\\d+)\\,(?P<ENTRY>.*)",
+      "log_activation_cmd": "echo true",
+      "log_type": "chart"
+    },
+    {
+      "log_file_cmd": "Write-Output \"$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss'),$((Get-CimInstance Win32_PerfFormattedData_PerfDisk_LogicalDisk -Filter \"Name='C:'\").DiskWriteBytesPersec)\"",
+      "log_name": "disk_write_bytes_per_s",
+      "data_extraction_regex": "^(?P<TIME>\\d+\\-\\d+\\-\\d+\\s\\d+\\:\\d+\\:\\d+)\\,(?P<ENTRY>.*)",
+      "log_activation_cmd": "echo true",
+      "log_type": "chart"
+    },
+    {
+      "log_file_cmd": "$a = Get-CimInstance Win32_PerfFormattedData_Tcpip_NetworkInterface | Select-Object -First 1; Write-Output \"$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss'),$($a.BytesReceivedPersec)\"",
+      "log_name": "network_rx_bytes_per_s",
+      "data_extraction_regex": "^(?P<TIME>\\d+\\-\\d+\\-\\d+\\s\\d+\\:\\d+\\:\\d+)\\,(?P<ENTRY>.*)",
+      "log_activation_cmd": "echo true",
+      "log_type": "chart"
+    },
+    {
+      "log_file_cmd": "$a = Get-CimInstance Win32_PerfFormattedData_Tcpip_NetworkInterface | Select-Object -First 1; Write-Output \"$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss'),$($a.BytesSentPersec)\"",
+      "log_name": "network_tx_bytes_per_s",
+      "data_extraction_regex": "^(?P<TIME>\\d+\\-\\d+\\-\\d+\\s\\d+\\:\\d+\\:\\d+)\\,(?P<ENTRY>.*)",
+      "log_activation_cmd": "echo true",
+      "log_type": "chart"
+    },
+    {
+      "log_file_cmd": "Write-Output \"$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss'),$((Get-NetTCPConnection -State Established -ErrorAction SilentlyContinue).Count)\"",
+      "log_name": "active_tcp_connections",
+      "data_extraction_regex": "^(?P<TIME>\\d+\\-\\d+\\-\\d+\\s\\d+\\:\\d+\\:\\d+)\\,(?P<ENTRY>.*)",
+      "log_activation_cmd": "echo true",
+      "log_type": "chart"
+    },
+    {
+      "log_file_cmd": "Write-Output \"$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss'),$((Get-Process).Count)\"",
+      "log_name": "process_count",
+      "data_extraction_regex": "^(?P<TIME>\\d+\\-\\d+\\-\\d+\\s\\d+\\:\\d+\\:\\d+)\\,(?P<ENTRY>.*)",
+      "log_activation_cmd": "echo true",
+      "log_type": "chart"
+    },
+    {
+      "log_file_cmd": "Write-Output \"$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss'),$([math]::Round((Get-Date - (Get-CimInstance Win32_OperatingSystem).LastBootUpTime).TotalSeconds))\"",
+      "log_name": "uptime_seconds",
+      "data_extraction_regex": "^(?P<TIME>\\d+\\-\\d+\\-\\d+\\s\\d+\\:\\d+\\:\\d+)\\,(?P<ENTRY>.*)",
+      "log_activation_cmd": "echo true",
+      "log_type": "chart"
+    }
+  ]
+}

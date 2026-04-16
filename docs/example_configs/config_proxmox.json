@@ -1,0 +1,137 @@
+{
+  "device_name": "Proxmox-Node",
+  "ip_address": "192.168.1.100",
+  "port": 22,
+  "user": "root",
+  "password": "changeme",
+  "collection_interval": 30,
+  "_comment": "Compatible with Proxmox VE 7.x and 8.x. Root SSH access or a user with PVEAdmin role. SSH is enabled by default on Proxmox.",
+  "log_file_configs": [
+    {
+      "log_file_cmd": "journalctl -n 200 --no-pager",
+      "log_name": "system_log",
+      "data_extraction_regex": "^(?P<TIME>\\w+\\s+\\d+\\s+\\d+:\\d+:\\d+)\\s+(?P<ENTRY>.*)",
+      "log_activation_cmd": "ls -la",
+      "log_type": "text"
+    },
+    {
+      "log_file_cmd": "journalctl -u pve-cluster -n 200 --no-pager",
+      "log_name": "cluster_log",
+      "data_extraction_regex": "^(?P<TIME>\\w+\\s+\\d+\\s+\\d+:\\d+:\\d+)\\s+(?P<ENTRY>.*)",
+      "log_activation_cmd": "ls -la",
+      "log_type": "text"
+    },
+    {
+      "log_file_cmd": "journalctl -p err -n 200 --no-pager",
+      "log_name": "system_errors",
+      "data_extraction_regex": "^(?P<TIME>\\w+\\s+\\d+\\s+\\d+:\\d+:\\d+)\\s+(?P<ENTRY>.*)",
+      "log_activation_cmd": "ls -la",
+      "log_type": "text"
+    },
+    {
+      "log_file_cmd": "tail -n 200 /var/log/pve/tasks/index",
+      "log_name": "pve_task_log",
+      "data_extraction_regex": "^(?P<TIME>)(?P<ENTRY>.*)",
+      "log_activation_cmd": "ls /var/log/pve/tasks/index",
+      "log_type": "text"
+    },
+    {
+      "log_file_cmd": "pvecm status",
+      "log_name": "cluster_status",
+      "data_extraction_regex": "^(?P<TIME>)(?P<ENTRY>.*(?:Nodes|Quorum|Status).*)",
+      "log_activation_cmd": "pvecm status | head -1",
+      "log_type": "text"
+    },
+    {
+      "log_file_cmd": "qm list",
+      "log_name": "vm_list",
+      "data_extraction_regex": "^(?P<TIME>)(?P<ENTRY>\\s*\\d+\\s+\\S+\\s+.*)",
+      "log_activation_cmd": "ls -la",
+      "log_type": "text"
+    },
+    {
+      "log_file_cmd": "pct list",
+      "log_name": "lxc_container_list",
+      "data_extraction_regex": "^(?P<TIME>)(?P<ENTRY>\\d+\\s+.*)",
+      "log_activation_cmd": "ls -la",
+      "log_type": "text"
+    },
+    {
+      "log_file_cmd": "echo $(date '+%Y-%m-%d %H:%M:%S'),$(top -bn1 | grep 'Cpu(s)' | awk '{print 100-$8}')",
+      "log_name": "cpu_usage_percent",
+      "data_extraction_regex": "^(?P<TIME>\\d+\\-\\d+\\-\\d+\\s\\d+:\\d+:\\d+)\\,(?P<ENTRY>.*)",
+      "log_activation_cmd": "true",
+      "log_type": "chart"
+    },
+    {
+      "log_file_cmd": "echo $(date '+%Y-%m-%d %H:%M:%S'),$(free -m | awk '/Mem:/{print $3}')",
+      "log_name": "used_memory_mb",
+      "data_extraction_regex": "^(?P<TIME>\\d+\\-\\d+\\-\\d+\\s\\d+:\\d+:\\d+)\\,(?P<ENTRY>.*)",
+      "log_activation_cmd": "true",
+      "log_type": "chart"
+    },
+    {
+      "log_file_cmd": "echo $(date '+%Y-%m-%d %H:%M:%S'),$(free -m | awk '/Mem:/{print $4}')",
+      "log_name": "free_memory_mb",
+      "data_extraction_regex": "^(?P<TIME>\\d+\\-\\d+\\-\\d+\\s\\d+:\\d+:\\d+)\\,(?P<ENTRY>.*)",
+      "log_activation_cmd": "true",
+      "log_type": "chart"
+    },
+    {
+      "log_file_cmd": "echo $(date '+%Y-%m-%d %H:%M:%S'),$(pvesm status | awk 'NR>1{used+=$4; total+=$3} END{printf \"%.1f\", used/total*100}')",
+      "log_name": "storage_usage_percent",
+      "data_extraction_regex": "^(?P<TIME>\\d+\\-\\d+\\-\\d+\\s\\d+:\\d+:\\d+)\\,(?P<ENTRY>.*)",
+      "log_activation_cmd": "true",
+      "log_type": "chart"
+    },
+    {
+      "log_file_cmd": "echo $(date '+%Y-%m-%d %H:%M:%S'),$(qm list | awk 'NR>1 && /running/{count++} END{print count+0}')",
+      "log_name": "running_vm_count",
+      "data_extraction_regex": "^(?P<TIME>\\d+\\-\\d+\\-\\d+\\s\\d+:\\d+:\\d+)\\,(?P<ENTRY>.*)",
+      "log_activation_cmd": "true",
+      "log_type": "chart"
+    },
+    {
+      "log_file_cmd": "echo $(date '+%Y-%m-%d %H:%M:%S'),$(pct list | awk 'NR>1 && /running/{count++} END{print count+0}')",
+      "log_name": "running_lxc_count",
+      "data_extraction_regex": "^(?P<TIME>\\d+\\-\\d+\\-\\d+\\s\\d+:\\d+:\\d+)\\,(?P<ENTRY>.*)",
+      "log_activation_cmd": "true",
+      "log_type": "chart"
+    },
+    {
+      "log_file_cmd": "echo $(date '+%Y-%m-%d %H:%M:%S'),$(cat /proc/loadavg | awk '{print $1}')",
+      "log_name": "load_avg_1min",
+      "data_extraction_regex": "^(?P<TIME>\\d+\\-\\d+\\-\\d+\\s\\d+:\\d+:\\d+)\\,(?P<ENTRY>.*)",
+      "log_activation_cmd": "true",
+      "log_type": "chart"
+    },
+    {
+      "log_file_cmd": "F=/tmp/erx_prev; RX=$(< /sys/class/net/eth0/statistics/rx_bytes 2>/dev/null || cat /sys/class/net/vmbr0/statistics/rx_bytes); NOW=$(date +%s); read T R < $F 2>/dev/null; [ \"$T\" ] && echo \"$(date '+%F %T'),$(( (RX - R) * 30 / (NOW - T) ))\"; echo $NOW $RX > $F",
+      "log_name": "network_rx_bytes_per_s",
+      "data_extraction_regex": "^(?P<TIME>\\d+\\-\\d+\\-\\d+\\s\\d+:\\d+:\\d+)\\,(?P<ENTRY>.*)",
+      "log_activation_cmd": "true",
+      "log_type": "chart"
+    },
+    {
+      "log_file_cmd": "F=/tmp/etx_prev; TX=$(< /sys/class/net/eth0/statistics/tx_bytes 2>/dev/null || cat /sys/class/net/vmbr0/statistics/tx_bytes); NOW=$(date +%s); read T R < $F 2>/dev/null; [ \"$T\" ] && echo \"$(date '+%F %T'),$(( (TX - R) * 30 / (NOW - T) ))\"; echo \"$NOW $TX\" > $F",
+      "log_name": "network_tx_bytes_per_s",
+      "data_extraction_regex": "^(?P<TIME>\\d+\\-\\d+\\-\\d+\\s\\d+:\\d+:\\d+)\\,(?P<ENTRY>.*)",
+      "log_activation_cmd": "true",
+      "log_type": "chart"
+    },
+    {
+      "log_file_cmd": "echo $(date '+%Y-%m-%d %H:%M:%S'),$(cat /sys/class/thermal/thermal_zone0/temp 2>/dev/null | awk '{printf \"%.1f\",$1/1000}' || sensors 2>/dev/null | awk '/Core 0/{gsub(/[^0-9.]/,\"\",$3); print $3}')",
+      "log_name": "cpu_temp_c",
+      "data_extraction_regex": "^(?P<TIME>\\d+\\-\\d+\\-\\d+\\s\\d+:\\d+:\\d+)\\,(?P<ENTRY>.*)",
+      "log_activation_cmd": "[ -f /sys/class/thermal/thermal_zone0/temp ] && echo true || which sensors > /dev/null 2>&1 && echo true || echo false",
+      "log_type": "chart"
+    },
+    {
+      "log_file_cmd": "echo $(date '+%Y-%m-%d %H:%M:%S'),$(awk '{print int($1)}' /proc/uptime)",
+      "log_name": "uptime_seconds",
+      "data_extraction_regex": "^(?P<TIME>\\d+\\-\\d+\\-\\d+\\s\\d+:\\d+:\\d+)\\,(?P<ENTRY>.*)",
+      "log_activation_cmd": "true",
+      "log_type": "chart"
+    }
+  ]
+}

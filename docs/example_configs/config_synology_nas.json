@@ -1,0 +1,116 @@
+{
+  "device_name": "Synology-NAS",
+  "ip_address": "192.168.1.50",
+  "port": 22,
+  "user": "admin",
+  "password": "changeme",
+  "collection_interval": 60,
+  "_comment": "Compatible with Synology DiskStation Manager (DSM) 6.x and 7.x. SSH must be enabled in Control Panel > Terminal & SNMP. Some commands require sudo; ensure the user has admin privileges.",
+  "log_file_configs": [
+    {
+      "log_file_cmd": "sudo tail -n 200 /var/log/messages",
+      "log_name": "system_log",
+      "data_extraction_regex": "^(?P<TIME>\\w+\\s+\\d+\\s+\\d+:\\d+:\\d+)\\s+(?P<ENTRY>.*)",
+      "log_activation_cmd": "ls -la",
+      "log_type": "text"
+    },
+    {
+      "log_file_cmd": "sudo tail -n 200 /var/log/synopkg.log",
+      "log_name": "package_log",
+      "data_extraction_regex": "^(?P<TIME>\\d+\\-\\d+\\-\\d+\\s+\\d+:\\d+:\\d+)\\s+(?P<ENTRY>.*)",
+      "log_activation_cmd": "ls /var/log/synopkg.log",
+      "log_type": "text"
+    },
+    {
+      "log_file_cmd": "sudo cat /var/log/storage_perf.log 2>/dev/null | tail -100",
+      "log_name": "storage_performance_log",
+      "data_extraction_regex": "^(?P<TIME>\\w+\\s+\\d+\\s+\\d+:\\d+:\\d+)\\s+(?P<ENTRY>.*)",
+      "log_activation_cmd": "ls /var/log/storage_perf.log 2>/dev/null && echo true || echo false",
+      "log_type": "text"
+    },
+    {
+      "log_file_cmd": "sudo mdadm --detail /dev/md0 2>/dev/null || sudo cat /proc/mdstat",
+      "log_name": "raid_status",
+      "data_extraction_regex": "^(?P<TIME>)(?P<ENTRY>.*(?:State|Status|Active|Degraded|Rebuilding|md).*)",
+      "log_activation_cmd": "ls /dev/md0 2>/dev/null && echo true || echo false",
+      "log_type": "text"
+    },
+    {
+      "log_file_cmd": "sudo smartctl -A /dev/sda 2>/dev/null | grep -E 'Reallocated|Pending|Uncorrectable|Temperature'",
+      "log_name": "disk_sda_smart",
+      "data_extraction_regex": "^(?P<TIME>)(?P<ENTRY>.*(?:Reallocated|Pending|Uncorrectable|Temperature).*)",
+      "log_activation_cmd": "which smartctl > /dev/null 2>&1 && echo true || echo false",
+      "log_type": "text"
+    },
+    {
+      "log_file_cmd": "echo $(date '+%Y-%m-%d %H:%M:%S'),$(top -bn1 | grep 'Cpu(s)' | awk '{print 100-$8}')",
+      "log_name": "cpu_usage_percent",
+      "data_extraction_regex": "^(?P<TIME>\\d+\\-\\d+\\-\\d+\\s\\d+:\\d+:\\d+)\\,(?P<ENTRY>.*)",
+      "log_activation_cmd": "true",
+      "log_type": "chart"
+    },
+    {
+      "log_file_cmd": "echo $(date '+%Y-%m-%d %H:%M:%S'),$(free -m | awk '/Mem:/{print $3}')",
+      "log_name": "used_memory_mb",
+      "data_extraction_regex": "^(?P<TIME>\\d+\\-\\d+\\-\\d+\\s\\d+:\\d+:\\d+)\\,(?P<ENTRY>.*)",
+      "log_activation_cmd": "true",
+      "log_type": "chart"
+    },
+    {
+      "log_file_cmd": "echo $(date '+%Y-%m-%d %H:%M:%S'),$(free -m | awk '/Mem:/{print $4}')",
+      "log_name": "free_memory_mb",
+      "data_extraction_regex": "^(?P<TIME>\\d+\\-\\d+\\-\\d+\\s\\d+:\\d+:\\d+)\\,(?P<ENTRY>.*)",
+      "log_activation_cmd": "true",
+      "log_type": "chart"
+    },
+    {
+      "log_file_cmd": "echo $(date '+%Y-%m-%d %H:%M:%S'),$(df /volume1 | awk 'NR==2{print $5}' | tr -d '%')",
+      "log_name": "volume1_usage_percent",
+      "data_extraction_regex": "^(?P<TIME>\\d+\\-\\d+\\-\\d+\\s\\d+:\\d+:\\d+)\\,(?P<ENTRY>.*)",
+      "log_activation_cmd": "df /volume1 > /dev/null 2>&1 && echo true || echo false",
+      "log_type": "chart"
+    },
+    {
+      "log_file_cmd": "echo $(date '+%Y-%m-%d %H:%M:%S'),$(cat /sys/class/thermal/thermal_zone0/temp 2>/dev/null | awk '{printf \"%.1f\",$1/1000}')",
+      "log_name": "cpu_temp_c",
+      "data_extraction_regex": "^(?P<TIME>\\d+\\-\\d+\\-\\d+\\s\\d+:\\d+:\\d+)\\,(?P<ENTRY>.*)",
+      "log_activation_cmd": "[ -f /sys/class/thermal/thermal_zone0/temp ] && echo true || echo false",
+      "log_type": "chart"
+    },
+    {
+      "log_file_cmd": "echo $(date '+%Y-%m-%d %H:%M:%S'),$(sudo smartctl -A /dev/sda 2>/dev/null | awk '/Temperature_Celsius/{print $10}')",
+      "log_name": "disk_sda_temp_c",
+      "data_extraction_regex": "^(?P<TIME>\\d+\\-\\d+\\-\\d+\\s\\d+:\\d+:\\d+)\\,(?P<ENTRY>.*)",
+      "log_activation_cmd": "which smartctl > /dev/null 2>&1 && echo true || echo false",
+      "log_type": "chart"
+    },
+    {
+      "log_file_cmd": "F=/tmp/erx_prev; RX=$(< /sys/class/net/eth0/statistics/rx_bytes); NOW=$(date +%s); read T R < $F 2>/dev/null; [ \"$T\" ] && echo \"$(date '+%F %T'),$(( (RX - R) * 60 / (NOW - T) ))\"; echo $NOW $RX > $F",
+      "log_name": "network_rx_bytes_per_s",
+      "data_extraction_regex": "^(?P<TIME>\\d+\\-\\d+\\-\\d+\\s\\d+:\\d+:\\d+)\\,(?P<ENTRY>.*)",
+      "log_activation_cmd": "[ -f /sys/class/net/eth0/statistics/rx_bytes ] && echo true || echo false",
+      "log_type": "chart"
+    },
+    {
+      "log_file_cmd": "F=/tmp/etx_prev; TX=$(< /sys/class/net/eth0/statistics/tx_bytes); NOW=$(date +%s); read T R < $F 2>/dev/null; [ \"$T\" ] && echo \"$(date '+%F %T'),$(( (TX - R) * 60 / (NOW - T) ))\"; echo \"$NOW $TX\" > $F",
+      "log_name": "network_tx_bytes_per_s",
+      "data_extraction_regex": "^(?P<TIME>\\d+\\-\\d+\\-\\d+\\s\\d+:\\d+:\\d+)\\,(?P<ENTRY>.*)",
+      "log_activation_cmd": "[ -f /sys/class/net/eth0/statistics/tx_bytes ] && echo true || echo false",
+      "log_type": "chart"
+    },
+    {
+      "log_file_cmd": "echo $(date '+%Y-%m-%d %H:%M:%S'),$(cat /proc/loadavg | awk '{print $1}')",
+      "log_name": "load_avg_1min",
+      "data_extraction_regex": "^(?P<TIME>\\d+\\-\\d+\\-\\d+\\s\\d+:\\d+:\\d+)\\,(?P<ENTRY>.*)",
+      "log_activation_cmd": "true",
+      "log_type": "chart"
+    },
+    {
+      "log_file_cmd": "echo $(date '+%Y-%m-%d %H:%M:%S'),$(awk '{print int($1)}' /proc/uptime)",
+      "log_name": "uptime_seconds",
+      "data_extraction_regex": "^(?P<TIME>\\d+\\-\\d+\\-\\d+\\s\\d+:\\d+:\\d+)\\,(?P<ENTRY>.*)",
+      "log_activation_cmd": "true",
+      "log_type": "chart"
+    }
+  ]
+}
