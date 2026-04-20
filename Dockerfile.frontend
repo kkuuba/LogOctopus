@@ -1,0 +1,23 @@
+# ── LogOctopus – Frontend ─────────────────────────────────────────────────────
+FROM node:20-alpine
+
+WORKDIR /app
+
+COPY frontend/package*.json ./
+RUN npm ci
+
+COPY frontend/ ./
+
+# VITE_API_BASE is supplied at build time from docker-compose.yml, which reads
+# HOST_IP and BACKEND_PORT from .env – no value is baked in here by default.
+ARG VITE_API_BASE
+ENV VITE_API_BASE=$VITE_API_BASE
+
+RUN npm run build
+
+# 'serve' handles SPA client-side routing (falls back to index.html)
+RUN npm install -g serve
+
+EXPOSE ${FRONTEND_PORT}
+
+CMD ["sh", "-c", "serve -s dist -l ${FRONTEND_PORT}"]

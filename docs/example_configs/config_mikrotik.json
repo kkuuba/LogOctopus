@@ -1,0 +1,116 @@
+{
+  "device_name": "MikroTik-Router",
+  "ip_address": "192.168.1.1",
+  "port": 22,
+  "user": "admin",
+  "password": "changeme",
+  "collection_interval": 30,
+  "_comment": "Compatible with MikroTik RouterOS v6 and v7. SSH access must be enabled: /ip service set ssh disabled=no. Commands use MikroTik CLI syntax.",
+  "log_file_configs": [
+    {
+      "log_file_cmd": "/log print",
+      "log_name": "system_log",
+      "data_extraction_regex": "^(?P<TIME>\\w+/\\d+/\\d+\\s+\\d+:\\d+:\\d+)\\s+(?P<ENTRY>.*)",
+      "log_activation_cmd": "/system identity print",
+      "log_type": "text"
+    },
+    {
+      "log_file_cmd": "/interface print detail",
+      "log_name": "interface_status",
+      "data_extraction_regex": "^(?P<TIME>)(?P<ENTRY>.*(?:running|disabled|slave).*)",
+      "log_activation_cmd": "/system identity print",
+      "log_type": "text"
+    },
+    {
+      "log_file_cmd": "/ip firewall connection print count-only",
+      "log_name": "firewall_connections",
+      "data_extraction_regex": "^(?P<TIME>)(?P<ENTRY>\\d+)$",
+      "log_activation_cmd": "/system identity print",
+      "log_type": "text"
+    },
+    {
+      "log_file_cmd": "/ip route print",
+      "log_name": "routing_table",
+      "data_extraction_regex": "^(?P<TIME>)(?P<ENTRY>.*\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}.*)",
+      "log_activation_cmd": "/system identity print",
+      "log_type": "text"
+    },
+    {
+      "log_file_cmd": "/ip dhcp-server lease print",
+      "log_name": "dhcp_leases",
+      "data_extraction_regex": "^(?P<TIME>)(?P<ENTRY>.*\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}.*)",
+      "log_activation_cmd": "/ip dhcp-server print count-only",
+      "log_type": "text"
+    },
+    {
+      "log_file_cmd": "/ip hotspot active print",
+      "log_name": "hotspot_active_users",
+      "data_extraction_regex": "^(?P<TIME>)(?P<ENTRY>.*)",
+      "log_activation_cmd": "/ip hotspot print count-only",
+      "log_type": "text"
+    },
+    {
+      "log_file_cmd": ":put ([:timestamp] . \",\" . [/system resource get cpu-load])",
+      "log_name": "cpu_usage_percent",
+      "data_extraction_regex": "^(?P<TIME>\\w+/\\d+/\\d+\\s+\\d+:\\d+:\\d+)\\,(?P<ENTRY>.*)",
+      "log_activation_cmd": "/system identity print",
+      "log_type": "chart"
+    },
+    {
+      "log_file_cmd": ":put ([:timestamp] . \",\" . [/system resource get free-memory])",
+      "log_name": "free_memory_bytes",
+      "data_extraction_regex": "^(?P<TIME>\\w+/\\d+/\\d+\\s+\\d+:\\d+:\\d+)\\,(?P<ENTRY>.*)",
+      "log_activation_cmd": "/system identity print",
+      "log_type": "chart"
+    },
+    {
+      "log_file_cmd": ":put ([:timestamp] . \",\" . [/system resource get total-memory])",
+      "log_name": "total_memory_bytes",
+      "data_extraction_regex": "^(?P<TIME>\\w+/\\d+/\\d+\\s+\\d+:\\d+:\\d+)\\,(?P<ENTRY>.*)",
+      "log_activation_cmd": "/system identity print",
+      "log_type": "chart"
+    },
+    {
+      "log_file_cmd": ":put ([:timestamp] . \",\" . [/system resource get free-hdd-space])",
+      "log_name": "free_disk_bytes",
+      "data_extraction_regex": "^(?P<TIME>\\w+/\\d+/\\d+\\s+\\d+:\\d+:\\d+)\\,(?P<ENTRY>.*)",
+      "log_activation_cmd": "/system identity print",
+      "log_type": "chart"
+    },
+    {
+      "log_file_cmd": ":put ([:timestamp] . \",\" . [/system resource get uptime])",
+      "log_name": "uptime",
+      "data_extraction_regex": "^(?P<TIME>\\w+/\\d+/\\d+\\s+\\d+:\\d+:\\d+)\\,(?P<ENTRY>.*)",
+      "log_activation_cmd": "/system identity print",
+      "log_type": "chart"
+    },
+    {
+      "log_file_cmd": ":put ([:timestamp] . \",\" . [/interface get ether1 rx-byte])",
+      "log_name": "ether1_rx_bytes",
+      "data_extraction_regex": "^(?P<TIME>\\w+/\\d+/\\d+\\s+\\d+:\\d+:\\d+)\\,(?P<ENTRY>.*)",
+      "log_activation_cmd": "/interface print count-only",
+      "log_type": "chart"
+    },
+    {
+      "log_file_cmd": ":put ([:timestamp] . \",\" . [/interface get ether1 tx-byte])",
+      "log_name": "ether1_tx_bytes",
+      "data_extraction_regex": "^(?P<TIME>\\w+/\\d+/\\d+\\s+\\d+:\\d+:\\d+)\\,(?P<ENTRY>.*)",
+      "log_activation_cmd": "/interface print count-only",
+      "log_type": "chart"
+    },
+    {
+      "log_file_cmd": ":put ([:timestamp] . \",\" . [/ip firewall connection print count-only])",
+      "log_name": "active_connections_count",
+      "data_extraction_regex": "^(?P<TIME>\\w+/\\d+/\\d+\\s+\\d+:\\d+:\\d+)\\,(?P<ENTRY>.*)",
+      "log_activation_cmd": "/system identity print",
+      "log_type": "chart"
+    },
+    {
+      "log_file_cmd": ":put ([:timestamp] . \",\" . [/ip dhcp-server lease print count-only])",
+      "log_name": "dhcp_lease_count",
+      "data_extraction_regex": "^(?P<TIME>\\w+/\\d+/\\d+\\s+\\d+:\\d+:\\d+)\\,(?P<ENTRY>.*)",
+      "log_activation_cmd": "/ip dhcp-server print count-only",
+      "log_type": "chart"
+    }
+  ]
+}

@@ -1,0 +1,178 @@
+{
+  "device_name": "Linux-Server",
+  "ip_address": "192.168.1.20",
+  "port": 22,
+  "user": "admin",
+  "password": "changeme",
+  "collection_interval": 30,
+  "log_file_configs": [
+    {
+      "log_file_cmd": "sudo journalctl -n 200 --no-pager",
+      "log_name": "syslog",
+      "data_extraction_regex": "^(?P<TIME>\\w+\\s+\\d+\\s+\\d+\\:\\d+\\:\\d+)\\s+(?P<ENTRY>.*)",
+      "log_activation_cmd": "ls -la",
+      "log_type": "text"
+    },
+    {
+      "log_file_cmd": "dmesg -T",
+      "log_name": "kernel",
+      "data_extraction_regex": "^\\[(?P<TIME>\\w+\\s+\\w+\\s+\\d+\\s\\d+\\:\\d+\\:\\d+\\s+\\d+)\\]\\s+(?P<ENTRY>.*)",
+      "log_activation_cmd": "ls -la",
+      "log_type": "text"
+    },
+    {
+      "log_file_cmd": "journalctl -u ssh -n 200 --no-pager",
+      "log_name": "ssh_logs",
+      "data_extraction_regex": "^(?P<TIME>\\w+\\s+\\d+\\s+\\d+\\:\\d+\\:\\d+)\\s+(?P<ENTRY>.*)",
+      "log_activation_cmd": "ls -la",
+      "log_type": "text"
+    },
+    {
+      "log_file_cmd": "journalctl -p err -n 200 --no-pager",
+      "log_name": "system_errors",
+      "data_extraction_regex": "^(?P<TIME>\\w+\\s+\\d+\\s+\\d+\\:\\d+\\:\\d+)\\s+(?P<ENTRY>.*)",
+      "log_activation_cmd": "ls -la",
+      "log_type": "text"
+    },
+    {
+      "log_file_cmd": "journalctl -p warning -n 200 --no-pager",
+      "log_name": "system_warnings",
+      "data_extraction_regex": "^(?P<TIME>\\w+\\s+\\d+\\s+\\d+\\:\\d+\\:\\d+)\\s+(?P<ENTRY>.*)",
+      "log_activation_cmd": "ls -la",
+      "log_type": "text"
+    },
+    {
+      "log_file_cmd": "journalctl -u cron -n 200 --no-pager",
+      "log_name": "cron_logs",
+      "data_extraction_regex": "^(?P<TIME>\\w+\\s+\\d+\\s+\\d+\\:\\d+\\:\\d+)\\s+(?P<ENTRY>.*)",
+      "log_activation_cmd": "ls -la",
+      "log_type": "text"
+    },
+    {
+      "log_file_cmd": "sudo tail -n 200 /var/log/auth.log 2>/dev/null || journalctl _COMM=sudo -n 200 --no-pager",
+      "log_name": "auth_log",
+      "data_extraction_regex": "^(?P<TIME>\\w+\\s+\\d+\\s+\\d+\\:\\d+\\:\\d+)\\s+(?P<ENTRY>.*)",
+      "log_activation_cmd": "ls -la",
+      "log_type": "text"
+    },
+    {
+      "log_file_cmd": "sudo tail -n 200 /var/log/syslog 2>/dev/null || sudo tail -n 200 /var/log/messages 2>/dev/null",
+      "log_name": "messages",
+      "data_extraction_regex": "^(?P<TIME>\\w+\\s+\\d+\\s+\\d+\\:\\d+\\:\\d+)\\s+(?P<ENTRY>.*)",
+      "log_activation_cmd": "ls -la",
+      "log_type": "text"
+    },
+    {
+      "log_file_cmd": "echo $(date '+%Y-%m-%d %H:%M:%S'),$(top -bn1 | grep 'Cpu(s)' | awk '{print 100-$8}')",
+      "log_name": "cpu_usage_percent",
+      "data_extraction_regex": "^(?P<TIME>\\d+\\-\\d+\\-\\d+\\s\\d+\\:\\d+\\:\\d+)\\,(?P<ENTRY>.*)",
+      "log_activation_cmd": "true",
+      "log_type": "chart"
+    },
+    {
+      "log_file_cmd": "echo $(date '+%Y-%m-%d %H:%M:%S'),$(cat /sys/class/thermal/thermal_zone0/temp | awk '{printf \"%.1f\", $1/1000}')",
+      "log_name": "cpu_temp_c",
+      "data_extraction_regex": "^(?P<TIME>\\d+\\-\\d+\\-\\d+\\s\\d+\\:\\d+\\:\\d+)\\,(?P<ENTRY>.*)",
+      "log_activation_cmd": "[ -f /sys/class/thermal/thermal_zone0/temp ] && echo true || echo false",
+      "log_type": "chart"
+    },
+    {
+      "log_file_cmd": "echo $(date '+%Y-%m-%d %H:%M:%S'),$(free -m | awk '/Mem:/ {print $3}')",
+      "log_name": "used_memory_mb",
+      "data_extraction_regex": "^(?P<TIME>\\d+\\-\\d+\\-\\d+\\s\\d+\\:\\d+\\:\\d+)\\,(?P<ENTRY>.*)",
+      "log_activation_cmd": "true",
+      "log_type": "chart"
+    },
+    {
+      "log_file_cmd": "echo $(date '+%Y-%m-%d %H:%M:%S'),$(free -m | awk '/Mem:/ {print $4}')",
+      "log_name": "free_memory_mb",
+      "data_extraction_regex": "^(?P<TIME>\\d+\\-\\d+\\-\\d+\\s\\d+\\:\\d+\\:\\d+)\\,(?P<ENTRY>.*)",
+      "log_activation_cmd": "true",
+      "log_type": "chart"
+    },
+    {
+      "log_file_cmd": "echo $(date '+%Y-%m-%d %H:%M:%S'),$(free | awk '/Mem:/ {printf \"%.1f\", $3/$2*100}')",
+      "log_name": "memory_usage_percent",
+      "data_extraction_regex": "^(?P<TIME>\\d+\\-\\d+\\-\\d+\\s\\d+\\:\\d+\\:\\d+)\\,(?P<ENTRY>.*)",
+      "log_activation_cmd": "true",
+      "log_type": "chart"
+    },
+    {
+      "log_file_cmd": "echo $(date '+%Y-%m-%d %H:%M:%S'),$(df / | awk 'NR==2 {print $5}' | tr -d '%')",
+      "log_name": "disk_usage_percent_root",
+      "data_extraction_regex": "^(?P<TIME>\\d+\\-\\d+\\-\\d+\\s\\d+\\:\\d+\\:\\d+)\\,(?P<ENTRY>.*)",
+      "log_activation_cmd": "true",
+      "log_type": "chart"
+    },
+    {
+      "log_file_cmd": "echo $(date '+%Y-%m-%d %H:%M:%S'),$(df /home | awk 'NR==2 {print $5}' | tr -d '%')",
+      "log_name": "disk_usage_percent_home",
+      "data_extraction_regex": "^(?P<TIME>\\d+\\-\\d+\\-\\d+\\s\\d+\\:\\d+\\:\\d+)\\,(?P<ENTRY>.*)",
+      "log_activation_cmd": "df /home > /dev/null 2>&1 && echo true || echo false",
+      "log_type": "chart"
+    },
+    {
+      "log_file_cmd": "echo $(date '+%Y-%m-%d %H:%M:%S'),$(cat /proc/loadavg | awk '{print $1}')",
+      "log_name": "load_avg_1min",
+      "data_extraction_regex": "^(?P<TIME>\\d+\\-\\d+\\-\\d+\\s\\d+\\:\\d+\\:\\d+)\\,(?P<ENTRY>.*)",
+      "log_activation_cmd": "true",
+      "log_type": "chart"
+    },
+    {
+      "log_file_cmd": "echo $(date '+%Y-%m-%d %H:%M:%S'),$(cat /proc/loadavg | awk '{print $2}')",
+      "log_name": "load_avg_5min",
+      "data_extraction_regex": "^(?P<TIME>\\d+\\-\\d+\\-\\d+\\s\\d+\\:\\d+\\:\\d+)\\,(?P<ENTRY>.*)",
+      "log_activation_cmd": "true",
+      "log_type": "chart"
+    },
+    {
+      "log_file_cmd": "echo $(date '+%Y-%m-%d %H:%M:%S'),$(cat /proc/loadavg | awk '{print $3}')",
+      "log_name": "load_avg_15min",
+      "data_extraction_regex": "^(?P<TIME>\\d+\\-\\d+\\-\\d+\\s\\d+\\:\\d+\\:\\d+)\\,(?P<ENTRY>.*)",
+      "log_activation_cmd": "true",
+      "log_type": "chart"
+    },
+    {
+      "log_file_cmd": "echo $(date '+%Y-%m-%d %H:%M:%S'),$(ps -e | wc -l)",
+      "log_name": "process_count",
+      "data_extraction_regex": "^(?P<TIME>\\d+\\-\\d+\\-\\d+\\s\\d+\\:\\d+\\:\\d+)\\,(?P<ENTRY>.*)",
+      "log_activation_cmd": "true",
+      "log_type": "chart"
+    },
+    {
+      "log_file_cmd": "echo $(date '+%Y-%m-%d %H:%M:%S'),$(ss -tn state established | tail -n +2 | wc -l)",
+      "log_name": "active_tcp_connections",
+      "data_extraction_regex": "^(?P<TIME>\\d+\\-\\d+\\-\\d+\\s\\d+\\:\\d+\\:\\d+)\\,(?P<ENTRY>.*)",
+      "log_activation_cmd": "true",
+      "log_type": "chart"
+    },
+    {
+      "log_file_cmd": "F=/tmp/erx_prev; RX=$(< /sys/class/net/eth0/statistics/rx_bytes); NOW=$(date +%s); read T R < $F 2>/dev/null; [ \"$T\" ] && echo \"$(date '+%F %T'),$(( (RX - R) * 30 / (NOW - T) ))\"; echo $NOW $RX > $F",
+      "log_name": "eth0_rx_bytes_per_s",
+      "data_extraction_regex": "^(?P<TIME>\\d+\\-\\d+\\-\\d+\\s\\d+\\:\\d+\\:\\d+)\\,(?P<ENTRY>.*)",
+      "log_activation_cmd": "[ -f /sys/class/net/eth0/statistics/rx_bytes ] && echo true || echo false",
+      "log_type": "chart"
+    },
+    {
+      "log_file_cmd": "F=/tmp/etx_prev; TX=$(< /sys/class/net/eth0/statistics/tx_bytes); NOW=$(date +%s); read T R < $F 2>/dev/null; [ \"$T\" ] && echo \"$(date '+%F %T'),$(( (TX - R) * 30 / (NOW - T) ))\"; echo \"$NOW $TX\" > $F",
+      "log_name": "eth0_tx_bytes_per_s",
+      "data_extraction_regex": "^(?P<TIME>\\d+\\-\\d+\\-\\d+\\s\\d+\\:\\d+\\:\\d+)\\,(?P<ENTRY>.*)",
+      "log_activation_cmd": "[ -f /sys/class/net/eth0/statistics/tx_bytes ] && echo true || echo false",
+      "log_type": "chart"
+    },
+    {
+      "log_file_cmd": "echo $(date '+%Y-%m-%d %H:%M:%S'),$(awk '{print int($1)}' /proc/uptime)",
+      "log_name": "uptime_seconds",
+      "data_extraction_regex": "^(?P<TIME>\\d+\\-\\d+\\-\\d+\\s\\d+\\:\\d+\\:\\d+)\\,(?P<ENTRY>.*)",
+      "log_activation_cmd": "true",
+      "log_type": "chart"
+    },
+    {
+      "log_file_cmd": "echo $(date '+%Y-%m-%d %H:%M:%S'),$(lsof 2>/dev/null | wc -l)",
+      "log_name": "open_file_descriptors",
+      "data_extraction_regex": "^(?P<TIME>\\d+\\-\\d+\\-\\d+\\s\\d+\\:\\d+\\:\\d+)\\,(?P<ENTRY>.*)",
+      "log_activation_cmd": "true",
+      "log_type": "chart"
+    }
+  ]
+}

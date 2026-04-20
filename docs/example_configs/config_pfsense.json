@@ -1,0 +1,116 @@
+{
+  "device_name": "pfSense-Firewall",
+  "ip_address": "192.168.1.1",
+  "port": 22,
+  "user": "admin",
+  "password": "changeme",
+  "collection_interval": 30,
+  "_comment": "Compatible with pfSense and OPNsense (FreeBSD-based). SSH must be enabled in System > Advanced > Admin Access. Commands are standard FreeBSD shell commands available in both distros.",
+  "log_file_configs": [
+    {
+      "log_file_cmd": "clog /var/log/system.log | tail -200",
+      "log_name": "system_log",
+      "data_extraction_regex": "^(?P<TIME>\\w+\\s+\\d+\\s+\\d+:\\d+:\\d+)\\s+(?P<ENTRY>.*)",
+      "log_activation_cmd": "ls /var/log/system.log",
+      "log_type": "text"
+    },
+    {
+      "log_file_cmd": "clog /var/log/filter.log | tail -200",
+      "log_name": "firewall_filter_log",
+      "data_extraction_regex": "^(?P<TIME>\\w+\\s+\\d+\\s+\\d+:\\d+:\\d+)\\s+(?P<ENTRY>.*)",
+      "log_activation_cmd": "ls /var/log/filter.log",
+      "log_type": "text"
+    },
+    {
+      "log_file_cmd": "clog /var/log/auth.log | tail -200",
+      "log_name": "auth_log",
+      "data_extraction_regex": "^(?P<TIME>\\w+\\s+\\d+\\s+\\d+:\\d+:\\d+)\\s+(?P<ENTRY>.*)",
+      "log_activation_cmd": "ls /var/log/auth.log",
+      "log_type": "text"
+    },
+    {
+      "log_file_cmd": "clog /var/log/dhcpd.log | tail -200",
+      "log_name": "dhcp_log",
+      "data_extraction_regex": "^(?P<TIME>\\w+\\s+\\d+\\s+\\d+:\\d+:\\d+)\\s+(?P<ENTRY>.*)",
+      "log_activation_cmd": "ls /var/log/dhcpd.log",
+      "log_type": "text"
+    },
+    {
+      "log_file_cmd": "clog /var/log/openvpn.log | tail -200",
+      "log_name": "openvpn_log",
+      "data_extraction_regex": "^(?P<TIME>\\w+\\s+\\d+\\s+\\d+:\\d+:\\d+)\\s+(?P<ENTRY>.*)",
+      "log_activation_cmd": "ls /var/log/openvpn.log",
+      "log_type": "text"
+    },
+    {
+      "log_file_cmd": "pfctl -si | grep -E 'state|insert|search'",
+      "log_name": "pf_state_table",
+      "data_extraction_regex": "^(?P<TIME>)(?P<ENTRY>.*(?:state|insert|search).*)",
+      "log_activation_cmd": "pfctl -si | head -1",
+      "log_type": "text"
+    },
+    {
+      "log_file_cmd": "echo $(date '+%Y-%m-%d %H:%M:%S'),$(top -bn1 | grep -i 'cpu:' | awk '{print 100-$10}' | tr -d '%')",
+      "log_name": "cpu_usage_percent",
+      "data_extraction_regex": "^(?P<TIME>\\d+\\-\\d+\\-\\d+\\s\\d+:\\d+:\\d+)\\,(?P<ENTRY>.*)",
+      "log_activation_cmd": "true",
+      "log_type": "chart"
+    },
+    {
+      "log_file_cmd": "echo $(date '+%Y-%m-%d %H:%M:%S'),$(sysctl -n hw.physmem) ",
+      "log_name": "physical_memory_bytes",
+      "data_extraction_regex": "^(?P<TIME>\\d+\\-\\d+\\-\\d+\\s\\d+:\\d+:\\d+)\\,(?P<ENTRY>.*)",
+      "log_activation_cmd": "true",
+      "log_type": "chart"
+    },
+    {
+      "log_file_cmd": "echo $(date '+%Y-%m-%d %H:%M:%S'),$(vmstat | awk 'NR==3{print $4}')",
+      "log_name": "free_memory_kb",
+      "data_extraction_regex": "^(?P<TIME>\\d+\\-\\d+\\-\\d+\\s\\d+:\\d+:\\d+)\\,(?P<ENTRY>.*)",
+      "log_activation_cmd": "true",
+      "log_type": "chart"
+    },
+    {
+      "log_file_cmd": "echo $(date '+%Y-%m-%d %H:%M:%S'),$(df / | awk 'NR==2{print $5}' | tr -d '%')",
+      "log_name": "disk_usage_percent",
+      "data_extraction_regex": "^(?P<TIME>\\d+\\-\\d+\\-\\d+\\s\\d+:\\d+:\\d+)\\,(?P<ENTRY>.*)",
+      "log_activation_cmd": "true",
+      "log_type": "chart"
+    },
+    {
+      "log_file_cmd": "echo $(date '+%Y-%m-%d %H:%M:%S'),$(pfctl -si | grep 'current entries' | awk '{print $3}')",
+      "log_name": "firewall_state_count",
+      "data_extraction_regex": "^(?P<TIME>\\d+\\-\\d+\\-\\d+\\s\\d+:\\d+:\\d+)\\,(?P<ENTRY>.*)",
+      "log_activation_cmd": "pfctl -si | head -1",
+      "log_type": "chart"
+    },
+    {
+      "log_file_cmd": "echo $(date '+%Y-%m-%d %H:%M:%S'),$(netstat -i | awk '/em0|igb0|vtnet0|bge0/{print $5}' | head -1)",
+      "log_name": "wan_rx_packets",
+      "data_extraction_regex": "^(?P<TIME>\\d+\\-\\d+\\-\\d+\\s\\d+:\\d+:\\d+)\\,(?P<ENTRY>.*)",
+      "log_activation_cmd": "true",
+      "log_type": "chart"
+    },
+    {
+      "log_file_cmd": "echo $(date '+%Y-%m-%d %H:%M:%S'),$(netstat -i | awk '/em0|igb0|vtnet0|bge0/{print $7}' | head -1)",
+      "log_name": "wan_tx_packets",
+      "data_extraction_regex": "^(?P<TIME>\\d+\\-\\d+\\-\\d+\\s\\d+:\\d+:\\d+)\\,(?P<ENTRY>.*)",
+      "log_activation_cmd": "true",
+      "log_type": "chart"
+    },
+    {
+      "log_file_cmd": "echo $(date '+%Y-%m-%d %H:%M:%S'),$(cat /proc/loadavg 2>/dev/null | awk '{print $1}' || sysctl -n vm.loadavg | awk '{print $2}')",
+      "log_name": "load_avg_1min",
+      "data_extraction_regex": "^(?P<TIME>\\d+\\-\\d+\\-\\d+\\s\\d+:\\d+:\\d+)\\,(?P<ENTRY>.*)",
+      "log_activation_cmd": "true",
+      "log_type": "chart"
+    },
+    {
+      "log_file_cmd": "echo $(date '+%Y-%m-%d %H:%M:%S'),$(sysctl -n kern.boottime | awk '{print $4}' | tr -d ',' | xargs -I{} sh -c 'echo $(( $(date +%s) - {} ))')",
+      "log_name": "uptime_seconds",
+      "data_extraction_regex": "^(?P<TIME>\\d+\\-\\d+\\-\\d+\\s\\d+:\\d+:\\d+)\\,(?P<ENTRY>.*)",
+      "log_activation_cmd": "true",
+      "log_type": "chart"
+    }
+  ]
+}

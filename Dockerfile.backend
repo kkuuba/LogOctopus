@@ -1,0 +1,35 @@
+# ── LogOctopus – Backend ──────────────────────────────────────────────────────
+FROM python:3.12-slim
+
+WORKDIR /app
+
+# Install dependencies first (layer caching)
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt gunicorn
+
+# Copy application source
+COPY backend/ ./backend/
+
+# Persistent data lives in a mounted volume; pre-create the dirs so the app
+# can start cleanly even before the volume is populated for the first time.
+RUN mkdir -p /app/data
+
+# settings.json is also volume-mounted; touch it so the app never crashes on
+# a missing file before the first write.
+RUN touch /app/settings.json
+
+ENV PYTHONUNBUFFERED=1
+
+# HOST, PORT, FRONTEND_BASE, and GUNICORN_WORKERS are injected at runtime
+# via docker-compose.yml / .env – no defaults baked in here so .env stays
+# the single source of truth.
+
+EXPOSE ${PORT}
+
+CMD gunicorn \
+      --bind "0.0.0.0:${PORT}" \
+      --workers "${GUNICORN_WORKERS}" \
+      --timeout 120 \
+      --access-logfile - \
+      --error-logfile - \
+      backend.app:app

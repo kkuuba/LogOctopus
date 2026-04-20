@@ -1,0 +1,7 @@
+fabric
+pandas
+python-dateutil
+pytest
+fastapi
+pyarrow
+flask_cors

@@ -1,0 +1,76 @@
+name: Build & Release (Frontend + Backend)
+
+on:
+  workflow_run:
+    workflows: ["CI"]   # MUST match ci.yml name exactly
+    types:
+      - completed
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  build-and-release:
+    # ✅ Only run if CI passed AND on main branch
+    if: >
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'main'
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set version
+        run: echo "VERSION=1.0.${{ github.run_number }}" >> $GITHUB_ENV
+
+      # 🔽 Fix uppercase repo issue
+      - name: Normalize image name
+        run: echo "IMAGE_NAME=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
+
+      # 🐳 Enable Buildx
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # 🔐 Login to GHCR
+      - name: Login to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      # 🏗 Backend (from root Dockerfile)
+      - name: Build and push backend
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile.backend
+          push: true
+          tags: |
+            ghcr.io/${{ env.IMAGE_NAME }}/backend:${{ env.VERSION }}
+            ghcr.io/${{ env.IMAGE_NAME }}/backend:latest
+
+      # 🏗 Frontend (from root Dockerfile)
+      - name: Build and push frontend
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile.frontend
+          push: true
+          tags: |
+            ghcr.io/${{ env.IMAGE_NAME }}/frontend:${{ env.VERSION }}
+            ghcr.io/${{ env.IMAGE_NAME }}/frontend:latest
+
+      # 🏷 Create Git tag
+      - name: Create tag
+        run: |
+          git tag v${VERSION}
+          git push origin v${VERSION}
+
+      # 📢 Create GitHub Release
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ env.VERSION }}
+          name: Release v${{ env.VERSION }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
