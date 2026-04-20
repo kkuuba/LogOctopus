@@ -17,7 +17,9 @@ LogOctopus collects, stores, and visualises logs from remote devices over SSH. I
 ## Fast Track
 
 **What is it?** - LogOctopus is a tool that collects, stores, and visualises logs from remote devices over SSH, offering both a web UI and a REST API for querying the data.
+
 **What problem does it solves?** - It eliminates the manual effort of capturing and correlating system logs from multiple machines during automated test runs, centralising everything into a single searchable interface.
+
 **Who should us that?** - QA and DevOps engineers who need to monitor and analyse logs across multiple remote devices as part of automated test pipelines or CI workflows.
 
 ### Deploy with Docker
