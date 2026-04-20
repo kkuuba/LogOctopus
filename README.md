@@ -14,6 +14,21 @@
 
 LogOctopus collects, stores, and visualises logs from remote devices over SSH. It is designed for use in automated test pipelines where you need to capture system events, performance metrics, and application/hardware logs from multiple machines simultaneously — and then analyse them through a web UI or query them programmatically via REST API.
 
+## Fast Track
+
+**What is it?** - LogOctopus is a tool that collects, stores, and visualises logs from remote devices over SSH, offering both a web UI and a REST API for querying the data.
+**What problem does it solves?** - It eliminates the manual effort of capturing and correlating system logs from multiple machines during automated test runs, centralising everything into a single searchable interface.
+**Who should us that?** - QA and DevOps engineers who need to monitor and analyse logs across multiple remote devices as part of automated test pipelines or CI workflows.
+
+### Deploy with Docker
+
+```bash
+nano .env
+# Edit this file with correct values for your Docker host
+docker compose up -d
+# Above cmds should build and start 2 containers for frontend and backend.
+```
+
 ---
 
 ## Table of Contents
@@ -28,11 +43,11 @@ LogOctopus collects, stores, and visualises logs from remote devices over SSH. I
   - [Log Types](#log-types)
   - [Environment Variables](#environment-variables)
 - [Running the Application](#running-the-application)
-- [Deploy the Application](#deploy-the-application)
 - [Web Interface](#web-interface)
 - [REST API](#rest-api)
 - [Integrating with Automated Tests](#integrating-with-automated-tests)
 - [Auto-Collection](#auto-collection)
+- [Planned Features](#planned-features)
 - [Contributing](#contributing)
 - [License](#license)
 
@@ -255,17 +270,6 @@ npm run build
 
 ---
 
-## Deploy the Application
-
-```bash
-nano .env
-# Edit this file with correct values for your Docker host
-docker compose up -d
-# Above cmds should build and start 2 containers for frontend and backend.
-```
-
----
-
 ## Web Interface
 
 After opening the UI in your browser you will see:
@@ -386,6 +390,15 @@ curl -X POST http://localhost:8050/api/settings/auto-collection \
 ```
 
 Auto-collection sessions are labelled with the scenario `auto-logs-collection`.
+
+---
+
+## Planned Features
+
+1. **Device config create with AI** — add UI for device config generation with usage of some AI agent. All generated cmd should be
+checked during generation from safety and correctness perspective.
+2. **Log trends view** — For same test scenario historic data should be analysed and some trends charts + text logs prediction should be calculated with some AI model. With that user should be able to compare current scenario results with current history baseline.
+3. **Device watchdog refactor** — Analyse and refactor code for device_watchdog service in order to make it more roboust and efficient.
 
 ---
 
