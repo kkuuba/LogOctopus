@@ -592,6 +592,102 @@ def set_auto_collection():
     return jsonify({"status": "ok", "devices": updated})
 
 
+# ── device config builder helpers ─────────────────────────────────────────────
+
+@app.post("/api/devices/test-connection")
+def test_device_connection():
+    """Test SSH connectivity to a device using provided credentials.
+
+    POST '/api/devices/test-connection'
+
+    Request body (JSON):
+        - ip_address (str) - Target IP address.
+        - port (int) - SSH port (default 22).
+        - user (str) - SSH username.
+        - password (str) - SSH password.
+
+    Returns:
+        200 OK:
+            '{ "success": true, "message": "Connected successfully" }'
+        200 OK (failure):
+            '{ "success": false, "message": "<error details>" }'
+        400 Bad Request:
+            '{ "error": "missing required fields" }'
+    """
+    try:
+        import paramiko
+    except ImportError:
+        return jsonify({"success": False, "message": "paramiko not installed on server"}), 200
+
+    body = request.get_json(force=True)
+    ip   = body.get("ip_address", "").strip()
+    port = int(body.get("port", 22))
+    user = body.get("user", "").strip()
+    pwd  = body.get("password", "").strip()
+
+    if not ip or not user:
+        return _bad("missing required fields: ip_address, user")
+
+    try:
+        client = paramiko.SSHClient()
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        client.connect(ip, port=port, username=user, password=pwd, timeout=8, banner_timeout=10)
+        client.close()
+        return jsonify({"success": True, "message": f"Connected to {ip}:{port} as {user}"})
+    except Exception as exc:
+        return jsonify({"success": False, "message": str(exc)})
+
+
+@app.post("/api/devices/exec-command")
+def exec_device_command():
+    """Execute a shell command on a remote device via SSH and return its output.
+
+    POST '/api/devices/exec-command'
+
+    Request body (JSON):
+        - ip_address (str) - Target IP address.
+        - port (int)       - SSH port (default 22).
+        - user (str)       - SSH username.
+        - password (str)   - SSH password.
+        - command (str)    - Shell command to run on the remote device.
+
+    Returns:
+        200 OK:
+            '{ "stdout": "...", "stderr": "...", "exit_code": 0 }'
+        400 Bad Request:
+            '{ "error": "missing required fields" }'
+        200 OK (connection failure):
+            '{ "stdout": "", "stderr": "<error>", "exit_code": -1 }'
+    """
+    try:
+        import paramiko
+    except ImportError:
+        return jsonify({"stdout": "", "stderr": "paramiko not installed on server", "exit_code": -1}), 200
+
+    body    = request.get_json(force=True)
+    ip      = body.get("ip_address", "").strip()
+    port    = int(body.get("port", 22))
+    user    = body.get("user", "").strip()
+    pwd     = body.get("password", "").strip()
+    command = body.get("command", "").strip()
+
+    if not ip or not user or not command:
+        return _bad("missing required fields: ip_address, user, command")
+
+    try:
+        client = paramiko.SSHClient()
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        client.connect(ip, port=port, username=user, password=pwd, timeout=8, banner_timeout=10)
+        _stdin, _stdout, _stderr = client.exec_command(command, timeout=15)
+        stdout_data = _stdout.read().decode("utf-8", errors="replace")
+        stderr_data = _stderr.read().decode("utf-8", errors="replace")
+        exit_code   = _stdout.channel.recv_exit_status()
+        client.close()
+        return jsonify({"stdout": stdout_data, "stderr": stderr_data, "exit_code": exit_code})
+    except Exception as exc:
+        return jsonify({"stdout": "", "stderr": str(exc), "exit_code": -1})
+
+
 @app.post("/api/settings/change-password")
 def change_password():
     """Update the admin password hash stored in 'settings.json'.

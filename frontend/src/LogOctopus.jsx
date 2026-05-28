@@ -1817,20 +1817,707 @@ function DeviceDetails({ device, isAdmin, onRequestLogin }) {
 }
 
 // ── UPLOAD BUTTON ─────────────────────────────────────────────────────────────
-function UploadBtn({ onUpload }) {
-  const ref = useRef();
+// ── CONFIG BUILDER ────────────────────────────────────────────────────────────
+
+const EMPTY_LOG_ENTRY = () => ({
+  _id: Math.random().toString(36).slice(2),
+  log_name: "",
+  log_file_cmd: "",
+  data_extraction_regex: "",
+  log_activation_cmd: "true",
+  log_type: "text",
+});
+
+const FIELD_LABEL = {
+  fontSize: 10, color: "var(--muted)", textTransform: "uppercase",
+  letterSpacing: "0.09em", fontFamily: "var(--font-mono)", marginBottom: 5,
+};
+
+const CARD = {
+  background: "var(--card-bg)", border: "1px solid var(--border)",
+  borderRadius: 10, padding: "16px 18px", marginBottom: 14,
+};
+
+// Convert Python-style (?P<NAME>...) named groups to JS (?<NAME>...) syntax
+function pyRegexToJs(pattern) {
+  return pattern.replace(/\(\?P</g, "(?<");
+}
+
+function RegexTestOverlay({ output, regex }) {
+  if (!output) return null;
+  const lines = output.split("\n");
+  let re = null;
+  let reErr = "";
+  try {
+    if (regex) re = new RegExp(pyRegexToJs(regex));
+  } catch (e) {
+    reErr = e.message;
+  }
+
+  return (
+    <div style={{ marginTop: 10 }}>
+      {reErr && (
+        <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "#f87171",
+          background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.2)",
+          borderRadius: 6, padding: "6px 10px", marginBottom: 6 }}>
+          Regex error: {reErr}
+        </div>
+      )}
+      <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, lineHeight: 1.65,
+        background: "rgba(0,0,0,0.35)", border: "1px solid var(--border)", borderRadius: 8,
+        padding: "10px 14px", maxHeight: 260, overflowY: "auto", whiteSpace: "pre-wrap",
+        wordBreak: "break-all" }}>
+        {lines.map((line, i) => {
+          if (!line) return <div key={i} style={{ height: 4 }} />;
+          if (!re) return <div key={i} style={{ color: "#94a3b8" }}>{line}</div>;
+          const m = re.exec(line);
+          if (!m) return (
+            <div key={i} style={{ color: "#4b5563", borderLeft: "2px solid rgba(255,255,255,0.05)", paddingLeft: 8 }}>
+              {line}
+            </div>
+          );
+          const groups = m.groups || {};
+          const TIME = groups.TIME || "";
+          const ENTRY = groups.ENTRY || "";
+          return (
+            <div key={i} style={{ display: "flex", gap: 8, alignItems: "baseline" }}>
+              {TIME && <span style={{ color: "#6b7280", flexShrink: 0 }}>{TIME}</span>}
+              {ENTRY && <span style={{ color: "#86efac", flex: 1 }}>{ENTRY}</span>}
+              {!TIME && !ENTRY && <span style={{ color: "#fbbf24" }}>{line}</span>}
+            </div>
+          );
+        })}
+      </div>
+      <div style={{ display: "flex", gap: 12, marginTop: 6, flexWrap: "wrap" }}>
+        {lines.filter(l => l && re?.test(l)).length > 0 && (
+          <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "#4ade80" }}>
+            ✔ {lines.filter(l => l && re?.test(l)).length} / {lines.filter(l => l).length} lines matched
+          </span>
+        )}
+        {re && lines.filter(l => l).length > 0 && lines.filter(l => l && re?.test(l)).length === 0 && (
+          <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "#f87171" }}>
+            ✖ No lines matched — check your regex
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function LogEntryEditor({ entry, conn, index, onChange, onRemove, onDuplicate }) {
+  const [expanded, setExpanded]   = useState(index === 0);
+  const [testing, setTesting]     = useState(false);
+  const [testOutput, setTestOutput] = useState(null);
+  const [testError, setTestError] = useState("");
+  const [testPane, setTestPane]   = useState(false);
+
+  const set = (k, v) => onChange({ ...entry, [k]: v });
+
+  const runTest = async () => {
+    if (!conn.ip_address || !conn.user) {
+      setTestError("Fill in connection details first (Step 1).");
+      setTestPane(true);
+      return;
+    }
+    if (!entry.log_file_cmd.trim()) {
+      setTestError("Enter a command to test.");
+      setTestPane(true);
+      return;
+    }
+    setTesting(true);
+    setTestOutput(null);
+    setTestError("");
+    setTestPane(true);
+    try {
+      const res = await apiFetch("/api/devices/exec-command", {
+        method: "POST",
+        body: JSON.stringify({ ...conn, command: entry.log_file_cmd }),
+      });
+      setTestOutput(res.stdout || res.stderr || "(empty output)");
+      if (res.exit_code !== 0 && res.stderr) setTestError(`Exit code ${res.exit_code}: ${res.stderr.slice(0, 120)}`);
+    } catch (e) {
+      setTestError(e.message);
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  const logTypeColors = { text: "cyan", chart: "violet" };
+
+  return (
+    <div style={{
+      background: "var(--card-bg)", border: "1px solid var(--border)", borderRadius: 10,
+      marginBottom: 10, overflow: "hidden", transition: "border-color 0.15s",
+    }}>
+      {/* Header row */}
+      <div
+        style={{
+          display: "flex", alignItems: "center", gap: 10, padding: "11px 14px",
+          cursor: "pointer", borderBottom: expanded ? "1px solid var(--border)" : "none",
+          background: expanded ? "rgba(129,140,248,0.04)" : "transparent",
+        }}
+        onClick={() => setExpanded(v => !v)}
+      >
+        <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--muted)", width: 22, textAlign: "center" }}>
+          {index + 1}
+        </span>
+        <span style={{ flex: 1, fontFamily: "var(--font-mono)", fontSize: 13, color: entry.log_name ? "var(--text)" : "var(--muted)" }}>
+          {entry.log_name || <span style={{ fontStyle: "italic" }}>unnamed entry</span>}
+        </span>
+        <Badge color={logTypeColors[entry.log_type] || "default"}>{entry.log_type}</Badge>
+        {testOutput && <Badge color="green">tested</Badge>}
+        <button
+          onClick={e => { e.stopPropagation(); onDuplicate(); }}
+          title="Duplicate"
+          style={{ background: "none", border: "none", cursor: "pointer", color: "var(--muted)", fontSize: 13, padding: "2px 6px" }}
+        >⎘</button>
+        <button
+          onClick={e => { e.stopPropagation(); onRemove(); }}
+          title="Remove"
+          style={{ background: "none", border: "none", cursor: "pointer", color: "#f87171", fontSize: 15, padding: "2px 6px" }}
+        >×</button>
+        <span style={{ color: "var(--muted)", fontSize: 11, marginLeft: 2 }}>{expanded ? "▲" : "▼"}</span>
+      </div>
+
+      {expanded && (
+        <div style={{ padding: "16px 16px 14px" }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
+            <div>
+              <div style={FIELD_LABEL}>Log Name *</div>
+              <input
+                value={entry.log_name}
+                onChange={e => set("log_name", e.target.value)}
+                placeholder="e.g. syslog, cpu_usage_percent"
+                style={inputStyle}
+              />
+            </div>
+            <div>
+              <div style={FIELD_LABEL}>Log Type</div>
+              <div style={{ display: "flex", gap: 6 }}>
+                {["text", "chart"].map(t => (
+                  <button
+                    key={t}
+                    onClick={() => set("log_type", t)}
+                    style={{
+                      flex: 1, padding: "8px 0", borderRadius: 7, cursor: "pointer",
+                      border: "1px solid",
+                      fontFamily: "var(--font-mono)", fontSize: 12, fontWeight: 600,
+                      background: entry.log_type === t ? (t === "text" ? "rgba(34,211,238,0.14)" : "rgba(167,139,250,0.14)") : "rgba(255,255,255,0.03)",
+                      color: entry.log_type === t ? (t === "text" ? "#22d3ee" : "#a78bfa") : "var(--muted)",
+                      borderColor: entry.log_type === t ? (t === "text" ? "rgba(34,211,238,0.4)" : "rgba(167,139,250,0.4)") : "var(--border)",
+                      transition: "all 0.12s",
+                    }}
+                  >
+                    {t === "text" ? "📄 text" : "📈 chart"}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          <div style={{ marginBottom: 12 }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 5 }}>
+              <div style={FIELD_LABEL}>Command *</div>
+              <button
+                onClick={runTest}
+                disabled={testing}
+                style={{
+                  display: "flex", alignItems: "center", gap: 5,
+                  background: testing ? "rgba(129,140,248,0.08)" : "rgba(129,140,248,0.13)",
+                  border: "1px solid rgba(129,140,248,0.3)", borderRadius: 6,
+                  color: "var(--accent)", fontFamily: "var(--font-mono)", fontSize: 11,
+                  padding: "4px 11px", cursor: testing ? "not-allowed" : "pointer",
+                  transition: "all 0.15s",
+                }}
+              >
+                {testing ? (
+                  <><svg width="10" height="10" viewBox="0 0 10 10" style={{ animation: "spin 1s linear infinite" }}>
+                    <circle cx="5" cy="5" r="4" fill="none" stroke="var(--accent)" strokeWidth="1.5" strokeDasharray="12" strokeDashoffset="6" />
+                  </svg> Running…</>
+                ) : "▶ Run on Device"}
+              </button>
+            </div>
+            <textarea
+              value={entry.log_file_cmd}
+              onChange={e => set("log_file_cmd", e.target.value)}
+              placeholder="e.g. sudo journalctl -n 200 --no-pager"
+              rows={3}
+              style={{ ...inputStyle, resize: "vertical", lineHeight: 1.55, fontFamily: "var(--font-mono)", fontSize: 12 }}
+            />
+          </div>
+
+          <div style={{ marginBottom: 12 }}>
+            <div style={FIELD_LABEL}>Extraction Regex (named groups TIME, ENTRY)</div>
+            <input
+              value={entry.data_extraction_regex}
+              onChange={e => set("data_extraction_regex", e.target.value)}
+              placeholder={`^(?P<TIME>\\w+\\s+\\d+\\s+\\d+:\\d+:\\d+)\\s+(?P<ENTRY>.*)`}
+              style={{ ...inputStyle, fontFamily: "var(--font-mono)", fontSize: 11 }}
+            />
+            <div style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--muted)", marginTop: 4 }}>
+              Use named groups <code style={{ color: "#22d3ee" }}>(?P&lt;TIME&gt;…)</code> and <code style={{ color: "#86efac" }}>(?P&lt;ENTRY&gt;…)</code>
+            </div>
+          </div>
+
+          <div style={{ marginBottom: 4 }}>
+            <div style={FIELD_LABEL}>Activation Check Command</div>
+            <input
+              value={entry.log_activation_cmd}
+              onChange={e => set("log_activation_cmd", e.target.value)}
+              placeholder="true"
+              style={{ ...inputStyle, fontFamily: "var(--font-mono)", fontSize: 12 }}
+            />
+            <div style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--muted)", marginTop: 4 }}>
+              Command that must exit 0 for this log to be active (e.g. check if tool exists). Use <code>true</code> to always enable.
+            </div>
+          </div>
+
+          {/* Live test panel */}
+          {testPane && (
+            <div style={{
+              marginTop: 14, background: "rgba(0,0,0,0.25)", border: "1px solid rgba(129,140,248,0.2)",
+              borderRadius: 8, padding: "12px 14px",
+            }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+                <span style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 12, color: "var(--accent)" }}>
+                  Live Output
+                </span>
+                <button
+                  onClick={() => setTestPane(false)}
+                  style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer", fontSize: 15 }}
+                >×</button>
+              </div>
+
+              {testError && (
+                <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "#f87171",
+                  background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.2)",
+                  borderRadius: 6, padding: "6px 10px", marginBottom: 8 }}>
+                  ⚠ {testError}
+                </div>
+              )}
+
+              {testing && (
+                <div style={{ display: "flex", alignItems: "center", gap: 8, color: "var(--muted)", fontFamily: "var(--font-mono)", fontSize: 12 }}>
+                  <svg width="12" height="12" viewBox="0 0 12 12" style={{ animation: "spin 1s linear infinite" }}>
+                    <circle cx="6" cy="6" r="5" fill="none" stroke="var(--accent)" strokeWidth="1.8" strokeDasharray="16" strokeDashoffset="8" />
+                  </svg>
+                  Executing on device…
+                </div>
+              )}
+
+              {testOutput && (
+                <RegexTestOverlay output={testOutput} regex={entry.data_extraction_regex} />
+              )}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── CONFIG BUILDER WIZARD ──────────────────────────────────────────────────────
+function ConfigBuilderModal({ open, onClose, onSave }) {
+  const [step, setStep] = useState(1); // 1=connection, 2=log entries
+  const [conn, setConn] = useState({
+    device_name: "", ip_address: "", port: 22,
+    user: "pi", password: "", collection_interval: 30,
+  });
+  const [entries, setEntries] = useState([EMPTY_LOG_ENTRY()]);
+  const [connStatus, setConnStatus] = useState(null); // null | "testing" | {success, message}
+  const [saving, setSaving] = useState(false);
+
+  const setC = (k, v) => setConn(prev => ({ ...prev, [k]: v }));
+
+  const testConnection = async () => {
+    setConnStatus("testing");
+    try {
+      const res = await apiFetch("/api/devices/test-connection", {
+        method: "POST",
+        body: JSON.stringify({
+          ip_address: conn.ip_address,
+          port: Number(conn.port),
+          user: conn.user,
+          password: conn.password,
+        }),
+      });
+      setConnStatus(res);
+    } catch (e) {
+      setConnStatus({ success: false, message: e.message });
+    }
+  };
+
+  const addEntry = () => setEntries(prev => [...prev, EMPTY_LOG_ENTRY()]);
+
+  const updateEntry = (idx, updated) =>
+    setEntries(prev => prev.map((e, i) => i === idx ? updated : e));
+
+  const removeEntry = (idx) =>
+    setEntries(prev => prev.filter((_, i) => i !== idx));
+
+  const duplicateEntry = (idx) => {
+    const src = entries[idx];
+    const clone = { ...src, _id: Math.random().toString(36).slice(2), log_name: src.log_name + "_copy" };
+    setEntries(prev => [...prev.slice(0, idx + 1), clone, ...prev.slice(idx + 1)]);
+  };
+
+  const buildConfig = () => {
+    const log_file_configs = entries.map(({ _id, ...rest }) => rest); // strip internal _id
+    return {
+      device_name: conn.device_name || `device-${conn.ip_address}`,
+      ip_address: conn.ip_address,
+      port: Number(conn.port),
+      user: conn.user,
+      password: conn.password,
+      collection_interval: Number(conn.collection_interval),
+      log_file_configs,
+    };
+  };
+
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      const config = buildConfig();
+      const b64 = btoa(JSON.stringify(config, null, 2));
+      await onSave(`data:application/json;base64,${b64}`);
+      onClose();
+      // Reset
+      setStep(1);
+      setConn({ device_name: "", ip_address: "", port: 22, user: "pi", password: "", collection_interval: 30 });
+      setEntries([EMPTY_LOG_ENTRY()]);
+      setConnStatus(null);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const downloadConfig = () => {
+    const config = buildConfig();
+    const blob = new Blob([JSON.stringify(config, null, 2)], { type: "application/json" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `${conn.device_name || "device"}_config.json`;
+    a.click();
+  };
+
+  if (!open) return null;
+
+  const step1Valid = conn.ip_address && conn.user && conn.port;
+  const step2Valid = entries.length > 0 && entries.every(e => e.log_name && e.log_file_cmd);
+
+  const stepTabStyle = (s) => ({
+    display: "flex", alignItems: "center", gap: 8, padding: "10px 20px",
+    background: step === s ? "rgba(129,140,248,0.12)" : "transparent",
+    border: "none", borderBottom: `2px solid ${step === s ? "var(--accent)" : "transparent"}`,
+    color: step === s ? "var(--accent)" : step > s ? "#4ade80" : "var(--muted)",
+    fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 12,
+    cursor: "pointer", transition: "all 0.15s", letterSpacing: "0.04em",
+    opacity: (s === 2 && !step1Valid) ? 0.4 : 1,
+  });
+
+  return (
+    <div style={{ position: "fixed", inset: 0, zIndex: 1200, display: "flex", alignItems: "center", justifyContent: "center" }}
+      onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
+      <div style={{ position: "absolute", inset: 0, background: "rgba(0,0,0,0.8)", backdropFilter: "blur(6px)" }} />
+      <div style={{
+        position: "relative", zIndex: 1, background: "var(--modal-bg)", border: "1px solid var(--border)",
+        borderRadius: 14, width: 820, maxWidth: "calc(100vw - 32px)",
+        maxHeight: "calc(100vh - 40px)", display: "flex", flexDirection: "column",
+        boxShadow: "0 24px 80px rgba(0,0,0,0.6)",
+      }}>
+        {/* Header */}
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "18px 24px", borderBottom: "1px solid var(--border)", flexShrink: 0 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            <div style={{ width: 34, height: 34, borderRadius: "50%", background: "rgba(129,140,248,0.14)", border: "1px solid rgba(129,140,248,0.3)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16 }}>
+              🛠
+            </div>
+            <div>
+              <div style={{ fontFamily: "var(--font-display)", fontWeight: 800, fontSize: 16, color: "var(--text)", letterSpacing: "0.03em" }}>Device Config Builder</div>
+              <div style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--muted)", marginTop: 1 }}>Build and test your configuration interactively</div>
+            </div>
+          </div>
+          <button onClick={onClose} style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer", fontSize: 22, lineHeight: 1, padding: "2px 6px" }}>×</button>
+        </div>
+
+        {/* Step tabs */}
+        <div style={{ display: "flex", borderBottom: "1px solid var(--border)", flexShrink: 0 }}>
+          <button style={stepTabStyle(1)} onClick={() => setStep(1)}>
+            <span style={{ width: 20, height: 20, borderRadius: "50%", background: step > 1 ? "rgba(74,222,128,0.2)" : "rgba(129,140,248,0.15)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontWeight: 800, color: step > 1 ? "#4ade80" : "var(--accent)" }}>
+              {step > 1 ? "✔" : "1"}
+            </span>
+            Connection
+          </button>
+          <button style={stepTabStyle(2)} onClick={() => step1Valid && setStep(2)}>
+            <span style={{ width: 20, height: 20, borderRadius: "50%", background: "rgba(129,140,248,0.15)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontWeight: 800, color: "var(--accent)" }}>2</span>
+            Log Entries
+            <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--muted)", marginLeft: 4 }}>({entries.length})</span>
+          </button>
+        </div>
+
+        {/* Body */}
+        <div style={{ flex: 1, overflowY: "auto", padding: "22px 26px", minHeight: 0 }}>
+
+          {/* ── STEP 1: Connection ── */}
+          {step === 1 && (
+            <div>
+              <div style={CARD}>
+                <div style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 13, color: "var(--text)", marginBottom: 14 }}>Device Identity</div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+                  <div>
+                    <div style={FIELD_LABEL}>Device Name *</div>
+                    <input value={conn.device_name} onChange={e => setC("device_name", e.target.value)}
+                      placeholder="Raspberry-PI-Zero" style={inputStyle} />
+                  </div>
+                  <div>
+                    <div style={FIELD_LABEL}>Collection Interval (sec)</div>
+                    <input type="number" value={conn.collection_interval} onChange={e => setC("collection_interval", e.target.value)}
+                      min={5} style={inputStyle} />
+                  </div>
+                </div>
+              </div>
+
+              <div style={CARD}>
+                <div style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 13, color: "var(--text)", marginBottom: 14 }}>SSH Credentials</div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 14, marginBottom: 12 }}>
+                  <div>
+                    <div style={FIELD_LABEL}>IP Address *</div>
+                    <input value={conn.ip_address} onChange={e => setC("ip_address", e.target.value)}
+                      placeholder="10.01.230.23" style={inputStyle} />
+                  </div>
+                  <div>
+                    <div style={FIELD_LABEL}>Port</div>
+                    <input type="number" value={conn.port} onChange={e => setC("port", e.target.value)}
+                      style={{ ...inputStyle, width: 80 }} />
+                  </div>
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+                  <div>
+                    <div style={FIELD_LABEL}>Username *</div>
+                    <input value={conn.user} onChange={e => setC("user", e.target.value)}
+                      placeholder="pi" style={inputStyle} />
+                  </div>
+                  <div>
+                    <div style={FIELD_LABEL}>Password</div>
+                    <input type="password" value={conn.password} onChange={e => setC("password", e.target.value)}
+                      placeholder="••••••••" style={inputStyle} />
+                  </div>
+                </div>
+
+                {/* Test connection */}
+                <div style={{ marginTop: 16, display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+                  <button
+                    onClick={testConnection}
+                    disabled={!step1Valid || connStatus === "testing"}
+                    style={{
+                      display: "flex", alignItems: "center", gap: 7,
+                      background: "rgba(129,140,248,0.1)", border: "1px solid rgba(129,140,248,0.3)",
+                      borderRadius: 8, color: "var(--accent)", fontFamily: "var(--font-mono)",
+                      fontSize: 12, padding: "8px 16px", cursor: (!step1Valid || connStatus === "testing") ? "not-allowed" : "pointer",
+                      opacity: !step1Valid ? 0.5 : 1, transition: "all 0.15s",
+                    }}
+                  >
+                    {connStatus === "testing" ? (
+                      <><svg width="11" height="11" viewBox="0 0 11 11" style={{ animation: "spin 1s linear infinite" }}>
+                        <circle cx="5.5" cy="5.5" r="4.5" fill="none" stroke="var(--accent)" strokeWidth="1.6" strokeDasharray="14" strokeDashoffset="7" />
+                      </svg> Testing…</>
+                    ) : "🔌 Test Connection"}
+                  </button>
+
+                  {connStatus && connStatus !== "testing" && (
+                    <div style={{
+                      display: "flex", alignItems: "center", gap: 7,
+                      fontFamily: "var(--font-mono)", fontSize: 12,
+                      color: connStatus.success ? "#4ade80" : "#f87171",
+                      background: connStatus.success ? "rgba(74,222,128,0.08)" : "rgba(248,113,113,0.08)",
+                      border: `1px solid ${connStatus.success ? "rgba(74,222,128,0.25)" : "rgba(248,113,113,0.25)"}`,
+                      borderRadius: 7, padding: "7px 13px",
+                    }}>
+                      {connStatus.success ? "✔" : "✖"} {connStatus.message}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* ── STEP 2: Log Entries ── */}
+          {step === 2 && (
+            <div>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
+                <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--muted)" }}>
+                  {entries.length} log entr{entries.length === 1 ? "y" : "ies"} · Click ▶ Run on Device to test each command live
+                </div>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button
+                    onClick={() => {
+                      // Add a set of common Raspberry Pi log entries as a template
+                      setEntries(prev => [...prev,
+                        { _id: Math.random().toString(36).slice(2), log_name: "syslog", log_file_cmd: "sudo journalctl -n 200 --no-pager", data_extraction_regex: "^(?P<TIME>\\w+\\s+\\d+\\s+\\d+:\\d+:\\d+)\\s+(?P<ENTRY>.*)", log_activation_cmd: "ls -la", log_type: "text" },
+                        { _id: Math.random().toString(36).slice(2), log_name: "cpu_usage_percent", log_file_cmd: "echo $(date '+%Y-%m-%d %H:%M:%S'),$(top -bn1 | grep 'Cpu(s)' | awk '{print 100-$8}')", data_extraction_regex: "^(?P<TIME>\\d+-\\d+-\\d+\\s\\d+:\\d+:\\d+),(?P<ENTRY>.*)", log_activation_cmd: "true", log_type: "chart" },
+                      ]);
+                    }}
+                    style={{ background: "rgba(255,255,255,0.04)", border: "1px solid var(--border)", borderRadius: 7, color: "var(--muted)", fontFamily: "var(--font-mono)", fontSize: 11, padding: "6px 12px", cursor: "pointer" }}
+                  >
+                    + Add Templates
+                  </button>
+                  <button
+                    onClick={addEntry}
+                    style={{ background: "rgba(129,140,248,0.1)", border: "1px solid rgba(129,140,248,0.3)", borderRadius: 7, color: "var(--accent)", fontFamily: "var(--font-mono)", fontSize: 11, fontWeight: 700, padding: "6px 14px", cursor: "pointer" }}
+                  >
+                    + Add Entry
+                  </button>
+                </div>
+              </div>
+
+              {entries.map((entry, idx) => (
+                <LogEntryEditor
+                  key={entry._id}
+                  entry={entry}
+                  conn={{ ip_address: conn.ip_address, port: Number(conn.port), user: conn.user, password: conn.password }}
+                  index={idx}
+                  onChange={updated => updateEntry(idx, updated)}
+                  onRemove={() => removeEntry(idx)}
+                  onDuplicate={() => duplicateEntry(idx)}
+                />
+              ))}
+
+              {entries.length === 0 && (
+                <div style={{ padding: "32px", textAlign: "center", border: "1px dashed var(--border)", borderRadius: 10, color: "var(--muted)", fontFamily: "var(--font-mono)", fontSize: 12 }}>
+                  No entries yet. Click "+ Add Entry" to get started.
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div style={{ borderTop: "1px solid var(--border)", padding: "14px 24px", display: "flex", gap: 10, justifyContent: "space-between", alignItems: "center", flexShrink: 0 }}>
+          <div style={{ display: "flex", gap: 8 }}>
+            {step === 2 && (
+              <button
+                onClick={downloadConfig}
+                style={{ background: "rgba(255,255,255,0.04)", border: "1px solid var(--border)", borderRadius: 7, color: "var(--muted)", fontFamily: "var(--font-mono)", fontSize: 12, padding: "8px 14px", cursor: "pointer", display: "flex", alignItems: "center", gap: 6 }}
+              >
+                ⬇ Download JSON
+              </button>
+            )}
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            {step === 1 && (
+              <Btn variant="primary" onClick={() => setStep(2)} disabled={!step1Valid}>
+                Next: Log Entries →
+              </Btn>
+            )}
+            {step === 2 && (
+              <>
+                <Btn variant="ghost" onClick={() => setStep(1)}>← Back</Btn>
+                <Btn variant="success" onClick={handleSave} disabled={saving || !step2Valid}>
+                  {saving ? "Saving…" : "💾 Save Device"}
+                </Btn>
+              </>
+            )}
+            <Btn variant="ghost" onClick={onClose}>Cancel</Btn>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── ADD DEVICE BUTTON + CHOICE MODAL ──────────────────────────────────────────
+function AddDeviceBtn({ onUpload, onBuildConfig }) {
+  const [choiceOpen, setChoiceOpen] = useState(false);
+  const fileRef = useRef();
+
   const handleFile = (e) => {
     const file = e.target.files[0];
     if (!file) return;
     const reader = new FileReader();
-    reader.onload = (ev) => onUpload(ev.target.result);
+    reader.onload = (ev) => { onUpload(ev.target.result); setChoiceOpen(false); };
     reader.readAsDataURL(file);
     e.target.value = "";
   };
+
   return (
     <>
-      <input ref={ref} type="file" accept=".json" style={{ display: "none" }} onChange={handleFile} />
-      <Btn variant="primary" onClick={() => ref.current.click()}>＋ Add Device</Btn>
+      <input ref={fileRef} type="file" accept=".json" style={{ display: "none" }} onChange={handleFile} />
+      <Btn variant="primary" onClick={() => setChoiceOpen(true)}>＋ Add Device</Btn>
+
+      {choiceOpen && (
+        <div style={{ position: "fixed", inset: 0, zIndex: 1100, display: "flex", alignItems: "center", justifyContent: "center" }}
+          onClick={e => { if (e.target === e.currentTarget) setChoiceOpen(false); }}>
+          <div style={{ position: "absolute", inset: 0, background: "rgba(0,0,0,0.75)", backdropFilter: "blur(5px)" }} />
+          <div style={{
+            position: "relative", zIndex: 1,
+            background: "var(--modal-bg)", border: "1px solid var(--border)", borderRadius: 16,
+            padding: "32px 28px", width: 480, maxWidth: "calc(100vw - 32px)",
+            boxShadow: "0 24px 80px rgba(0,0,0,0.6)",
+          }}>
+            <div style={{ textAlign: "center", marginBottom: 28 }}>
+              <div style={{
+                width: 52, height: 52, borderRadius: "50%", margin: "0 auto 16px",
+                background: "rgba(129,140,248,0.12)", border: "1px solid rgba(129,140,248,0.3)",
+                display: "flex", alignItems: "center", justifyContent: "center", fontSize: 24,
+              }}>＋</div>
+              <h3 style={{ margin: "0 0 6px", fontFamily: "var(--font-display)", fontWeight: 800, fontSize: 18, color: "var(--text)", letterSpacing: "-0.01em" }}>
+                Add Device
+              </h3>
+              <p style={{ margin: 0, fontFamily: "var(--font-mono)", fontSize: 12, color: "var(--muted)", lineHeight: 1.6 }}>
+                Choose how you'd like to configure the device.
+              </p>
+            </div>
+
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+              {/* Upload option */}
+              <button
+                onClick={() => fileRef.current.click()}
+                style={{
+                  background: "rgba(255,255,255,0.03)", border: "1px solid var(--border)",
+                  borderRadius: 12, padding: "22px 16px", cursor: "pointer", textAlign: "center",
+                  transition: "all 0.18s",
+                }}
+                onMouseEnter={e => { e.currentTarget.style.borderColor = "rgba(129,140,248,0.4)"; e.currentTarget.style.background = "rgba(129,140,248,0.06)"; }}
+                onMouseLeave={e => { e.currentTarget.style.borderColor = "var(--border)"; e.currentTarget.style.background = "rgba(255,255,255,0.03)"; }}
+              >
+                <div style={{ fontSize: 32, marginBottom: 12 }}>📄</div>
+                <div style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 14, color: "var(--text)", marginBottom: 6 }}>
+                  Upload JSON
+                </div>
+                <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--muted)", lineHeight: 1.55 }}>
+                  Import an existing device configuration file
+                </div>
+              </button>
+
+              {/* Builder option */}
+              <button
+                onClick={() => { setChoiceOpen(false); onBuildConfig(); }}
+                style={{
+                  background: "rgba(129,140,248,0.06)", border: "1px solid rgba(129,140,248,0.25)",
+                  borderRadius: 12, padding: "22px 16px", cursor: "pointer", textAlign: "center",
+                  transition: "all 0.18s",
+                }}
+                onMouseEnter={e => { e.currentTarget.style.borderColor = "rgba(129,140,248,0.55)"; e.currentTarget.style.background = "rgba(129,140,248,0.12)"; }}
+                onMouseLeave={e => { e.currentTarget.style.borderColor = "rgba(129,140,248,0.25)"; e.currentTarget.style.background = "rgba(129,140,248,0.06)"; }}
+              >
+                <div style={{ fontSize: 32, marginBottom: 12 }}>🛠</div>
+                <div style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 14, color: "var(--accent)", marginBottom: 6 }}>
+                  Build Config
+                </div>
+                <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--muted)", lineHeight: 1.55 }}>
+                  Interactive wizard with live command testing
+                </div>
+              </button>
+            </div>
+
+            <button
+              onClick={() => setChoiceOpen(false)}
+              style={{ display: "block", width: "100%", marginTop: 18, background: "transparent", border: "none", color: "var(--muted)", fontFamily: "var(--font-mono)", fontSize: 12, cursor: "pointer", padding: "6px 0" }}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
     </>
   );
 }
@@ -2090,6 +2777,7 @@ export default function App() {
   const [deviceModal,     setDeviceModal]     = useState(null);
   const [sessionModal,    setSessionModal]    = useState(null);
   const [apiModal,        setApiModal]        = useState(false);
+  const [builderModal,    setBuilderModal]    = useState(false);
   const [loginModal,              setLoginModal]              = useState(false);
   const [settingsModal,           setSettingsModal]           = useState(false);
   const [scenarioModal,           setScenarioModal]           = useState(false);
@@ -2483,7 +3171,7 @@ ${rows}
 
           {/* ACTION BAR */}
           <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 24, alignItems: "center" }}>
-            <UploadBtn onUpload={handleUpload} />
+            <AddDeviceBtn onUpload={handleUpload} onBuildConfig={() => setBuilderModal(true)} />
             <Btn variant="success" onClick={startCollection} disabled={!anySelected}>▶ Start Collection</Btn>
             <Btn variant="danger"  onClick={stopCollection}  disabled={!anySelected}>⏹ Stop Collection</Btn>
             <Btn variant="ghost"   onClick={removeSelected}  disabled={!anySelected}>🗑 Remove Selected</Btn>
@@ -2582,6 +3270,13 @@ ${rows}
       <CollectionLoadingOverlay open={stoppingCollection} />
 
       {/* MODALS */}
+
+      {/* Config Builder Modal */}
+      <ConfigBuilderModal
+        open={builderModal}
+        onClose={() => setBuilderModal(false)}
+        onSave={handleUpload}
+      />
 
       {/* Session scenario modal — shown when the user clicks ▶ Start Collection */}
       <Modal
