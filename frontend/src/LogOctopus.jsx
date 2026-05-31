@@ -1825,6 +1825,8 @@ const EMPTY_LOG_ENTRY = () => ({
   log_file_cmd: "",
   data_extraction_regex: "",
   log_activation_cmd: "true",
+  log_deactivation_cmd: "",
+  custom_shell_prompt: "",
   log_type: "text",
 });
 
@@ -1905,44 +1907,91 @@ function RegexTestOverlay({ output, regex }) {
 }
 
 function LogEntryEditor({ entry, conn, index, onChange, onRemove, onDuplicate }) {
-  const [expanded, setExpanded]   = useState(index === 0);
-  const [testing, setTesting]     = useState(false);
-  const [testOutput, setTestOutput] = useState(null);
-  const [testError, setTestError] = useState("");
-  const [testPane, setTestPane]   = useState(false);
+  const [expanded, setExpanded]         = useState(index === 0);
+
+  // Per-command test state: "log" (main cmd), "activation", "deactivation"
+  const [activePane, setActivePane]     = useState(null); // null | "log" | "activation" | "deactivation"
+  const [testing, setTesting]           = useState(null); // null | "log" | "activation" | "deactivation"
+  const [paneOutputs, setPaneOutputs]   = useState({ log: null, activation: null, deactivation: null });
+  const [paneErrors, setPaneErrors]     = useState({ log: "", activation: "", deactivation: "" });
 
   const set = (k, v) => onChange({ ...entry, [k]: v });
 
-  const runTest = async () => {
+  const execCmd = async (cmdKey, cmd) => {
     if (!conn.ip_address || !conn.user) {
-      setTestError("Fill in connection details first (Step 1).");
-      setTestPane(true);
+      setPaneErrors(prev => ({ ...prev, [cmdKey]: "Fill in connection details first (Step 1)." }));
+      setActivePane(cmdKey);
       return;
     }
-    if (!entry.log_file_cmd.trim()) {
-      setTestError("Enter a command to test.");
-      setTestPane(true);
+    if (!cmd || !cmd.trim()) {
+      setPaneErrors(prev => ({ ...prev, [cmdKey]: "No command to run." }));
+      setActivePane(cmdKey);
       return;
     }
-    setTesting(true);
-    setTestOutput(null);
-    setTestError("");
-    setTestPane(true);
+    setTesting(cmdKey);
+    setPaneOutputs(prev => ({ ...prev, [cmdKey]: null }));
+    setPaneErrors(prev => ({ ...prev, [cmdKey]: "" }));
+    setActivePane(cmdKey);
     try {
+      const payload = {
+        ip_address: conn.ip_address,
+        port: Number(conn.port || 22),
+        user: conn.user,
+        password: conn.password,
+        gateways: conn.gateways || [],
+        command: cmd,
+      };
+      if (entry.custom_shell_prompt && entry.custom_shell_prompt.trim()) {
+        payload.custom_shell_prompt = entry.custom_shell_prompt.trim();
+      }
       const res = await apiFetch("/api/devices/exec-command", {
         method: "POST",
-        body: JSON.stringify({ ...conn, command: entry.log_file_cmd }),
+        body: JSON.stringify(payload),
       });
-      setTestOutput(res.stdout || res.stderr || "(empty output)");
-      if (res.exit_code !== 0 && res.stderr) setTestError(`Exit code ${res.exit_code}: ${res.stderr.slice(0, 120)}`);
+      setPaneOutputs(prev => ({ ...prev, [cmdKey]: res.stdout || res.stderr || "(empty output)" }));
+      if (res.exit_code !== 0 && res.stderr) {
+        setPaneErrors(prev => ({ ...prev, [cmdKey]: `Exit code ${res.exit_code}: ${res.stderr.slice(0, 160)}` }));
+      }
     } catch (e) {
-      setTestError(e.message);
+      setPaneErrors(prev => ({ ...prev, [cmdKey]: e.message }));
     } finally {
-      setTesting(false);
+      setTesting(null);
     }
   };
 
   const logTypeColors = { text: "cyan", chart: "violet" };
+
+  const RunBtn = ({ cmdKey, label, cmd }) => {
+    const isBusy = testing === cmdKey;
+    const hasTested = paneOutputs[cmdKey] !== null || paneErrors[cmdKey];
+    const isActive = activePane === cmdKey;
+    return (
+      <button
+        onClick={() => execCmd(cmdKey, cmd)}
+        disabled={!!testing}
+        style={{
+          display: "flex", alignItems: "center", gap: 5,
+          background: isActive
+            ? (hasTested ? "rgba(74,222,128,0.12)" : "rgba(129,140,248,0.18)")
+            : "rgba(129,140,248,0.08)",
+          border: `1px solid ${isActive ? (hasTested ? "rgba(74,222,128,0.35)" : "rgba(129,140,248,0.45)") : "rgba(129,140,248,0.25)"}`,
+          borderRadius: 6,
+          color: isActive ? (hasTested ? "#4ade80" : "var(--accent)") : "var(--accent)",
+          fontFamily: "var(--font-mono)", fontSize: 11,
+          padding: "4px 10px", cursor: testing ? "not-allowed" : "pointer",
+          opacity: (testing && testing !== cmdKey) ? 0.5 : 1,
+          transition: "all 0.15s",
+          whiteSpace: "nowrap",
+        }}
+      >
+        {isBusy ? (
+          <><svg width="10" height="10" viewBox="0 0 10 10" style={{ animation: "spin 1s linear infinite", flexShrink: 0 }}>
+            <circle cx="5" cy="5" r="4" fill="none" stroke="currentColor" strokeWidth="1.5" strokeDasharray="12" strokeDashoffset="6" />
+          </svg> Running…</>
+        ) : (hasTested && isActive ? "✔ " : "▶ ") + label}
+      </button>
+    );
+  };
 
   return (
     <div style={{
@@ -1965,7 +2014,9 @@ function LogEntryEditor({ entry, conn, index, onChange, onRemove, onDuplicate })
           {entry.log_name || <span style={{ fontStyle: "italic" }}>unnamed entry</span>}
         </span>
         <Badge color={logTypeColors[entry.log_type] || "default"}>{entry.log_type}</Badge>
-        {testOutput && <Badge color="green">tested</Badge>}
+        {paneOutputs.log && <Badge color="green">cmd tested</Badge>}
+        {paneOutputs.activation && <Badge color="cyan">act tested</Badge>}
+        {paneOutputs.deactivation && <Badge color="violet">deact tested</Badge>}
         <button
           onClick={e => { e.stopPropagation(); onDuplicate(); }}
           title="Duplicate"
@@ -1981,6 +2032,7 @@ function LogEntryEditor({ entry, conn, index, onChange, onRemove, onDuplicate })
 
       {expanded && (
         <div style={{ padding: "16px 16px 14px" }}>
+          {/* Row 1: Log Name + Log Type */}
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
             <div>
               <div style={FIELD_LABEL}>Log Name *</div>
@@ -2015,27 +2067,25 @@ function LogEntryEditor({ entry, conn, index, onChange, onRemove, onDuplicate })
             </div>
           </div>
 
+          {/* Custom Shell Prompt */}
+          <div style={{ marginBottom: 12 }}>
+            <div style={FIELD_LABEL}>Custom Shell Prompt <span style={{ color: "var(--muted)", textTransform: "none", letterSpacing: 0 }}>(optional)</span></div>
+            <input
+              value={entry.custom_shell_prompt || ""}
+              onChange={e => set("custom_shell_prompt", e.target.value)}
+              placeholder="e.g. router# or $"
+              style={{ ...inputStyle, fontFamily: "var(--font-mono)", fontSize: 12 }}
+            />
+            <div style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--muted)", marginTop: 4 }}>
+              When set, all test commands use an interactive shell and read output until this prompt appears. Leave empty for standard SSH exec.
+            </div>
+          </div>
+
+          {/* Log Cmd */}
           <div style={{ marginBottom: 12 }}>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 5 }}>
               <div style={FIELD_LABEL}>Command *</div>
-              <button
-                onClick={runTest}
-                disabled={testing}
-                style={{
-                  display: "flex", alignItems: "center", gap: 5,
-                  background: testing ? "rgba(129,140,248,0.08)" : "rgba(129,140,248,0.13)",
-                  border: "1px solid rgba(129,140,248,0.3)", borderRadius: 6,
-                  color: "var(--accent)", fontFamily: "var(--font-mono)", fontSize: 11,
-                  padding: "4px 11px", cursor: testing ? "not-allowed" : "pointer",
-                  transition: "all 0.15s",
-                }}
-              >
-                {testing ? (
-                  <><svg width="10" height="10" viewBox="0 0 10 10" style={{ animation: "spin 1s linear infinite" }}>
-                    <circle cx="5" cy="5" r="4" fill="none" stroke="var(--accent)" strokeWidth="1.5" strokeDasharray="12" strokeDashoffset="6" />
-                  </svg> Running…</>
-                ) : "▶ Run on Device"}
-              </button>
+              <RunBtn cmdKey="log" label="Run on Device" cmd={entry.log_file_cmd} />
             </div>
             <textarea
               value={entry.log_file_cmd}
@@ -2046,6 +2096,7 @@ function LogEntryEditor({ entry, conn, index, onChange, onRemove, onDuplicate })
             />
           </div>
 
+          {/* Extraction Regex */}
           <div style={{ marginBottom: 12 }}>
             <div style={FIELD_LABEL}>Extraction Regex (named groups TIME, ENTRY)</div>
             <input
@@ -2059,54 +2110,111 @@ function LogEntryEditor({ entry, conn, index, onChange, onRemove, onDuplicate })
             </div>
           </div>
 
-          <div style={{ marginBottom: 4 }}>
-            <div style={FIELD_LABEL}>Activation Check Command</div>
-            <input
-              value={entry.log_activation_cmd}
-              onChange={e => set("log_activation_cmd", e.target.value)}
-              placeholder="true"
-              style={{ ...inputStyle, fontFamily: "var(--font-mono)", fontSize: 12 }}
-            />
-            <div style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--muted)", marginTop: 4 }}>
-              Command that must exit 0 for this log to be active (e.g. check if tool exists). Use <code>true</code> to always enable.
+          {/* Activation + Deactivation side by side */}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 4 }}>
+            <div>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 5 }}>
+                <div style={FIELD_LABEL}>Activation Command</div>
+                <RunBtn cmdKey="activation" label="Test Activation" cmd={entry.log_activation_cmd} />
+              </div>
+              <input
+                value={entry.log_activation_cmd}
+                onChange={e => set("log_activation_cmd", e.target.value)}
+                placeholder="true"
+                style={{ ...inputStyle, fontFamily: "var(--font-mono)", fontSize: 12 }}
+              />
+              <div style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--muted)", marginTop: 4 }}>
+                Must exit 0 for this log to be active. Use <code>true</code> to always enable.
+              </div>
+            </div>
+            <div>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 5 }}>
+                <div style={FIELD_LABEL}>Deactivation Command <span style={{ color: "var(--muted)", textTransform: "none", letterSpacing: 0 }}>(optional)</span></div>
+                <RunBtn cmdKey="deactivation" label="Test Deactivation" cmd={entry.log_deactivation_cmd} />
+              </div>
+              <input
+                value={entry.log_deactivation_cmd || ""}
+                onChange={e => set("log_deactivation_cmd", e.target.value)}
+                placeholder="e.g. service mylogd stop"
+                style={{ ...inputStyle, fontFamily: "var(--font-mono)", fontSize: 12 }}
+              />
+              <div style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--muted)", marginTop: 4 }}>
+                Run on collection stop to disable the log source.
+              </div>
             </div>
           </div>
 
-          {/* Live test panel */}
-          {testPane && (
+          {/* Live output pane — shows whichever cmd was last tested */}
+          {activePane && (
             <div style={{
               marginTop: 14, background: "rgba(0,0,0,0.25)", border: "1px solid rgba(129,140,248,0.2)",
               borderRadius: 8, padding: "12px 14px",
             }}>
+              {/* Pane tab selector */}
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
-                <span style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 12, color: "var(--accent)" }}>
-                  Live Output
-                </span>
+                <div style={{ display: "flex", gap: 6 }}>
+                  {[
+                    { key: "log", label: "▶ Command" },
+                    { key: "activation", label: "⚡ Activation" },
+                    { key: "deactivation", label: "⛔ Deactivation" },
+                  ].filter(tab => paneOutputs[tab.key] !== null || paneErrors[tab.key] || activePane === tab.key).map(tab => (
+                    <button
+                      key={tab.key}
+                      onClick={() => setActivePane(tab.key)}
+                      style={{
+                        fontFamily: "var(--font-mono)", fontSize: 11, fontWeight: 700,
+                        background: activePane === tab.key ? "rgba(129,140,248,0.15)" : "transparent",
+                        border: `1px solid ${activePane === tab.key ? "rgba(129,140,248,0.4)" : "transparent"}`,
+                        borderRadius: 5, padding: "3px 9px",
+                        color: activePane === tab.key ? "var(--accent)" : "var(--muted)",
+                        cursor: "pointer", transition: "all 0.12s",
+                      }}
+                    >
+                      {tab.label}
+                      {paneOutputs[tab.key] !== null && (
+                        <span style={{ marginLeft: 5, color: paneErrors[tab.key] ? "#f87171" : "#4ade80", fontSize: 10 }}>
+                          {paneErrors[tab.key] ? "✖" : "✔"}
+                        </span>
+                      )}
+                    </button>
+                  ))}
+                </div>
                 <button
-                  onClick={() => setTestPane(false)}
+                  onClick={() => setActivePane(null)}
                   style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer", fontSize: 15 }}
                 >×</button>
               </div>
 
-              {testError && (
+              {paneErrors[activePane] && (
                 <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "#f87171",
                   background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.2)",
                   borderRadius: 6, padding: "6px 10px", marginBottom: 8 }}>
-                  ⚠ {testError}
+                  ⚠ {paneErrors[activePane]}
                 </div>
               )}
 
-              {testing && (
+              {testing === activePane && (
                 <div style={{ display: "flex", alignItems: "center", gap: 8, color: "var(--muted)", fontFamily: "var(--font-mono)", fontSize: 12 }}>
                   <svg width="12" height="12" viewBox="0 0 12 12" style={{ animation: "spin 1s linear infinite" }}>
                     <circle cx="6" cy="6" r="5" fill="none" stroke="var(--accent)" strokeWidth="1.8" strokeDasharray="16" strokeDashoffset="8" />
                   </svg>
-                  Executing on device…
+                  Executing on device{entry.custom_shell_prompt ? " (custom shell)" : ""}…
                 </div>
               )}
 
-              {testOutput && (
-                <RegexTestOverlay output={testOutput} regex={entry.data_extraction_regex} />
+              {activePane === "log" && paneOutputs.log && (
+                <RegexTestOverlay output={paneOutputs.log} regex={entry.data_extraction_regex} />
+              )}
+
+              {activePane !== "log" && paneOutputs[activePane] && (
+                <div style={{
+                  fontFamily: "var(--font-mono)", fontSize: 11, lineHeight: 1.65,
+                  background: "rgba(0,0,0,0.35)", border: "1px solid var(--border)", borderRadius: 8,
+                  padding: "10px 14px", maxHeight: 220, overflowY: "auto", whiteSpace: "pre-wrap",
+                  wordBreak: "break-all", color: "#94a3b8",
+                }}>
+                  {paneOutputs[activePane]}
+                </div>
               )}
             </div>
           )}
@@ -2119,10 +2227,12 @@ function LogEntryEditor({ entry, conn, index, onChange, onRemove, onDuplicate })
 // ── CONFIG BUILDER WIZARD ──────────────────────────────────────────────────────
 function ConfigBuilderModal({ open, onClose, onSave }) {
   const [step, setStep] = useState(1); // 1=connection, 2=log entries
-  const [conn, setConn] = useState({
+  const EMPTY_CONN = () => ({
     device_name: "", ip_address: "", port: 22,
     user: "pi", password: "", collection_interval: 30,
+    gateways: [],
   });
+  const [conn, setConn] = useState(EMPTY_CONN);
   const [entries, setEntries] = useState([EMPTY_LOG_ENTRY()]);
   const [connStatus, setConnStatus] = useState(null); // null | "testing" | {success, message}
   const [saving, setSaving] = useState(false);
@@ -2139,6 +2249,7 @@ function ConfigBuilderModal({ open, onClose, onSave }) {
           port: Number(conn.port),
           user: conn.user,
           password: conn.password,
+          gateways: conn.gateways,
         }),
       });
       setConnStatus(res);
@@ -2163,7 +2274,7 @@ function ConfigBuilderModal({ open, onClose, onSave }) {
 
   const buildConfig = () => {
     const log_file_configs = entries.map(({ _id, ...rest }) => rest); // strip internal _id
-    return {
+    const config = {
       device_name: conn.device_name || `device-${conn.ip_address}`,
       ip_address: conn.ip_address,
       port: Number(conn.port),
@@ -2172,6 +2283,15 @@ function ConfigBuilderModal({ open, onClose, onSave }) {
       collection_interval: Number(conn.collection_interval),
       log_file_configs,
     };
+    if (conn.gateways && conn.gateways.length > 0) {
+      config.gateways = conn.gateways.map(({ _id, ...hop }) => ({
+        ip_address: hop.ip_address,
+        port: Number(hop.port || 22),
+        user: hop.user,
+        password: hop.password,
+      }));
+    }
+    return config;
   };
 
   const handleSave = async () => {
@@ -2183,7 +2303,7 @@ function ConfigBuilderModal({ open, onClose, onSave }) {
       onClose();
       // Reset
       setStep(1);
-      setConn({ device_name: "", ip_address: "", port: 22, user: "pi", password: "", collection_interval: 30 });
+      setConn(EMPTY_CONN());
       setEntries([EMPTY_LOG_ENTRY()]);
       setConnStatus(null);
     } finally {
@@ -2337,6 +2457,89 @@ function ConfigBuilderModal({ open, onClose, onSave }) {
                   )}
                 </div>
               </div>
+
+              {/* ── Gateway Hops ── */}
+              <div style={CARD}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+                  <div>
+                    <div style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 13, color: "var(--text)" }}>SSH Gateway Hops</div>
+                    <div style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--muted)", marginTop: 3 }}>
+                      Optional jump hosts. Hops are chained left-to-right: hop 1 → hop 2 → … → target device.
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => setC("gateways", [...(conn.gateways || []), { _id: Math.random().toString(36).slice(2), ip_address: "", port: 22, user: "", password: "" }])}
+                    style={{ background: "rgba(129,140,248,0.1)", border: "1px solid rgba(129,140,248,0.3)", borderRadius: 7, color: "var(--accent)", fontFamily: "var(--font-mono)", fontSize: 11, fontWeight: 700, padding: "5px 12px", cursor: "pointer", whiteSpace: "nowrap" }}
+                  >
+                    + Add Hop
+                  </button>
+                </div>
+
+                {(!conn.gateways || conn.gateways.length === 0) && (
+                  <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--muted)", textAlign: "center", padding: "10px 0", border: "1px dashed var(--border)", borderRadius: 7 }}>
+                    No gateway hops — direct connection to target device.
+                  </div>
+                )}
+
+                {(conn.gateways || []).map((hop, hi) => {
+                  const setHop = (k, v) => {
+                    const updated = conn.gateways.map((h, i) => i === hi ? { ...h, [k]: v } : h);
+                    setC("gateways", updated);
+                  };
+                  const removeHop = () => setC("gateways", conn.gateways.filter((_, i) => i !== hi));
+                  const moveUp    = () => { if (hi === 0) return; const g = [...conn.gateways]; [g[hi-1], g[hi]] = [g[hi], g[hi-1]]; setC("gateways", g); };
+                  const moveDown  = () => { if (hi === conn.gateways.length - 1) return; const g = [...conn.gateways]; [g[hi], g[hi+1]] = [g[hi+1], g[hi]]; setC("gateways", g); };
+                  return (
+                    <div key={hop._id} style={{ marginBottom: 10, background: "rgba(0,0,0,0.18)", border: "1px solid var(--border)", borderRadius: 8, padding: "12px 14px" }}>
+                      {/* Hop header */}
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+                        <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--accent)", background: "rgba(129,140,248,0.12)", border: "1px solid rgba(129,140,248,0.25)", borderRadius: 4, padding: "2px 7px", fontWeight: 700 }}>
+                          HOP {hi + 1}
+                        </span>
+                        {hop.ip_address && (
+                          <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--muted)" }}>
+                            {hop.user ? `${hop.user}@` : ""}{hop.ip_address}:{hop.port || 22}
+                          </span>
+                        )}
+                        <div style={{ marginLeft: "auto", display: "flex", gap: 4 }}>
+                          <button onClick={moveUp}   disabled={hi === 0}                        title="Move up"   style={{ background: "none", border: "none", color: hi === 0 ? "var(--border)" : "var(--muted)", cursor: hi === 0 ? "default" : "pointer", fontSize: 13, padding: "2px 5px" }}>▲</button>
+                          <button onClick={moveDown} disabled={hi === conn.gateways.length - 1} title="Move down" style={{ background: "none", border: "none", color: hi === conn.gateways.length - 1 ? "var(--border)" : "var(--muted)", cursor: hi === conn.gateways.length - 1 ? "default" : "pointer", fontSize: 13, padding: "2px 5px" }}>▼</button>
+                          <button onClick={removeHop} title="Remove" style={{ background: "none", border: "none", color: "#f87171", cursor: "pointer", fontSize: 15, padding: "2px 5px" }}>×</button>
+                        </div>
+                      </div>
+                      {/* Hop fields */}
+                      <div style={{ display: "grid", gridTemplateColumns: "1fr 70px 1fr 1fr", gap: 10 }}>
+                        <div>
+                          <div style={FIELD_LABEL}>IP Address</div>
+                          <input value={hop.ip_address} onChange={e => setHop("ip_address", e.target.value)} placeholder="10.0.1.1" style={inputStyle} />
+                        </div>
+                        <div>
+                          <div style={FIELD_LABEL}>Port</div>
+                          <input type="number" value={hop.port || 22} onChange={e => setHop("port", e.target.value)} style={inputStyle} />
+                        </div>
+                        <div>
+                          <div style={FIELD_LABEL}>Username</div>
+                          <input value={hop.user} onChange={e => setHop("user", e.target.value)} placeholder="admin" style={inputStyle} />
+                        </div>
+                        <div>
+                          <div style={FIELD_LABEL}>Password</div>
+                          <input type="password" value={hop.password} onChange={e => setHop("password", e.target.value)} placeholder="••••••" style={inputStyle} />
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+
+                {(conn.gateways || []).length > 0 && (
+                  <div style={{ marginTop: 8, fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--muted)", display: "flex", alignItems: "center", gap: 6 }}>
+                    <span style={{ color: "var(--accent)" }}>→</span>
+                    {(conn.gateways || []).map((h, i) => (
+                      <span key={i}>{h.ip_address || `hop${i+1}`}{i < conn.gateways.length - 1 ? " → " : ""}</span>
+                    ))}
+                    <span style={{ color: "var(--accent)" }}> → {conn.ip_address || "target"}</span>
+                  </div>
+                )}
+              </div>
             </div>
           )}
 
@@ -2373,7 +2576,7 @@ function ConfigBuilderModal({ open, onClose, onSave }) {
                 <LogEntryEditor
                   key={entry._id}
                   entry={entry}
-                  conn={{ ip_address: conn.ip_address, port: Number(conn.port), user: conn.user, password: conn.password }}
+                  conn={{ ip_address: conn.ip_address, port: Number(conn.port), user: conn.user, password: conn.password, gateways: conn.gateways || [] }}
                   index={idx}
                   onChange={updated => updateEntry(idx, updated)}
                   onRemove={() => removeEntry(idx)}

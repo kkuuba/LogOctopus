@@ -39,13 +39,14 @@ class DeviceWatchdog:
         self.connection_status = False
         self.log_access = False
 
-    def execute_cmd(self, cmd, ssh_channel_id):
+    def execute_cmd(self, cmd, ssh_channel_id, custom_shell_prompt=None):
         """
         Execute command via SSH on target device with failure handling.
 
         Args:
             cmd (str): Target cmd string.
-            ssh_channel_id (str): Target SSH channel ID. 
+            ssh_channel_id (str): Target SSH channel ID.
+            custom_shell_prompt (str): Prompt to expect for usage cmd with custom shell.
 
         Returns:
             str: Full cmd output if execution was successful.
@@ -54,6 +55,14 @@ class DeviceWatchdog:
             if ssh_channel_id not in self.ssh_channels.keys():
                 self.ssh_channels[ssh_channel_id] = self.create_device_connection()
             root_requried = True if "sudo " in cmd else False
+            if custom_shell_prompt:
+                custom_shell_channel = self.ssh_channels[ssh_channel_id].client.invoke_shell()
+                custom_shell_channel.send(cmd + "\n")
+                cmd_output = self.read_until(custom_shell_channel, custom_shell_prompt)
+                custom_shell_channel.close()
+
+                return cmd_output
+
             if root_requried:
                 cmd_result = self.ssh_channels[ssh_channel_id].sudo(cmd, password=self.device_config["password"], hide=True, timeout=10)
             else:
@@ -67,12 +76,35 @@ class DeviceWatchdog:
             self.errors = pd.concat([self.errors, pd.DataFrame(error_entry)], ignore_index=True) if not self.errors.empty else pd.DataFrame(error_entry)
         return None
 
+    def read_until(self, channel, prompt, timeout=10):
+        buffer = ""
+        end = time.time() + timeout
+        while time.time() < end:
+            if channel.recv_ready():
+                data = channel.recv(4096).decode()
+                buffer += data
+
+                if prompt in buffer:
+                    return buffer
+
+            time.sleep(0.1)
+
+        return None
+
     def initialize_log_collectors(self):
         """
         Initialzie log collectors for all defined log file configs.
         """
         for log_config in self.device_config["log_file_configs"]:
-            self.execute_cmd(log_config["log_activation_cmd"], log_config["log_name"])
+            self.execute_cmd(log_config["log_activation_cmd"], log_config["log_name"], log_config.get("custom_shell_prompt", None))
+            self.collected_data[log_config["log_name"]] = pd.DataFrame({"time": [], "content": []})
+
+    def teardown_log_collectors(self):
+        """
+        Teardown log collectors for all defined log file configs.
+        """
+        for log_config in self.device_config["log_file_configs"]:
+            self.execute_cmd(log_config["log_deactivation_cmd"], log_config["log_name"], log_config.get("custom_shell_prompt", None))
             self.collected_data[log_config["log_name"]] = pd.DataFrame({"time": [], "content": []})
 
     def get_log_file_content(self, log_config):
@@ -84,7 +116,7 @@ class DeviceWatchdog:
             log_config (dict): Log collector configuration data.
         """
         log_content = {"time": [], "content": []}
-        raw_log_content = self.execute_cmd(log_config["log_file_cmd"], log_config["log_name"])
+        raw_log_content = self.execute_cmd(log_config["log_file_cmd"], log_config["log_name"], log_config.get("custom_shell_prompt", None))
         if raw_log_content is None:
             return log_content
         for entry_line in raw_log_content.split("\n"):
@@ -128,6 +160,7 @@ class DeviceWatchdog:
         self.collection_ongoing = False
         self.thread.join()
         self.remove_all_outdated_entries()
+        self.teardown_log_collectors()
 
     def remove_all_outdated_entries(self):
         """
@@ -198,7 +231,7 @@ class DeviceWatchdog:
         method return False.
         """
         log_file_config = self.device_config["log_file_configs"][0]
-        current_log_content = self.execute_cmd(log_file_config["log_file_cmd"], log_file_config["log_name"])
+        current_log_content = self.execute_cmd(log_file_config["log_file_cmd"], log_file_config["log_name"], log_file_config.get("custom_shell_prompt", None))
         if current_log_content:
             self.log_access = True
         else:

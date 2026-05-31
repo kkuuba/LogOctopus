@@ -594,46 +594,155 @@ def set_auto_collection():
 
 # ── device config builder helpers ─────────────────────────────────────────────
 
+def _build_fabric_connection(hop: dict, gateway=None):
+    """Construct a Fabric Connection for a single SSH hop.
+
+    Args:
+        hop (dict): Keys: ip_address, port (default 22), user, password.
+        gateway: An already-constructed Fabric Connection to use as the jump
+                 host, or None for a direct connection.
+
+    Returns:
+        fabric.Connection: Ready-to-use (not yet open) connection.
+    """
+    from fabric import Connection
+    from paramiko import AutoAddPolicy
+
+    connect_kwargs = {}
+    if hop.get("password"):
+        connect_kwargs["password"] = hop["password"]
+
+    conn = Connection(
+        host=hop["ip_address"].strip(),
+        user=hop.get("user", "").strip(),
+        port=int(hop.get("port", 22)),
+        gateway=gateway,
+        connect_timeout=8,
+        connect_kwargs=connect_kwargs,
+    )
+    # Accept unknown host keys automatically (mirrors paramiko AutoAddPolicy)
+    conn.client.set_missing_host_key_policy(AutoAddPolicy())
+    return conn
+
+
+def _build_nested_connection(body: dict):
+    """Build a (potentially multi-hop) Fabric Connection from request body.
+
+    The body may contain an ordered ``gateways`` list — each element is a hop
+    spec with the same shape as the target device (ip_address, port, user,
+    password).  Hops are chained left-to-right so that:
+
+        gateways[0] → gateways[1] → … → target device
+
+    Args:
+        body (dict): Parsed JSON request body.  Required keys on the target:
+                     ip_address, user.  Optional: port (default 22), password,
+                     gateways (list of hop dicts).
+
+    Returns:
+        fabric.Connection: Fully configured nested connection.
+
+    Raises:
+        ValueError: If required target fields are missing.
+    """
+    ip   = body.get("ip_address", "").strip()
+    user = body.get("user", "").strip()
+    if not ip or not user:
+        raise ValueError("missing required fields: ip_address, user")
+
+    gateways = body.get("gateways") or []
+
+    # Build the gateway chain: fold left over the hop list
+    gateway_conn = None
+    for hop in gateways:
+        gateway_conn = _build_fabric_connection(hop, gateway=gateway_conn)
+
+    # Build the final target connection on top of the gateway chain
+    return _build_fabric_connection(body, gateway=gateway_conn)
+
+
+def _read_until_prompt(channel, prompt: str, timeout: float = 20.0) -> str:
+    """Drain an interactive Paramiko channel until *prompt* appears in output.
+
+    Uses a tight non-blocking read loop — no fixed sleep between polls — so
+    output is captured as soon as it arrives on the socket.
+
+    Args:
+        channel: An open ``paramiko.Channel`` in interactive-shell mode.
+        prompt (str): String to wait for (e.g. ``"router#"`` or ``"$ "``).
+        timeout (float): Hard deadline in seconds (default 20).
+
+    Returns:
+        str: All output received up to and including the first occurrence of
+             *prompt*, decoded as UTF-8 (replacement for invalid bytes).
+    """
+    import select
+    import time
+
+    chunks: list[str] = []
+    deadline = time.monotonic() + timeout
+
+    while time.monotonic() < deadline:
+        # Block with a short select so we yield the GIL but wake immediately
+        # when data arrives — much faster than a fixed sleep(0.1).
+        readable, _, _ = select.select([channel], [], [], 0.05)
+        if readable:
+            raw = channel.recv(8192)
+            if not raw:          # channel closed by remote
+                break
+            chunks.append(raw.decode("utf-8", errors="replace"))
+            if prompt in "".join(chunks):
+                break
+
+    return "".join(chunks)
+
+
 @app.post("/api/devices/test-connection")
 def test_device_connection():
     """Test SSH connectivity to a device using provided credentials.
 
+    Supports an optional ``gateways`` list for multi-hop / jump-host setups.
+    Each gateway entry uses the same schema as the target device.  Hops are
+    chained left-to-right: gateways[0] → gateways[1] → … → target.
+
     POST '/api/devices/test-connection'
 
     Request body (JSON):
-        - ip_address (str) - Target IP address.
-        - port (int) - SSH port (default 22).
-        - user (str) - SSH username.
-        - password (str) - SSH password.
+        - ip_address (str)          - Target IP address.
+        - port (int)                - SSH port (default 22).
+        - user (str)                - SSH username.
+        - password (str)            - SSH password.
+        - gateways (list[dict])     - Optional ordered list of jump-host specs.
+          Each entry: { ip_address, port, user, password }.
 
     Returns:
         200 OK:
-            '{ "success": true, "message": "Connected successfully" }'
+            '{ "success": true,  "message": "Connected to …" }'
         200 OK (failure):
             '{ "success": false, "message": "<error details>" }'
         400 Bad Request:
             '{ "error": "missing required fields" }'
     """
     try:
-        import paramiko
+        from fabric import Connection  # noqa: F401  (validate import)
     except ImportError:
-        return jsonify({"success": False, "message": "paramiko not installed on server"}), 200
+        return jsonify({"success": False, "message": "fabric not installed on server"}), 200
 
     body = request.get_json(force=True)
     ip   = body.get("ip_address", "").strip()
     port = int(body.get("port", 22))
     user = body.get("user", "").strip()
-    pwd  = body.get("password", "").strip()
 
     if not ip or not user:
         return _bad("missing required fields: ip_address, user")
 
     try:
-        client = paramiko.SSHClient()
-        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        client.connect(ip, port=port, username=user, password=pwd, timeout=8, banner_timeout=10)
-        client.close()
-        return jsonify({"success": True, "message": f"Connected to {ip}:{port} as {user}"})
+        conn = _build_nested_connection(body)
+        conn.open()
+        conn.close()
+        hops = body.get("gateways") or []
+        via  = f" via {len(hops)} gateway(s)" if hops else ""
+        return jsonify({"success": True, "message": f"Connected to {ip}:{port} as {user}{via}"})
     except Exception as exc:
         return jsonify({"success": False, "message": str(exc)})
 
@@ -642,14 +751,23 @@ def test_device_connection():
 def exec_device_command():
     """Execute a shell command on a remote device via SSH and return its output.
 
+    Uses Fabric for the SSH transport.  Supports multi-hop gateway chains and
+    an optional custom-shell-prompt mode for interactive shells (e.g. network
+    devices that don't expose a standard exec channel).
+
     POST '/api/devices/exec-command'
 
     Request body (JSON):
-        - ip_address (str) - Target IP address.
-        - port (int)       - SSH port (default 22).
-        - user (str)       - SSH username.
-        - password (str)   - SSH password.
-        - command (str)    - Shell command to run on the remote device.
+        - ip_address (str)           - Target IP address.
+        - port (int)                 - SSH port (default 22).
+        - user (str)                 - SSH username.
+        - password (str)             - SSH password.
+        - command (str)              - Shell command to run on the remote device.
+        - custom_shell_prompt (str)  - Optional. When set, the command is sent
+          to an interactive shell and output is captured until this prompt
+          string appears in the stream.
+        - gateways (list[dict])      - Optional ordered list of jump-host specs.
+          Each entry: { ip_address, port, user, password }.
 
     Returns:
         200 OK:
@@ -660,30 +778,52 @@ def exec_device_command():
             '{ "stdout": "", "stderr": "<error>", "exit_code": -1 }'
     """
     try:
-        import paramiko
+        from fabric import Connection  # noqa: F401
     except ImportError:
-        return jsonify({"stdout": "", "stderr": "paramiko not installed on server", "exit_code": -1}), 200
+        return jsonify({"stdout": "", "stderr": "fabric not installed on server", "exit_code": -1}), 200
 
-    body    = request.get_json(force=True)
-    ip      = body.get("ip_address", "").strip()
-    port    = int(body.get("port", 22))
-    user    = body.get("user", "").strip()
-    pwd     = body.get("password", "").strip()
-    command = body.get("command", "").strip()
+    body                = request.get_json(force=True)
+    command             = body.get("command", "").strip()
+    custom_shell_prompt = body.get("custom_shell_prompt", "").strip()
 
-    if not ip or not user or not command:
+    if not body.get("ip_address", "").strip() or not body.get("user", "").strip() or not command:
         return _bad("missing required fields: ip_address, user, command")
 
     try:
-        client = paramiko.SSHClient()
-        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        client.connect(ip, port=port, username=user, password=pwd, timeout=8, banner_timeout=10)
-        _stdin, _stdout, _stderr = client.exec_command(command, timeout=15)
-        stdout_data = _stdout.read().decode("utf-8", errors="replace")
-        stderr_data = _stderr.read().decode("utf-8", errors="replace")
-        exit_code   = _stdout.channel.recv_exit_status()
-        client.close()
-        return jsonify({"stdout": stdout_data, "stderr": stderr_data, "exit_code": exit_code})
+        conn = _build_nested_connection(body)
+
+        if custom_shell_prompt:
+            # ── Interactive shell path ────────────────────────────────────────
+            # Open the Fabric connection so we can reach the underlying
+            # paramiko client, then invoke a raw shell channel.
+            conn.open()
+            channel = conn.client.invoke_shell()
+
+            # Drain the initial login banner / prompt before sending the cmd
+            _read_until_prompt(channel, custom_shell_prompt, timeout=10)
+
+            channel.send(command + "\n")
+            stdout_data = _read_until_prompt(channel, custom_shell_prompt, timeout=20)
+
+            channel.close()
+            conn.close()
+            return jsonify({"stdout": stdout_data, "stderr": "", "exit_code": 0})
+
+        # ── Standard exec path ────────────────────────────────────────────────
+        needs_sudo = "sudo " in command
+        with conn:
+            if needs_sudo:
+                pwd = body.get("password", "")
+                result = conn.sudo(command, password=pwd, hide=True, timeout=15)
+            else:
+                result = conn.run(command, hide=True, timeout=15)
+
+        return jsonify({
+            "stdout":    result.stdout,
+            "stderr":    result.stderr,
+            "exit_code": result.return_code,
+        })
+
     except Exception as exc:
         return jsonify({"stdout": "", "stderr": str(exc), "exit_code": -1})
 
