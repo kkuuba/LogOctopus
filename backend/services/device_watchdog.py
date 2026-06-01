@@ -105,7 +105,6 @@ class DeviceWatchdog:
         """
         for log_config in self.device_config["log_file_configs"]:
             self.execute_cmd(log_config["log_deactivation_cmd"], log_config["log_name"], log_config.get("custom_shell_prompt", None))
-            self.collected_data[log_config["log_name"]] = pd.DataFrame({"time": [], "content": []})
 
     def get_log_file_content(self, log_config):
         """
