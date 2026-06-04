@@ -1,4 +1,5 @@
 fabric
+paramiko==4.0.0
 pandas
 python-dateutil
 pytest

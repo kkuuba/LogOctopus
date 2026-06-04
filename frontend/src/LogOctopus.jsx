@@ -65,7 +65,7 @@ function useAuth() {
  * Supports numeric line charts and categorical scatter plots.
  * Hover tooltips, zoom, and pan are enabled by default via Plotly config.
  */
-function PlotlyChart({ rows, title, index }) {
+function PlotlyChart({ rows, title, index, dataUnit }) {
   const divRef = useRef(null);
 
   useEffect(() => {
@@ -138,6 +138,7 @@ function PlotlyChart({ rows, title, index }) {
         spikecolor: "rgba(129,140,248,0.4)",
         spikethickness: 1,
         spikedash: "dot",
+        ...(dataUnit ? { title: { text: dataUnit, font: { color: "#6b7280", size: 11, family: "JetBrains Mono, monospace" } } } : {}),
       },
       margin: { t: 40, r: 20, b: 48, l: 56 },
       hovermode: "x unified",
@@ -220,7 +221,7 @@ function ChartContentView({ chartGroups }) {
         const label = `${g.snapInfo.deviceName} — ${g.snapInfo.logName}`;
         return (
           <div key={g.snapInfo.id}>
-            <PlotlyChart rows={g.rows} title={label} index={i} />
+            <PlotlyChart rows={g.rows} title={label} index={i} dataUnit={g.snapInfo.dataUnit || ""} />
             <div
               style={{
                 display: "flex",
@@ -1207,6 +1208,155 @@ function Toast({ message, type = "error", onDismiss }) {
   );
 }
 
+// ── DEVICE GROUP ──────────────────────────────────────────────────────────────
+function DeviceGroup({ group, groupDevices, collapsed, onToggleCollapse, selectedDevices, onSelect, onInfo, onAutoCollectionSave, onDropDevice, onRemoveDevice, onRename, onDelete, addToast, isUngrouped }) {
+  const [dragOver, setDragOver] = useState(false);
+  const [editingName, setEditingName] = useState(false);
+  const [nameInput, setNameInput] = useState(group.name || "");
+
+  const handleDragOver = (e) => { e.preventDefault(); setDragOver(true); };
+  const handleDragLeave = () => setDragOver(false);
+  const handleDrop = (e) => {
+    e.preventDefault();
+    setDragOver(false);
+    const deviceId = e.dataTransfer.getData("deviceId");
+    if (!deviceId) return;
+    if (isUngrouped) {
+      onRemoveDevice(deviceId);
+    } else {
+      onDropDevice(deviceId, group.id);
+    }
+  };
+
+  const commitRename = () => {
+    const n = nameInput.trim();
+    if (n && onRename) onRename(n);
+    setEditingName(false);
+  };
+
+  const showHeader = group.name !== null;
+  const isCollapsed = collapsed && showHeader && !isUngrouped;
+  // Selected count in this group
+  const selectedCount = groupDevices.filter(d => selectedDevices.includes(d.id)).length;
+
+  return (
+    <div
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+      style={{
+        borderRadius: 12,
+        border: dragOver
+          ? "2px dashed var(--accent)"
+          : showHeader ? `1px solid ${isCollapsed ? "rgba(255,255,255,0.05)" : "var(--border)"}` : "none",
+        background: dragOver
+          ? "rgba(129,140,248,0.05)"
+          : isCollapsed ? "rgba(255,255,255,0.01)" : showHeader ? "rgba(255,255,255,0.015)" : "transparent",
+        padding: showHeader ? "14px 16px" : 0,
+        transition: "all 0.18s",
+      }}
+    >
+      {showHeader && (
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: isCollapsed ? 0 : 12 }}>
+          {/* Collapse toggle chevron */}
+          {!isUngrouped && onToggleCollapse && (
+            <button
+              onClick={onToggleCollapse}
+              title={isCollapsed ? "Expand group" : "Collapse group"}
+              style={{
+                background: "none", border: "none", cursor: "pointer", padding: "2px 4px",
+                color: "var(--muted)", fontSize: 11, lineHeight: 1, transition: "transform 0.18s",
+                transform: isCollapsed ? "rotate(-90deg)" : "rotate(0deg)",
+                flexShrink: 0,
+              }}
+            >▼</button>
+          )}
+
+          {/* Drag-drop hint icon */}
+          <span style={{ fontSize: 14, opacity: 0.5 }}>⊞</span>
+
+          {editingName ? (
+            <input
+              autoFocus
+              value={nameInput}
+              onChange={e => setNameInput(e.target.value)}
+              onKeyDown={e => { if (e.key === "Enter") commitRename(); if (e.key === "Escape") setEditingName(false); }}
+              onBlur={commitRename}
+              style={{ ...inputStyle, width: 180, padding: "4px 8px", fontSize: 12, display: "inline" }}
+            />
+          ) : (
+            <span
+              style={{
+                fontFamily: "var(--font-display)", fontSize: 12, fontWeight: 700, letterSpacing: "0.08em",
+                textTransform: "uppercase", color: isUngrouped ? "var(--muted)" : "var(--text)",
+                cursor: onRename ? "pointer" : "default",
+                opacity: isCollapsed ? 0.7 : 1,
+                transition: "opacity 0.18s",
+              }}
+              onDoubleClick={() => { if (onRename) { setNameInput(group.name); setEditingName(true); } }}
+              title={onRename ? "Double-click to rename" : undefined}
+            >
+              {group.name}
+            </span>
+          )}
+
+          <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--muted)" }}>
+            {groupDevices.length} device{groupDevices.length !== 1 ? "s" : ""}
+            {isCollapsed && selectedCount > 0 && (
+              <span style={{ color: "var(--accent)", marginLeft: 5 }}>· {selectedCount} selected</span>
+            )}
+          </span>
+
+          {dragOver && (
+            <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--accent)", marginLeft: 4 }}>
+              Drop to {isUngrouped ? "ungroup" : "add"}
+            </span>
+          )}
+
+          {onDelete && (
+            <button
+              onClick={onDelete}
+              title="Delete group"
+              style={{ marginLeft: "auto", background: "none", border: "none", color: "var(--muted)", cursor: "pointer", fontSize: 14, padding: "2px 6px", opacity: 0.6 }}
+            >🗑</button>
+          )}
+        </div>
+      )}
+
+      {!isCollapsed && (
+        groupDevices.length === 0 && showHeader ? (
+          <div style={{
+            padding: "18px",
+            border: "1px dashed var(--border)",
+            borderRadius: 8,
+            textAlign: "center",
+            color: "var(--muted)",
+            fontFamily: "var(--font-mono)",
+            fontSize: 11,
+            opacity: 0.7,
+          }}>
+            Drag device cards here
+          </div>
+        ) : (
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 14 }}>
+            {groupDevices.map(d => (
+              <DeviceCard
+                key={d.id}
+                device={d}
+                selected={selectedDevices.includes(d.id)}
+                onSelect={(checked) => onSelect(d.id, checked)}
+                onInfo={() => onInfo(d)}
+                onAutoCollectionSave={onAutoCollectionSave}
+                addToast={addToast}
+              />
+            ))}
+          </div>
+        )
+      )}
+    </div>
+  );
+}
+
 // ── DEVICE CARD ───────────────────────────────────────────────────────────────
 function DeviceCard({ device, selected, onSelect, onInfo, onAutoCollectionSave, addToast }) {
   const [hovered,       setHovered]       = useState(false);
@@ -1246,6 +1396,8 @@ function DeviceCard({ device, selected, onSelect, onInfo, onAutoCollectionSave, 
 
   return (
     <div
+      draggable
+      onDragStart={(e) => { e.dataTransfer.setData("deviceId", device.id); e.dataTransfer.effectAllowed = "move"; }}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
       style={{
@@ -1255,7 +1407,7 @@ function DeviceCard({ device, selected, onSelect, onInfo, onAutoCollectionSave, 
         background: selected ? "var(--accent-dim)" : "var(--card-bg)",
         border: `1px solid ${selected ? "var(--accent)" : hovered ? "var(--accent-border)" : "var(--border)"}`,
         transition: "all 0.2s",
-        cursor: "default",
+        cursor: "grab",
         boxShadow: selected ? "0 0 20px rgba(129,140,248,0.1)" : "none",
         overflow: "hidden",
       }}
@@ -1828,6 +1980,7 @@ const EMPTY_LOG_ENTRY = () => ({
   log_deactivation_cmd: "",
   custom_shell_prompt: "",
   log_type: "text",
+  data_unit: "",
 });
 
 const FIELD_LABEL = {
@@ -2067,6 +2220,22 @@ function LogEntryEditor({ entry, conn, index, onChange, onRemove, onDuplicate })
             </div>
           </div>
 
+          {/* Data Unit (for chart type) */}
+          {entry.log_type === "chart" && (
+            <div style={{ marginBottom: 12 }}>
+              <div style={FIELD_LABEL}>Data Unit <span style={{ color: "var(--muted)", textTransform: "none", letterSpacing: 0 }}>(optional, shown on chart axis)</span></div>
+              <input
+                value={entry.data_unit || ""}
+                onChange={e => set("data_unit", e.target.value)}
+                placeholder="e.g. dBm, Hz, %, °C, ms, Mbps"
+                style={{ ...inputStyle, fontFamily: "var(--font-mono)", fontSize: 12 }}
+              />
+              <div style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--muted)", marginTop: 4 }}>
+                Unit label shown on the Y-axis of the chart. Leave empty to hide.
+              </div>
+            </div>
+          )}
+
           {/* Custom Shell Prompt */}
           <div style={{ marginBottom: 12 }}>
             <div style={FIELD_LABEL}>Custom Shell Prompt <span style={{ color: "var(--muted)", textTransform: "none", letterSpacing: 0 }}>(optional)</span></div>
@@ -2106,7 +2275,7 @@ function LogEntryEditor({ entry, conn, index, onChange, onRemove, onDuplicate })
               style={{ ...inputStyle, fontFamily: "var(--font-mono)", fontSize: 11 }}
             />
             <div style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--muted)", marginTop: 4 }}>
-              Use named groups <code style={{ color: "#22d3ee" }}>(?P&lt;TIME&gt;…)</code> and <code style={{ color: "#86efac" }}>(?P&lt;ENTRY&gt;…)</code>
+              Use Python named groups: <code style={{ color: "#22d3ee" }}>(?P&lt;TIME&gt;…)</code> for timestamp and <code style={{ color: "#86efac" }}>(?P&lt;ENTRY&gt;…)</code> for value/content
             </div>
           </div>
 
@@ -2555,8 +2724,8 @@ function ConfigBuilderModal({ open, onClose, onSave }) {
                     onClick={() => {
                       // Add a set of common Raspberry Pi log entries as a template
                       setEntries(prev => [...prev,
-                        { _id: Math.random().toString(36).slice(2), log_name: "syslog", log_file_cmd: "sudo journalctl -n 200 --no-pager", data_extraction_regex: "^(?P<TIME>\\w+\\s+\\d+\\s+\\d+:\\d+:\\d+)\\s+(?P<ENTRY>.*)", log_activation_cmd: "ls -la", log_type: "text" },
-                        { _id: Math.random().toString(36).slice(2), log_name: "cpu_usage_percent", log_file_cmd: "echo $(date '+%Y-%m-%d %H:%M:%S'),$(top -bn1 | grep 'Cpu(s)' | awk '{print 100-$8}')", data_extraction_regex: "^(?P<TIME>\\d+-\\d+-\\d+\\s\\d+:\\d+:\\d+),(?P<ENTRY>.*)", log_activation_cmd: "true", log_type: "chart" },
+                        { _id: Math.random().toString(36).slice(2), log_name: "syslog", log_file_cmd: "sudo journalctl -n 200 --no-pager", data_extraction_regex: "^(?P<TIME>\\w+\\s+\\d+\\s+\\d+:\\d+:\\d+)\\s+(?P<ENTRY>.*)", log_activation_cmd: "ls -la", log_type: "text", data_unit: "" },
+                        { _id: Math.random().toString(36).slice(2), log_name: "cpu_usage_percent", log_file_cmd: "echo $(date '+%Y-%m-%d %H:%M:%S'),$(top -bn1 | grep 'Cpu(s)' | awk '{print 100-$8}')", data_extraction_regex: "^(?P<TIME>\\d+-\\d+-\\d+\\s\\d+:\\d+:\\d+),(?P<ENTRY>.*)", log_activation_cmd: "true", log_type: "chart", data_unit: "%" },
                       ]);
                     }}
                     style={{ background: "rgba(255,255,255,0.04)", border: "1px solid var(--border)", borderRadius: 7, color: "var(--muted)", fontFamily: "var(--font-mono)", fontSize: 11, padding: "6px 12px", cursor: "pointer" }}
@@ -2785,7 +2954,7 @@ const STOP_MESSAGES = [
   "Almost there…",
 ];
 
-function CollectionLoadingOverlay({ open }) {
+function CollectionLoadingOverlay({ open, saved, expected }) {
   const [msgIdx, setMsgIdx] = useState(0);
 
   useEffect(() => {
@@ -2795,6 +2964,8 @@ function CollectionLoadingOverlay({ open }) {
   }, [open]);
 
   if (!open) return null;
+
+  const pct = expected > 0 ? Math.min(100, Math.round((saved / expected) * 100)) : null;
 
   return (
     <div
@@ -2815,113 +2986,99 @@ function CollectionLoadingOverlay({ open }) {
         @keyframes lo-pulse  { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:0.55;transform:scale(1.18)} }
         @keyframes lo-fadein { from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:translateY(0)} }
         @keyframes lo-dot    { 0%,80%,100%{opacity:0.15;transform:scale(0.8)} 40%{opacity:1;transform:scale(1)} }
+        @keyframes lo-bar    { from{opacity:0;transform:scaleX(0)} to{opacity:1;transform:scaleX(1)} }
         .lo-dot:nth-child(1){animation-delay:0s}
         .lo-dot:nth-child(2){animation-delay:0.2s}
         .lo-dot:nth-child(3){animation-delay:0.4s}
       `}</style>
 
-      <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 28 }}>
+      <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 24, width: 320 }}>
 
         {/* Animated concentric rings + logo */}
         <div style={{ position: "relative", width: 96, height: 96 }}>
-          {/* Outer ring */}
-          <svg
-            width="96" height="96"
-            style={{ position: "absolute", inset: 0, animation: "lo-spin 3s linear infinite" }}
-          >
-            <circle cx="48" cy="48" r="44"
-              fill="none" stroke="rgba(129,140,248,0.18)" strokeWidth="2"
-              strokeDasharray="40 8 20 8" />
+          <svg width="96" height="96" style={{ position: "absolute", inset: 0, animation: "lo-spin 3s linear infinite" }}>
+            <circle cx="48" cy="48" r="44" fill="none" stroke="rgba(129,140,248,0.18)" strokeWidth="2" strokeDasharray="40 8 20 8" />
           </svg>
-          {/* Middle ring */}
-          <svg
-            width="96" height="96"
-            style={{ position: "absolute", inset: 0, animation: "lo-rspin 2s linear infinite" }}
-          >
-            <circle cx="48" cy="48" r="34"
-              fill="none" stroke="rgba(129,140,248,0.3)" strokeWidth="2.5"
-              strokeDasharray="30 6" />
+          <svg width="96" height="96" style={{ position: "absolute", inset: 0, animation: "lo-rspin 2s linear infinite" }}>
+            <circle cx="48" cy="48" r="34" fill="none" stroke="rgba(129,140,248,0.3)" strokeWidth="2.5" strokeDasharray="30 6" />
           </svg>
-          {/* Inner pulsing core — same SVG as the header logo */}
-          <div
-            style={{
-              position: "absolute",
-              inset: 0,
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              animation: "lo-pulse 1.6s ease-in-out infinite",
-              filter: "drop-shadow(0 0 12px rgba(129,140,248,0.45))",
-            }}
-          >
+          <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", animation: "lo-pulse 1.6s ease-in-out infinite", filter: "drop-shadow(0 0 12px rgba(129,140,248,0.45))" }}>
             <svg width="36" height="36" viewBox="0 0 36 36">
               <circle cx="18" cy="18" r="17" fill="none" stroke="#818cf8" strokeWidth="1.5" />
               <circle cx="18" cy="18" r="6" fill="#818cf8" />
               {[0, 45, 90, 135, 180, 225, 270, 315].map((a, i) => {
                 const rad = (a * Math.PI) / 180;
-                return (
-                  <line key={i}
-                    x1={18 + 7 * Math.cos(rad)} y1={18 + 7 * Math.sin(rad)}
-                    x2={18 + 15 * Math.cos(rad)} y2={18 + 15 * Math.sin(rad)}
-                    stroke="#818cf8" strokeWidth="1.8" strokeLinecap="round"
-                  />
-                );
+                return <line key={i} x1={18 + 7 * Math.cos(rad)} y1={18 + 7 * Math.sin(rad)} x2={18 + 15 * Math.cos(rad)} y2={18 + 15 * Math.sin(rad)} stroke="#818cf8" strokeWidth="1.8" strokeLinecap="round" />;
               })}
             </svg>
           </div>
         </div>
 
         {/* Title */}
-        <div style={{
-          fontFamily: "var(--font-display)",
-          fontWeight: 800,
-          fontSize: 17,
-          color: "var(--text)",
-          letterSpacing: "-0.01em",
-        }}>
+        <div style={{ fontFamily: "var(--font-display)", fontWeight: 800, fontSize: 17, color: "var(--text)", letterSpacing: "-0.01em" }}>
           Stopping Collection
         </div>
 
+        {/* Progress bar */}
+        <div style={{ width: "100%", display: "flex", flexDirection: "column", gap: 8 }}>
+          {/* Bar track */}
+          <div style={{ width: "100%", height: 6, borderRadius: 99, background: "rgba(255,255,255,0.07)", overflow: "hidden", position: "relative" }}>
+            {pct !== null ? (
+              <div style={{
+                height: "100%",
+                width: `${pct}%`,
+                borderRadius: 99,
+                background: pct === 100
+                  ? "linear-gradient(90deg, #4ade80, #34d399)"
+                  : "linear-gradient(90deg, #818cf8, #a78bfa)",
+                transition: "width 0.6s cubic-bezier(0.4,0,0.2,1)",
+                boxShadow: pct === 100
+                  ? "0 0 8px rgba(74,222,128,0.5)"
+                  : "0 0 8px rgba(129,140,248,0.45)",
+              }} />
+            ) : (
+              /* Indeterminate shimmer when no expected count */
+              <div style={{
+                position: "absolute", inset: 0,
+                background: "linear-gradient(90deg, transparent 0%, rgba(129,140,248,0.5) 50%, transparent 100%)",
+                animation: "lo-shimmer 1.6s ease-in-out infinite",
+              }} />
+            )}
+          </div>
+          <style>{`@keyframes lo-shimmer { 0%{transform:translateX(-100%)} 100%{transform:translateX(200%)} }`}</style>
+
+          {/* Counts row */}
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--muted)" }}>
+              {saved > 0 ? (
+                <><span style={{ color: pct === 100 ? "#4ade80" : "var(--accent)", fontWeight: 600 }}>{saved}</span>
+                {expected > 0 ? ` / ${expected} snapshot${expected !== 1 ? "s" : ""} saved` : ` snapshot${saved !== 1 ? "s" : ""} saved`}</>
+              ) : (
+                "Waiting for snapshots…"
+              )}
+            </span>
+            {pct !== null && (
+              <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: pct === 100 ? "#4ade80" : "var(--accent)", fontWeight: 600 }}>
+                {pct}%
+              </span>
+            )}
+          </div>
+        </div>
+
         {/* Cycling status message */}
-        <div
-          key={msgIdx}
-          style={{
-            fontFamily: "var(--font-mono)",
-            fontSize: 12,
-            color: "var(--accent)",
-            animation: "lo-fadein 0.35s ease",
-            minHeight: 18,
-          }}
-        >
+        <div key={msgIdx} style={{ fontFamily: "var(--font-mono)", fontSize: 12, color: "var(--accent)", animation: "lo-fadein 0.35s ease", minHeight: 18, textAlign: "center" }}>
           {STOP_MESSAGES[msgIdx]}
         </div>
 
         {/* Bouncing dots */}
         <div style={{ display: "flex", gap: 7 }}>
           {[0,1,2].map(i => (
-            <div
-              key={i}
-              className="lo-dot"
-              style={{
-                width: 7,
-                height: 7,
-                borderRadius: "50%",
-                background: "var(--accent)",
-                animation: "lo-dot 1.2s ease-in-out infinite",
-              }}
-            />
+            <div key={i} className="lo-dot" style={{ width: 7, height: 7, borderRadius: "50%", background: "var(--accent)", animation: "lo-dot 1.2s ease-in-out infinite" }} />
           ))}
         </div>
 
         {/* Subtle disclaimer */}
-        <div style={{
-          fontFamily: "var(--font-mono)",
-          fontSize: 10,
-          color: "var(--muted)",
-          maxWidth: 280,
-          textAlign: "center",
-          lineHeight: 1.6,
-        }}>
+        <div style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--muted)", maxWidth: 280, textAlign: "center", lineHeight: 1.6 }}>
           Waiting for device teardown — this may take up to 60 s.
           <br />Do not close the tab.
         </div>
@@ -2960,6 +3117,15 @@ export default function App() {
   const [devices,         setDevices]         = useState([]);
   const [devicesLoading,  setDevicesLoading]  = useState(true);
   const [selectedDevices, setSelectedDevices] = useState([]);
+  // Device groups: { id, name, deviceIds[] }
+  const [groups, setGroups] = useState(() => {
+    try { return JSON.parse(localStorage.getItem("lo_device_groups") || "[]"); } catch { return []; }
+  });
+  const [collapsedGroups, setCollapsedGroups] = useState(() => {
+    try { return new Set(JSON.parse(localStorage.getItem("lo_collapsed_groups") || "[]")); } catch { return new Set(); }
+  });
+  const [newGroupName, setNewGroupName] = useState("");
+  const [creatingGroup, setCreatingGroup] = useState(false);
   const [snapshots,       setSnapshots]       = useState([]);
   const [snapsLoading,    setSnapsLoading]    = useState(true);
   const [selectedSnaps,   setSelectedSnaps]   = useState([]);
@@ -2970,6 +3136,7 @@ export default function App() {
 
   // stop-collection loading overlay
   const [stoppingCollection, setStoppingCollection] = useState(false);
+  const [stopProgress, setStopProgress] = useState({ saved: 0, expected: 0, sessionId: "" });
 
   // modals
   const [logModal,        setLogModal]        = useState(false);
@@ -3015,6 +3182,66 @@ export default function App() {
       setSnapsLoading(false);
     }
   }, [addToast]);
+
+  useEffect(() => {
+    localStorage.setItem("lo_device_groups", JSON.stringify(groups));
+  }, [groups]);
+
+  useEffect(() => {
+    localStorage.setItem("lo_collapsed_groups", JSON.stringify([...collapsedGroups]));
+  }, [collapsedGroups]);
+
+  const toggleGroupCollapse = (groupId) => {
+    setCollapsedGroups(prev => {
+      const next = new Set(prev);
+      if (next.has(groupId)) next.delete(groupId);
+      else next.add(groupId);
+      return next;
+    });
+  };
+
+  // ── group helpers ──────────────────────────────────────────────────────────
+  const createGroup = () => {
+    const name = newGroupName.trim();
+    if (!name) return;
+    setGroups(prev => [...prev, { id: Date.now().toString(36), name, deviceIds: [] }]);
+    setNewGroupName("");
+    setCreatingGroup(false);
+  };
+
+  const deleteGroup = (groupId) =>
+    setGroups(prev => prev.filter(g => g.id !== groupId));
+
+  const renameGroup = (groupId, name) =>
+    setGroups(prev => prev.map(g => g.id === groupId ? { ...g, name } : g));
+
+  // Move a device into a group (removes from other groups first)
+  const moveDeviceToGroup = (deviceId, targetGroupId) => {
+    setGroups(prev => prev.map(g => {
+      if (g.id === targetGroupId) {
+        return { ...g, deviceIds: g.deviceIds.includes(deviceId) ? g.deviceIds : [...g.deviceIds, deviceId] };
+      }
+      return { ...g, deviceIds: g.deviceIds.filter(id => id !== deviceId) };
+    }));
+  };
+
+  // Remove a device from all groups
+  const removeDeviceFromGroups = (deviceId) =>
+    setGroups(prev => prev.map(g => ({ ...g, deviceIds: g.deviceIds.filter(id => id !== deviceId) })));
+
+  // Devices not in any group
+  const ungroupedDevices = devices.filter(d => !groups.some(g => g.deviceIds.includes(d.id)));
+
+  // Device names visible in non-collapsed groups (used to filter snapshots table)
+  const visibleDeviceNames = new Set(
+    devices
+      .filter(d => {
+        const ownerGroup = groups.find(g => g.deviceIds.includes(d.id));
+        // Ungrouped devices are always visible; grouped devices only if group not collapsed
+        return !ownerGroup || !collapsedGroups.has(ownerGroup.id);
+      })
+      .map(d => d.name)
+  );
 
   useEffect(() => { fetchDevices(); }, [fetchDevices]);
   useEffect(() => { fetchSnapshots("", "", false); }, [fetchSnapshots]);
@@ -3078,17 +3305,54 @@ export default function App() {
   };
 
   const stopCollection = async () => {
-    const names = devices.filter((d) => selectedDevices.includes(d.id)).map((d) => d.name);
-    const runningDev = devices.find((d) => selectedDevices.includes(d.id) && d.collecting);
+    const selectedDevObjs = devices.filter((d) => selectedDevices.includes(d.id));
+    const names = selectedDevObjs.map((d) => d.name);
+    const runningDev = selectedDevObjs.find((d) => d.collecting);
     const session_id = runningDev?.config?.current_session_id || "";
+
+    // Estimate expected snapshots: sum of log_file_configs entries across selected collecting devices
+    const expected = selectedDevObjs.reduce((sum, d) => {
+      const cfgs = d.config?.log_file_configs;
+      return sum + (Array.isArray(cfgs) ? cfgs.length : 1);
+    }, 0);
+
+    setStopProgress({ saved: 0, expected, sessionId: session_id });
     setStoppingCollection(true);
+
+    // Poll snapshot count for this session while backend tears down
+    let pollId = null;
+    const pollSaved = async () => {
+      try {
+        const url = session_id
+          ? `/api/snapshots?log_type=text&search_param=Session%20ID&search_value=${session_id}`
+          : `/api/snapshots?log_type=text`;
+        const snaps = await apiFetch(url);
+        // Count both text and chart snapshots produced so far
+        const chartUrl = session_id
+          ? `/api/snapshots?log_type=chart&search_param=Session%20ID&search_value=${session_id}`
+          : `/api/snapshots?log_type=chart`;
+        const chartSnaps = await apiFetch(chartUrl);
+        const total = (snaps?.length || 0) + (chartSnaps?.length || 0);
+        setStopProgress(prev => ({ ...prev, saved: total }));
+      } catch { /* ignore poll errors */ }
+    };
+    pollId = setInterval(pollSaved, 1500);
+
     try {
       const result = await apiFetch("/api/stop-logs-collection", { method: "POST", body: JSON.stringify({ selected_devices: names, session_id }) });
+      clearInterval(pollId);
+      // Final poll to get accurate count
+      await pollSaved();
       setSessionModal({ sessionId: result.session_id, textUrl: result.text_logs_url, chartUrl: result.chart_logs_url });
       fetchDevices();
       fetchSnapshots(filterActive ? searchParam : "", filterActive ? searchValue : "", isChart);
-    } catch (e) { addToast(`Failed to stop collection: ${e.message}`); }
-    finally { setStoppingCollection(false); }
+    } catch (e) {
+      clearInterval(pollId);
+      addToast(`Failed to stop collection: ${e.message}`);
+    } finally {
+      setStoppingCollection(false);
+      setStopProgress({ saved: 0, expected: 0, sessionId: "" });
+    }
   };
 
   const removeSelected = async () => {
@@ -3129,9 +3393,16 @@ export default function App() {
       if (isChart) {
         setChartGroups(results);
       } else {
-        setLogRows(results.flatMap((r) =>
+        const merged = results.flatMap((r) =>
           r.rows.map((row) => ({ ...row, device_name: r.snapInfo.deviceName ?? r.snapInfo.device_name ?? "" }))
-        ));
+        );
+        // Sort all text entries by timestamp ascending
+        merged.sort((a, b) => {
+          const ta = a.timestamp || a.time || "";
+          const tb = b.timestamp || b.time || "";
+          return ta < tb ? -1 : ta > tb ? 1 : 0;
+        });
+        setLogRows(merged);
       }
     } catch (e) {
       addToast(`Failed to load content: ${e.message}`);
@@ -3385,32 +3656,79 @@ ${rows}
 
           {/* DEVICES */}
           <section style={{ marginBottom: 32 }}>
-            <div style={{ fontFamily: "var(--font-display)", fontSize: 11, fontWeight: 700, letterSpacing: "0.12em", textTransform: "uppercase", color: "var(--muted)", marginBottom: 14 }}>
-              Managed Devices — {devices.length}
+            <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 14 }}>
+              <div style={{ fontFamily: "var(--font-display)", fontSize: 11, fontWeight: 700, letterSpacing: "0.12em", textTransform: "uppercase", color: "var(--muted)" }}>
+                Managed Devices — {devices.length}
+              </div>
+              <div style={{ marginLeft: "auto", display: "flex", gap: 8, alignItems: "center" }}>
+                {creatingGroup ? (
+                  <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                    <input
+                      autoFocus
+                      value={newGroupName}
+                      onChange={e => setNewGroupName(e.target.value)}
+                      onKeyDown={e => { if (e.key === "Enter") createGroup(); if (e.key === "Escape") { setCreatingGroup(false); setNewGroupName(""); } }}
+                      placeholder="Group name…"
+                      style={{ ...inputStyle, width: 160, padding: "6px 10px", fontSize: 12 }}
+                    />
+                    <Btn variant="success" size="sm" onClick={createGroup}>Create</Btn>
+                    <Btn variant="ghost" size="sm" onClick={() => { setCreatingGroup(false); setNewGroupName(""); }}>✕</Btn>
+                  </div>
+                ) : (
+                  <Btn variant="subtle" size="sm" onClick={() => setCreatingGroup(true)}>＋ New Group</Btn>
+                )}
+              </div>
             </div>
+
             {devicesLoading ? <Spinner /> : devices.length === 0 ? (
               <div style={{ padding: "32px 24px", background: "var(--card-bg)", border: "1px dashed var(--border)", borderRadius: 12, textAlign: "center", color: "var(--muted)", fontFamily: "var(--font-mono)", fontSize: 13 }}>
                 No devices. Upload a JSON config file to add one.
               </div>
             ) : (
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 14 }}>
-                {devices.map((d) => (
-                  <DeviceCard
-                    key={d.id}
-                    device={d}
-                    selected={selectedDevices.includes(d.id)}
-                    onSelect={(checked) => toggleDevice(d.id, checked)}
-                    onInfo={() => setDeviceModal(d)}
-                    onAutoCollectionSave={(id, enabled, interval) => {
-                      setDevices(prev => prev.map(dev =>
-                        dev.id === id
-                          ? { ...dev, autoCollectionEnabled: enabled, autoCollectionInterval: interval }
-                          : dev
-                      ));
-                    }}
-                    addToast={addToast}
-                  />
-                ))}
+              <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+
+                {/* Named groups */}
+                {groups.map(group => {
+                  const groupDevices = group.deviceIds.map(id => devices.find(d => d.id === id)).filter(Boolean);
+                  return (
+                    <DeviceGroup
+                      key={group.id}
+                      group={group}
+                      groupDevices={groupDevices}
+                      collapsed={collapsedGroups.has(group.id)}
+                      onToggleCollapse={() => toggleGroupCollapse(group.id)}
+                      selectedDevices={selectedDevices}
+                      onSelect={(id, checked) => toggleDevice(id, checked)}
+                      onInfo={(d) => setDeviceModal(d)}
+                      onAutoCollectionSave={(id, enabled, interval) => {
+                        setDevices(prev => prev.map(dev => dev.id === id ? { ...dev, autoCollectionEnabled: enabled, autoCollectionInterval: interval } : dev));
+                      }}
+                      onDropDevice={moveDeviceToGroup}
+                      onRemoveDevice={removeDeviceFromGroups}
+                      onRename={(name) => renameGroup(group.id, name)}
+                      onDelete={() => deleteGroup(group.id)}
+                      addToast={addToast}
+                    />
+                  );
+                })}
+
+                {/* Ungrouped devices — only shown when there are any */}
+                {ungroupedDevices.length > 0 && (
+                <DeviceGroup
+                  group={{ id: "__ungrouped__", name: groups.length > 0 ? "Ungrouped" : null }}
+                  groupDevices={ungroupedDevices}
+                  selectedDevices={selectedDevices}
+                  onSelect={(id, checked) => toggleDevice(id, checked)}
+                  onInfo={(d) => setDeviceModal(d)}
+                  onAutoCollectionSave={(id, enabled, interval) => {
+                    setDevices(prev => prev.map(dev => dev.id === id ? { ...dev, autoCollectionEnabled: enabled, autoCollectionInterval: interval } : dev));
+                  }}
+                  onDropDevice={moveDeviceToGroup}
+                  onRemoveDevice={removeDeviceFromGroups}
+                  addToast={addToast}
+                  isUngrouped
+                />
+                )}
               </div>
             )}
           </section>
@@ -3448,7 +3766,10 @@ ${rows}
               {filterActive && <Btn variant="ghost" size="sm" onClick={clearFilter}>✕ Clear</Btn>}
             </div>
             <div style={{ marginLeft: "auto", fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--muted)" }}>
-              {snapshots.length} snapshot(s)
+              {snapshots.filter(s => visibleDeviceNames.size === 0 || visibleDeviceNames.has(s.deviceName)).length} snapshot(s)
+              {collapsedGroups.size > 0 && (
+                <span style={{ marginLeft: 6, color: "#fbbf24" }}>· {collapsedGroups.size} group{collapsedGroups.size > 1 ? "s" : ""} collapsed</span>
+              )}
               {isChart && selectedSnaps.length > 0 && (
                 <span style={{ marginLeft: 8, color: "var(--accent)" }}>· {selectedSnaps.length} selected for chart</span>
               )}
@@ -3459,7 +3780,7 @@ ${rows}
           <div style={{ background: "var(--card-bg)", border: "1px solid var(--border)", borderRadius: 12, overflow: "hidden" }}>
             {snapsLoading ? <Spinner /> : (
               <SnapshotsTable
-                snapshots={snapshots}
+                snapshots={snapshots.filter(s => visibleDeviceNames.size === 0 || visibleDeviceNames.has(s.deviceName))}
                 selected={selectedSnaps}
                 onSelect={toggleSnap}
                 onView={openLogContent}
@@ -3470,7 +3791,7 @@ ${rows}
       </div>
 
       {/* COLLECTION STOP LOADING OVERLAY */}
-      <CollectionLoadingOverlay open={stoppingCollection} />
+      <CollectionLoadingOverlay open={stoppingCollection} saved={stopProgress.saved} expected={stopProgress.expected} />
 
       {/* MODALS */}
 

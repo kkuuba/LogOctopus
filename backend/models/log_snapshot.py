@@ -8,7 +8,7 @@ class LogSnapshot:
     """
     A class to perform basic operations on collected logs.
     """
-    def __init__(self, device_name, log_name, session_id, session_scenario, log_type, collected_data, loaded_from_file=False):
+    def __init__(self, device_name, log_name, session_id, session_scenario, data_unit, log_type, collected_data, loaded_from_file=False):
         self.device_name = device_name
         self.log_name = log_name
         self.id = hashlib.md5(f"{log_name}_{session_id}".encode()).hexdigest()[:16]
@@ -16,6 +16,7 @@ class LogSnapshot:
         self.creation_time =datetime.now()
         self.session_id = session_id
         self.session_scenario = session_scenario
+        self.data_unit = data_unit
         self.log_type = log_type
         self.start_time, self.finish_time = self.get_start_and_finish_timestamps()
         self.logs_collection_duration = self.calcaute_logs_collection_duration()
@@ -77,6 +78,7 @@ class LogSnapshot:
             "log_name": self.log_name,
             "session_id": self.session_id,
             "session_scenario": self.session_scenario,
+            "data_unit": self.data_unit,
             "log_type": self.log_type,
         }
         collected_data_table = pa.Table.from_pandas(self.collected_data)

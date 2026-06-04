@@ -14,6 +14,7 @@ from time import sleep
 import argparse
 import json
 
+ANSI_ESCAPE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
 
 class DeviceWatchdog:
     """
@@ -51,6 +52,8 @@ class DeviceWatchdog:
         Returns:
             str: Full cmd output if execution was successful.
         """
+        if cmd is None:
+            return None
         try:
             if ssh_channel_id not in self.ssh_channels.keys():
                 self.ssh_channels[ssh_channel_id] = self.create_device_connection()
@@ -58,7 +61,7 @@ class DeviceWatchdog:
             if custom_shell_prompt:
                 custom_shell_channel = self.ssh_channels[ssh_channel_id].client.invoke_shell()
                 custom_shell_channel.send(cmd + "\n")
-                cmd_output = self.read_until(custom_shell_channel, custom_shell_prompt)
+                cmd_output = self.read_until_prompt(custom_shell_channel, custom_shell_prompt)
                 custom_shell_channel.close()
 
                 return cmd_output
@@ -76,16 +79,39 @@ class DeviceWatchdog:
             self.errors = pd.concat([self.errors, pd.DataFrame(error_entry)], ignore_index=True) if not self.errors.empty else pd.DataFrame(error_entry)
         return None
 
-    def read_until(self, channel, prompt, timeout=10):
-        buffer = ""
+    @staticmethod
+    def read_until_prompt(channel, prompt, timeout=10, encoding="utf-8"):
+        """
+        Read output of interactive Paramiko channel until *prompt* appears in output.
+        All unsupported characters should be removed from output.
+
+        Args:
+            channel (paramiko.Channel): SSH connection channel in interactive-shell mode.
+            prompt (str): String to wait for (e.g. ``"router#"`` or ``"$ "``).
+            timeout (float): Hard deadline in seconds (default 20).
+
+        Returns:
+            str: Full channel text output without unsupported characters.
+        """
+        buffer = bytearray()
         end = time.time() + timeout
+
         while time.time() < end:
             if channel.recv_ready():
-                data = channel.recv(4096).decode()
-                buffer += data
+                chunk = channel.recv(4096)
+                buffer.extend(chunk)
 
-                if prompt in buffer:
-                    return buffer
+                try:
+                    text = buffer.decode(encoding, errors="replace")
+                except UnicodeDecodeError:
+                    text = buffer.decode(encoding, errors="ignore")
+
+                text = ANSI_ESCAPE.sub("", text)
+                text = text.replace("\r\n", "\n")
+                text = text.replace("\r", "\n")
+
+                if prompt in text:
+                    return text
 
             time.sleep(0.1)
 
@@ -96,7 +122,7 @@ class DeviceWatchdog:
         Initialzie log collectors for all defined log file configs.
         """
         for log_config in self.device_config["log_file_configs"]:
-            self.execute_cmd(log_config["log_activation_cmd"], log_config["log_name"], log_config.get("custom_shell_prompt", None))
+            self.execute_cmd(log_config.get("log_activation_cmd", None), log_config["log_name"], log_config.get("custom_shell_prompt", None))
             self.collected_data[log_config["log_name"]] = pd.DataFrame({"time": [], "content": []})
 
     def teardown_log_collectors(self):
@@ -104,7 +130,7 @@ class DeviceWatchdog:
         Teardown log collectors for all defined log file configs.
         """
         for log_config in self.device_config["log_file_configs"]:
-            self.execute_cmd(log_config["log_deactivation_cmd"], log_config["log_name"], log_config.get("custom_shell_prompt", None))
+            self.execute_cmd(log_config.get("log_deactivation_cmd", None), log_config["log_name"], log_config.get("custom_shell_prompt", None))
 
     def get_log_file_content(self, log_config):
         """
@@ -183,7 +209,7 @@ class DeviceWatchdog:
             self.collection_stop_event.wait(timeout=interval)
             self.get_all_log_files_content()
 
-    def save_log_snapshots(self, session_id, session_scenario):
+    def save_log_snapshots(self, session_id, session_scenario, data_unit):
         """
         Save all logs collected by device watchdog and save it in LogSnapshot object with all info about collected data.
         Data will be save info file and added to logsnapshots list.
@@ -191,11 +217,12 @@ class DeviceWatchdog:
         Args:
             session_id (str): Unique logs collection session ID.
             session_scenario (str): Scenario ID for logs collection session.
+            data_unit (str): Log snapshot data unit
         """
         for log_name, log_content in self.collected_data.items():
             log_type = self.get_target_log_type_based_on_log_name(log_name)
             if not log_content.empty:
-                self.log_snapshots.append(LogSnapshot(self.device_name, log_name, session_id, session_scenario, log_type, log_content))
+                self.log_snapshots.append(LogSnapshot(self.device_name, log_name, session_id, session_scenario, data_unit, log_type, log_content))
 
     def get_target_log_type_based_on_log_name(self, log_name):
         """
@@ -355,7 +382,7 @@ if __name__ == '__main__':
             device_watchdog.start_logs_collection()
         if not current_device_config["logs_collection"] and device_watchdog.collection_ongoing:
             device_watchdog.stop_logs_collection()
-            device_watchdog.save_log_snapshots(current_device_config["current_session_id"], current_device_config["session_scenario"])
+            device_watchdog.save_log_snapshots(current_device_config["current_session_id"], current_device_config["session_scenario"], current_device_config.get("data_unit", ""))
             update_device_config_parameter(args.device_config_file_path, "current_session_id", "no_active_session")
             sleep(2)
         if current_device_config["auto_collection_enabled"] and not device_watchdog.collection_ongoing:

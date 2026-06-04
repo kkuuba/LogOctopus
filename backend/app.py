@@ -8,6 +8,8 @@ import os
 import signal
 import uuid
 from pathlib import Path
+import time
+import re
 
 from flask import Flask, jsonify, request
 from flask_cors import CORS
@@ -20,6 +22,8 @@ from backend.utils.device_config_loader import DeviceConfigLoader
 
 SETTINGS_FILE = Path("settings.json")
 FRONTEND_BASE = os.getenv("FRONTEND_BASE", "http://localhost:8100")
+ANSI_ESCAPE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
+
 
 app = Flask(__name__)
 CORS(app)  # allow the React dev-server / built bundle to call the API
@@ -110,6 +114,7 @@ def snapshot_to_dict(snapshot) -> dict:
         "sessionId":       snapshot.session_id,
         "sessionScenario": getattr(snapshot, "session_scenario", ""),
         "isChart":         snapshot.log_type,
+        "dataUnit":        getattr(snapshot, "data_unit", ""),
     }
 
 
@@ -661,40 +666,42 @@ def _build_nested_connection(body: dict):
     return _build_fabric_connection(body, gateway=gateway_conn)
 
 
-def _read_until_prompt(channel, prompt: str, timeout: float = 20.0) -> str:
-    """Drain an interactive Paramiko channel until *prompt* appears in output.
-
-    Uses a tight non-blocking read loop — no fixed sleep between polls — so
-    output is captured as soon as it arrives on the socket.
+def _read_until_prompt(channel, prompt, timeout=10, encoding="utf-8"):
+    """
+    Read output of interactive Paramiko channel until *prompt* appears in output.
+    All unsupported characters should be removed from output.
 
     Args:
-        channel: An open ``paramiko.Channel`` in interactive-shell mode.
+        channel (paramiko.Channel): SSH connection channel in interactive-shell mode.
         prompt (str): String to wait for (e.g. ``"router#"`` or ``"$ "``).
         timeout (float): Hard deadline in seconds (default 20).
 
     Returns:
-        str: All output received up to and including the first occurrence of
-             *prompt*, decoded as UTF-8 (replacement for invalid bytes).
+        str: Full channel text output without unsupported characters.
     """
-    import select
-    import time
+    buffer = bytearray()
+    end = time.time() + timeout
 
-    chunks: list[str] = []
-    deadline = time.monotonic() + timeout
+    while time.time() < end:
+        if channel.recv_ready():
+            chunk = channel.recv(4096)
+            buffer.extend(chunk)
 
-    while time.monotonic() < deadline:
-        # Block with a short select so we yield the GIL but wake immediately
-        # when data arrives — much faster than a fixed sleep(0.1).
-        readable, _, _ = select.select([channel], [], [], 0.05)
-        if readable:
-            raw = channel.recv(8192)
-            if not raw:          # channel closed by remote
-                break
-            chunks.append(raw.decode("utf-8", errors="replace"))
-            if prompt in "".join(chunks):
-                break
+            try:
+                text = buffer.decode(encoding, errors="replace")
+            except UnicodeDecodeError:
+                text = buffer.decode(encoding, errors="ignore")
 
-    return "".join(chunks)
+            text = ANSI_ESCAPE.sub("", text)
+            text = text.replace("\r\n", "\n")
+            text = text.replace("\r", "\n")
+
+            if prompt in text:
+                return text
+
+        time.sleep(0.1)
+
+    return None
 
 
 @app.post("/api/devices/test-connection")
