@@ -2,6 +2,7 @@ from fabric import Connection
 from concurrent.futures import ThreadPoolExecutor
 from backend.models.log_snapshot import LogSnapshot
 import pandas as pd
+from paramiko_expect import SSHClientInteraction
 from datetime import datetime
 from dateutil import parser
 import re
@@ -59,10 +60,14 @@ class DeviceWatchdog:
                 self.ssh_channels[ssh_channel_id] = self.create_device_connection()
             root_requried = True if "sudo " in cmd else False
             if custom_shell_prompt:
-                custom_shell_channel = self.ssh_channels[ssh_channel_id].client.invoke_shell()
-                custom_shell_channel.send(cmd + "\n")
-                cmd_output = self.read_until_prompt(custom_shell_channel, custom_shell_prompt)
-                custom_shell_channel.close()
+                client = self.ssh_channels[ssh_channel_id].client
+                interact = SSHClientInteraction(client, timeout=20, display=False)
+                interact.expect(custom_shell_prompt)
+                cmd_output = ""
+                for single_cmd in cmd.split(";"):
+                    interact.send(single_cmd)
+                    interact.expect(custom_shell_prompt)
+                    cmd_output = cmd_output + interact.current_output_clean
 
                 return cmd_output
 
@@ -77,44 +82,6 @@ class DeviceWatchdog:
         except Exception as e:
             error_entry = {"time": [datetime.now()], "error_info": [f"cmd '{cmd}' failed with -> {e}"]}
             self.errors = pd.concat([self.errors, pd.DataFrame(error_entry)], ignore_index=True) if not self.errors.empty else pd.DataFrame(error_entry)
-        return None
-
-    @staticmethod
-    def read_until_prompt(channel, prompt, timeout=10, encoding="utf-8"):
-        """
-        Read output of interactive Paramiko channel until *prompt* appears in output.
-        All unsupported characters should be removed from output.
-
-        Args:
-            channel (paramiko.Channel): SSH connection channel in interactive-shell mode.
-            prompt (str): String to wait for (e.g. ``"router#"`` or ``"$ "``).
-            timeout (float): Hard deadline in seconds (default 20).
-
-        Returns:
-            str: Full channel text output without unsupported characters.
-        """
-        buffer = bytearray()
-        end = time.time() + timeout
-
-        while time.time() < end:
-            if channel.recv_ready():
-                chunk = channel.recv(4096)
-                buffer.extend(chunk)
-
-                try:
-                    text = buffer.decode(encoding, errors="replace")
-                except UnicodeDecodeError:
-                    text = buffer.decode(encoding, errors="ignore")
-
-                text = ANSI_ESCAPE.sub("", text)
-                text = text.replace("\r\n", "\n")
-                text = text.replace("\r", "\n")
-
-                if prompt in text:
-                    return text
-
-            time.sleep(0.1)
-
         return None
 
     def initialize_log_collectors(self):

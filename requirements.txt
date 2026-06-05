@@ -1,5 +1,6 @@
 fabric
 paramiko==4.0.0
+paramiko-expect
 pandas
 python-dateutil
 pytest

@@ -1230,8 +1230,12 @@ function DeviceGroup({ group, groupDevices, collapsed, onToggleCollapse, selecte
 
   const commitRename = () => {
     const n = nameInput.trim();
-    if (n && onRename) onRename(n);
-    setEditingName(false);
+    if (n && onRename) {
+      const ok = onRename(n);
+      if (ok !== false) setEditingName(false);  // keep editor open if rejected
+    } else {
+      setEditingName(false);
+    }
   };
 
   const showHeader = group.name !== null;
@@ -2442,7 +2446,7 @@ function ConfigBuilderModal({ open, onClose, onSave }) {
   };
 
   const buildConfig = () => {
-    const log_file_configs = entries.map(({ _id, ...rest }) => rest); // strip internal _id
+    const log_file_configs = entries.map(({ _id, ...rest }) => rest);
     const config = {
       device_name: conn.device_name || `device-${conn.ip_address}`,
       ip_address: conn.ip_address,
@@ -2452,14 +2456,26 @@ function ConfigBuilderModal({ open, onClose, onSave }) {
       collection_interval: Number(conn.collection_interval),
       log_file_configs,
     };
+
+    // Convert flat gateways[] → nested { gateway: { ..., gateway: { ... } } }
+    // Hops are ordered outermost-first, so fold right-to-left.
     if (conn.gateways && conn.gateways.length > 0) {
-      config.gateways = conn.gateways.map(({ _id, ...hop }) => ({
-        ip_address: hop.ip_address,
-        port: Number(hop.port || 22),
-        user: hop.user,
-        password: hop.password,
-      }));
+      const nested = [...conn.gateways]
+        .reverse()
+        .reduce((inner, hop) => {
+          const hopObj = {
+            ip_address: hop.ip_address,
+            port: Number(hop.port || 22),
+            user: hop.user,
+            password: hop.password,
+          };
+          if (inner) hopObj.gateway = inner;
+          return hopObj;
+        }, null);
+
+      config.gateway = nested;
     }
+
     return config;
   };
 
@@ -3204,6 +3220,14 @@ export default function App() {
   const createGroup = () => {
     const name = newGroupName.trim();
     if (!name) return;
+    const taken = [
+      ...groups.map(g => g.name.toLowerCase()),
+      ...devices.map(d => d.name.toLowerCase()),
+    ];
+    if (taken.includes(name.toLowerCase())) {
+      addToast(`Name "${name}" is already in use by a device or group.`);
+      return;
+    }
     setGroups(prev => [...prev, { id: Date.now().toString(36), name, deviceIds: [] }]);
     setNewGroupName("");
     setCreatingGroup(false);
@@ -3212,8 +3236,19 @@ export default function App() {
   const deleteGroup = (groupId) =>
     setGroups(prev => prev.filter(g => g.id !== groupId));
 
-  const renameGroup = (groupId, name) =>
+  const renameGroup = (groupId, name) => {
+    const nameLower = name.toLowerCase();
+    const taken = [
+      ...groups.filter(g => g.id !== groupId).map(g => g.name.toLowerCase()),
+      ...devices.map(d => d.name.toLowerCase()),
+    ];
+    if (taken.includes(nameLower)) {
+      addToast(`Name "${name}" is already in use by a device or group.`);
+      return false;
+    }
     setGroups(prev => prev.map(g => g.id === groupId ? { ...g, name } : g));
+    return true;
+  };
 
   // Move a device into a group (removes from other groups first)
   const moveDeviceToGroup = (deviceId, targetGroupId) => {
@@ -3272,6 +3307,19 @@ export default function App() {
   // ── handlers ───────────────────────────────────────────────────────────────
   const handleUpload = async (contents) => {
     try {
+      // Decode name from config to check for conflicts before hitting the API
+      const raw = contents.includes(",") ? contents.split(",")[1] : contents;
+      const parsed = JSON.parse(atob(raw));
+      const incomingName = (parsed.device_name || "").toLowerCase();
+      const taken = [
+        ...devices.map(d => d.name.toLowerCase()),
+        ...groups.map(g => g.name.toLowerCase()),
+      ];
+      if (incomingName && taken.includes(incomingName)) {
+        addToast(`A device or group named "${parsed.device_name}" already exists.`);
+        return;
+      }
+
       const { device } = await apiFetch("/api/devices", { method: "POST", body: JSON.stringify({ contents }) });
       setDevices((prev) => [...prev, device]);
       addToast("Device added successfully.", "success");

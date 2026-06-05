@@ -8,11 +8,11 @@ import os
 import signal
 import uuid
 from pathlib import Path
-import time
 import re
 
 from flask import Flask, jsonify, request
 from flask_cors import CORS
+from paramiko_expect import SSHClientInteraction
 
 from backend.models.device import Device
 from backend.models.device_config import DeviceConfig
@@ -666,44 +666,6 @@ def _build_nested_connection(body: dict):
     return _build_fabric_connection(body, gateway=gateway_conn)
 
 
-def _read_until_prompt(channel, prompt, timeout=10, encoding="utf-8"):
-    """
-    Read output of interactive Paramiko channel until *prompt* appears in output.
-    All unsupported characters should be removed from output.
-
-    Args:
-        channel (paramiko.Channel): SSH connection channel in interactive-shell mode.
-        prompt (str): String to wait for (e.g. ``"router#"`` or ``"$ "``).
-        timeout (float): Hard deadline in seconds (default 20).
-
-    Returns:
-        str: Full channel text output without unsupported characters.
-    """
-    buffer = bytearray()
-    end = time.time() + timeout
-
-    while time.time() < end:
-        if channel.recv_ready():
-            chunk = channel.recv(4096)
-            buffer.extend(chunk)
-
-            try:
-                text = buffer.decode(encoding, errors="replace")
-            except UnicodeDecodeError:
-                text = buffer.decode(encoding, errors="ignore")
-
-            text = ANSI_ESCAPE.sub("", text)
-            text = text.replace("\r\n", "\n")
-            text = text.replace("\r", "\n")
-
-            if prompt in text:
-                return text
-
-        time.sleep(0.1)
-
-    return None
-
-
 @app.post("/api/devices/test-connection")
 def test_device_connection():
     """Test SSH connectivity to a device using provided credentials.
@@ -784,11 +746,6 @@ def exec_device_command():
         200 OK (connection failure):
             '{ "stdout": "", "stderr": "<error>", "exit_code": -1 }'
     """
-    try:
-        from fabric import Connection  # noqa: F401
-    except ImportError:
-        return jsonify({"stdout": "", "stderr": "fabric not installed on server", "exit_code": -1}), 200
-
     body                = request.get_json(force=True)
     command             = body.get("command", "").strip()
     custom_shell_prompt = body.get("custom_shell_prompt", "").strip()
@@ -798,23 +755,19 @@ def exec_device_command():
 
     try:
         conn = _build_nested_connection(body)
-
         if custom_shell_prompt:
-            # ── Interactive shell path ────────────────────────────────────────
-            # Open the Fabric connection so we can reach the underlying
-            # paramiko client, then invoke a raw shell channel.
             conn.open()
-            channel = conn.client.invoke_shell()
+            client = conn.client
+            interact = SSHClientInteraction(client, timeout=20, display=False)
+            interact.expect(custom_shell_prompt)
+            cmd_output = ""
+            for single_cmd in command.split(";"):
+                interact.send(single_cmd)
+                interact.expect(custom_shell_prompt)
+                cmd_output = cmd_output + interact.current_output_clean
 
-            # Drain the initial login banner / prompt before sending the cmd
-            _read_until_prompt(channel, custom_shell_prompt, timeout=10)
-
-            channel.send(command + "\n")
-            stdout_data = _read_until_prompt(channel, custom_shell_prompt, timeout=20)
-
-            channel.close()
             conn.close()
-            return jsonify({"stdout": stdout_data, "stderr": "", "exit_code": 0})
+            return jsonify({"stdout": cmd_output, "stderr": "", "exit_code": 0})
 
         # ── Standard exec path ────────────────────────────────────────────────
         needs_sudo = "sudo " in command
