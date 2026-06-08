@@ -1210,23 +1210,32 @@ function Toast({ message, type = "error", onDismiss }) {
 }
 
 // ── DEVICE GROUP ──────────────────────────────────────────────────────────────
-function DeviceGroup({ group, groupDevices, collapsed, onToggleCollapse, selectedDevices, onSelect, onInfo, onAutoCollectionSave, onDropDevice, onRemoveDevice, onRename, onDelete, addToast, isUngrouped }) {
+function DeviceGroup({ group, groupDevices, collapsed, onToggleCollapse, selectedDevices, onSelect, onSelectAll, onInfo, onAutoCollectionSave, onDropDevice, onRemoveDevice, onReorderDevice, onRename, onDelete, addToast, isUngrouped }) {
   const [dragOver, setDragOver] = useState(false);
   const [editingName, setEditingName] = useState(false);
   const [nameInput, setNameInput] = useState(group.name || "");
+  // Intra-group card reordering state
+  const [dragSrcId,  setDragSrcId]  = useState(null);
+  const [dragOverId, setDragOverId] = useState(null);
 
   const handleDragOver = (e) => { e.preventDefault(); setDragOver(true); };
   const handleDragLeave = () => setDragOver(false);
   const handleDrop = (e) => {
     e.preventDefault();
     setDragOver(false);
+    setDragOverId(null);
     const deviceId = e.dataTransfer.getData("deviceId");
+    const srcGroup = e.dataTransfer.getData("srcGroupId");
     if (!deviceId) return;
-    if (isUngrouped) {
+    // Intra-group reorder: source and target group are the same
+    if (srcGroup === group.id && dragSrcId && dragOverId && dragSrcId !== dragOverId && onReorderDevice) {
+      onReorderDevice(group.id, dragSrcId, dragOverId);
+    } else if (isUngrouped) {
       onRemoveDevice(deviceId);
     } else {
       onDropDevice(deviceId, group.id);
     }
+    setDragSrcId(null);
   };
 
   const commitRename = () => {
@@ -1243,6 +1252,12 @@ function DeviceGroup({ group, groupDevices, collapsed, onToggleCollapse, selecte
   const isCollapsed = collapsed && showHeader && !isUngrouped;
   // Selected count in this group
   const selectedCount = groupDevices.filter(d => selectedDevices.includes(d.id)).length;
+  const allSelected  = groupDevices.length > 0 && selectedCount === groupDevices.length;
+  const someSelected = selectedCount > 0 && !allSelected;
+
+  const handleGroupCheckbox = (e) => {
+    if (onSelectAll) onSelectAll(groupDevices.map(d => d.id), e.target.checked);
+  };
 
   return (
     <div
@@ -1263,6 +1278,18 @@ function DeviceGroup({ group, groupDevices, collapsed, onToggleCollapse, selecte
     >
       {showHeader && (
         <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: isCollapsed ? 0 : 12 }}>
+          {/* Group select-all checkbox */}
+          {groupDevices.length > 0 && (
+            <input
+              type="checkbox"
+              checked={allSelected}
+              ref={el => { if (el) el.indeterminate = someSelected; }}
+              onChange={handleGroupCheckbox}
+              title={allSelected ? "Deselect all in group" : "Select all in group"}
+              style={{ width: 15, height: 15, accentColor: "var(--accent)", cursor: "pointer", flexShrink: 0 }}
+            />
+          )}
+
           {/* Collapse toggle chevron */}
           {!isUngrouped && onToggleCollapse && (
             <button
@@ -1345,15 +1372,31 @@ function DeviceGroup({ group, groupDevices, collapsed, onToggleCollapse, selecte
         ) : (
           <div style={{ display: "flex", flexWrap: "wrap", gap: 14 }}>
             {groupDevices.map(d => (
-              <DeviceCard
+              <div
                 key={d.id}
-                device={d}
-                selected={selectedDevices.includes(d.id)}
-                onSelect={(checked) => onSelect(d.id, checked)}
-                onInfo={() => onInfo(d)}
-                onAutoCollectionSave={onAutoCollectionSave}
-                addToast={addToast}
-              />
+                onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); setDragOverId(d.id); }}
+                onDragLeave={(e) => { e.stopPropagation(); setDragOverId(null); }}
+                style={{
+                  outline: dragOverId === d.id && dragSrcId !== d.id
+                    ? "2px dashed var(--accent)"
+                    : "2px solid transparent",
+                  borderRadius: 14,
+                  opacity: dragSrcId === d.id ? 0.45 : 1,
+                  transition: "opacity 0.15s, outline 0.1s",
+                }}
+              >
+                <DeviceCard
+                  device={d}
+                  selected={selectedDevices.includes(d.id)}
+                  onSelect={(checked) => onSelect(d.id, checked)}
+                  onInfo={() => onInfo(d)}
+                  onAutoCollectionSave={onAutoCollectionSave}
+                  onDragStart={() => { setDragSrcId(d.id); }}
+                  onDragEnd={() => { setDragSrcId(null); setDragOverId(null); }}
+                  srcGroupId={group.id}
+                  addToast={addToast}
+                />
+              </div>
             ))}
           </div>
         )
@@ -1363,7 +1406,7 @@ function DeviceGroup({ group, groupDevices, collapsed, onToggleCollapse, selecte
 }
 
 // ── DEVICE CARD ───────────────────────────────────────────────────────────────
-function DeviceCard({ device, selected, onSelect, onInfo, onAutoCollectionSave, addToast }) {
+function DeviceCard({ device, selected, onSelect, onInfo, onAutoCollectionSave, onDragStart, onDragEnd, srcGroupId, addToast }) {
   const [hovered,       setHovered]       = useState(false);
   const [settingsOpen,  setSettingsOpen]  = useState(false);
   const [autoEnabled,   setAutoEnabled]   = useState(device.autoCollectionEnabled ?? false);
@@ -1402,7 +1445,13 @@ function DeviceCard({ device, selected, onSelect, onInfo, onAutoCollectionSave, 
   return (
     <div
       draggable
-      onDragStart={(e) => { e.dataTransfer.setData("deviceId", device.id); e.dataTransfer.effectAllowed = "move"; }}
+      onDragStart={(e) => {
+        e.dataTransfer.setData("deviceId", device.id);
+        e.dataTransfer.setData("srcGroupId", srcGroupId || "");
+        e.dataTransfer.effectAllowed = "move";
+        onDragStart?.();
+      }}
+      onDragEnd={() => onDragEnd?.()}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
       style={{
@@ -2959,7 +3008,7 @@ function Toggle({ checked, onChange, labelLeft, labelRight }) {
 // ── COLLECTION LOADING OVERLAY ────────────────────────────────────────────────
 /**
  * Full-screen blocking overlay shown while stop-collection is in flight.
- * The backend may take up to 60 s (teardown timeout) before it responds,
+ * The backend may take up to 300 s (teardown timeout) before it responds,
  * so we give the user clear visual feedback with an animated octopus tentacle
  * ring, a progress-style pulse, and a step-by-step status carousel.
  */
@@ -3096,7 +3145,7 @@ function CollectionLoadingOverlay({ open, saved, expected }) {
 
         {/* Subtle disclaimer */}
         <div style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--muted)", maxWidth: 280, textAlign: "center", lineHeight: 1.6 }}>
-          Waiting for device teardown — this may take up to 60 s.
+          Waiting for device teardown — this may take up to 5 min.
           <br />Do not close the tab.
         </div>
       </div>
@@ -3261,6 +3310,18 @@ export default function App() {
     }));
   };
 
+  // Reorder a device within its group: move srcId to be placed before destId
+  const reorderDeviceInGroup = (groupId, srcId, destId) => {
+    setGroups(prev => prev.map(g => {
+      if (g.id !== groupId) return g;
+      const ids = g.deviceIds.filter(id => id !== srcId);
+      const destIdx = ids.indexOf(destId);
+      if (destIdx === -1) return { ...g, deviceIds: [...ids, srcId] };
+      ids.splice(destIdx, 0, srcId);
+      return { ...g, deviceIds: ids };
+    }));
+  };
+
   // Remove a device from all groups
   const removeDeviceFromGroups = (deviceId) =>
     setGroups(prev => prev.map(g => ({ ...g, deviceIds: g.deviceIds.filter(id => id !== deviceId) })));
@@ -3331,6 +3392,13 @@ export default function App() {
 
   const toggleDevice = (id, checked) =>
     setSelectedDevices((prev) => (checked ? [...prev, id] : prev.filter((x) => x !== id)));
+
+  const selectAllInGroup = (ids, checked) =>
+    setSelectedDevices(prev =>
+      checked
+        ? [...new Set([...prev, ...ids])]
+        : prev.filter(x => !ids.includes(x))
+    );
 
   const startCollection = () => {
     setScenarioInput("");
@@ -3748,12 +3816,14 @@ ${rows}
                       onToggleCollapse={() => toggleGroupCollapse(group.id)}
                       selectedDevices={selectedDevices}
                       onSelect={(id, checked) => toggleDevice(id, checked)}
+                      onSelectAll={selectAllInGroup}
                       onInfo={(d) => setDeviceModal(d)}
                       onAutoCollectionSave={(id, enabled, interval) => {
                         setDevices(prev => prev.map(dev => dev.id === id ? { ...dev, autoCollectionEnabled: enabled, autoCollectionInterval: interval } : dev));
                       }}
                       onDropDevice={moveDeviceToGroup}
                       onRemoveDevice={removeDeviceFromGroups}
+                      onReorderDevice={reorderDeviceInGroup}
                       onRename={(name) => renameGroup(group.id, name)}
                       onDelete={() => deleteGroup(group.id)}
                       addToast={addToast}
@@ -3768,6 +3838,7 @@ ${rows}
                   groupDevices={ungroupedDevices}
                   selectedDevices={selectedDevices}
                   onSelect={(id, checked) => toggleDevice(id, checked)}
+                  onSelectAll={selectAllInGroup}
                   onInfo={(d) => setDeviceModal(d)}
                   onAutoCollectionSave={(id, enabled, interval) => {
                     setDevices(prev => prev.map(dev => dev.id === id ? { ...dev, autoCollectionEnabled: enabled, autoCollectionInterval: interval } : dev));

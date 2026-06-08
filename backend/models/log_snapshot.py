@@ -11,7 +11,7 @@ class LogSnapshot:
     def __init__(self, device_name, log_name, session_id, session_scenario, data_unit, log_type, collected_data, loaded_from_file=False):
         self.device_name = device_name
         self.log_name = log_name
-        self.id = hashlib.md5(f"{log_name}_{session_id}".encode()).hexdigest()[:16]
+        self.id = hashlib.md5(f"{device_name}_{log_name}_{session_id}".encode()).hexdigest()[:16]
         self.collected_data = collected_data
         self.creation_time =datetime.now()
         self.session_id = session_id

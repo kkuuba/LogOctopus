@@ -442,7 +442,7 @@ def stop_logs_collection():
 
     POST '/api/stop-logs-collection'
 
-    Each device is stopped and the call blocks (up to 60 seconds per device)
+    Each device is stopped and the call blocks (up to 300 seconds per device)
     until its teardown is complete before returning.
 
     Request body (JSON):
@@ -486,7 +486,7 @@ def stop_logs_collection():
             device.stop_logs_collection()
     for device in current_devices:
         if device.device_name in selected_devices:
-            device.wait_for_log_collection_teardown(timeout=60)
+            device.wait_for_log_collection_teardown(timeout=300)
 
     base = FRONTEND_BASE
     qs   = f"search_param=Session%20ID&search_value={session_id}"
