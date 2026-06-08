@@ -73,6 +73,7 @@ def _make_snapshot(
     snap.session_id               = session_id
     snap.session_scenario         = session_scenario
     snap.log_type                 = log_type
+    snap.data_unit                = ""
     return snap
 
 
@@ -386,7 +387,7 @@ class TestStopLogsCollection:
         assert "log_type=text"    in data["text_logs_url"]
         assert "log_type=chart"   in data["chart_logs_url"]
         device.stop_logs_collection.assert_called_once()
-        device.wait_for_log_collection_teardown.assert_called_once_with(timeout=60)
+        device.wait_for_log_collection_teardown.assert_called_once_with(timeout=300)
 
     def test_returns_400_when_selected_devices_not_list(self, client):
         resp = self._post(client, {"selected_devices": "Router-A", "session_id": "x"})
