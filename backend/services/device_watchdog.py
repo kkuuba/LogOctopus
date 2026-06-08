@@ -15,7 +15,6 @@ from time import sleep
 import argparse
 import json
 
-ANSI_ESCAPE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
 
 class DeviceWatchdog:
     """
@@ -58,6 +57,7 @@ class DeviceWatchdog:
         try:
             if ssh_channel_id not in self.ssh_channels.keys():
                 self.ssh_channels[ssh_channel_id] = self.create_device_connection()
+                self.ssh_channels[ssh_channel_id].open()
             root_requried = True if "sudo " in cmd else False
             if custom_shell_prompt:
                 client = self.ssh_channels[ssh_channel_id].client
@@ -176,7 +176,7 @@ class DeviceWatchdog:
             self.collection_stop_event.wait(timeout=interval)
             self.get_all_log_files_content()
 
-    def save_log_snapshots(self, session_id, session_scenario, data_unit):
+    def save_log_snapshots(self, session_id, session_scenario):
         """
         Save all logs collected by device watchdog and save it in LogSnapshot object with all info about collected data.
         Data will be save info file and added to logsnapshots list.
@@ -184,28 +184,29 @@ class DeviceWatchdog:
         Args:
             session_id (str): Unique logs collection session ID.
             session_scenario (str): Scenario ID for logs collection session.
-            data_unit (str): Log snapshot data unit
         """
         for log_name, log_content in self.collected_data.items():
-            log_type = self.get_target_log_type_based_on_log_name(log_name)
+            log_type = self.get_target_log_param_based_on_log_name(log_name, "log_type")
+            data_unit = self.get_target_log_param_based_on_log_name(log_name, "data_unit")
             if not log_content.empty:
                 self.log_snapshots.append(LogSnapshot(self.device_name, log_name, session_id, session_scenario, data_unit, log_type, log_content))
 
-    def get_target_log_type_based_on_log_name(self, log_name):
+    def get_target_log_param_based_on_log_name(self, log_name, log_param):
         """
         Get log type based on provided log name.
 
         Args:
             log_name (str): Log name for log type extraction from device config.
+            log_param (str): Target log param name for extraction from log config.
 
         Returns:
             str: Target log type (text|chart), default value is 'text'.
         """
         for log_config in self.device_config["log_file_configs"]:
             if log_name == log_config["log_name"]:
-                return log_config["log_type"]
-        
-        return "text"
+                return log_config.get(log_param, "")
+
+        return ""
 
     def get_connection_status(self):
         """
@@ -349,7 +350,7 @@ if __name__ == '__main__':
             device_watchdog.start_logs_collection()
         if not current_device_config["logs_collection"] and device_watchdog.collection_ongoing:
             device_watchdog.stop_logs_collection()
-            device_watchdog.save_log_snapshots(current_device_config["current_session_id"], current_device_config["session_scenario"], current_device_config.get("data_unit", ""))
+            device_watchdog.save_log_snapshots(current_device_config["current_session_id"], current_device_config["session_scenario"])
             update_device_config_parameter(args.device_config_file_path, "current_session_id", "no_active_session")
             sleep(2)
         if current_device_config["auto_collection_enabled"] and not device_watchdog.collection_ongoing:

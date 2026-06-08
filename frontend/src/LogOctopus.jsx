@@ -100,7 +100,7 @@ function PlotlyChart({ rows, title, index, dataUnit }) {
           name: title,
           line: { color: lineColor, width: 2.5, shape: "spline", smoothing: 0.8 },
           marker: { size: 5, color: lineColor, symbol: "circle" },
-          hovertemplate: "<b>%{y}<extra></extra>",
+          hovertemplate: dataUnit ? `<b>%{y} ${dataUnit}<extra></extra>` : "<b>%{y}<extra></extra>",
         }
       : {
           x: xValues,
@@ -109,7 +109,7 @@ function PlotlyChart({ rows, title, index, dataUnit }) {
           mode: "markers",
           name: title,
           marker: { size: 8, color: lineColor, opacity: 0.85, symbol: "diamond" },
-          hovertemplate: "<b>%{y}<extra></extra>",
+          hovertemplate: dataUnit ? `<b>%{y} ${dataUnit}<extra></extra>` : "<b>%{y}<extra></extra>",
         };
 
     const layout = {
@@ -167,7 +167,7 @@ function PlotlyChart({ rows, title, index, dataUnit }) {
     return () => {
       if (divRef.current) Plotly.purge(divRef.current);
     };
-  }, [rows, title, index]);
+  }, [rows, title, index, dataUnit]);
 
   if (!rows || rows.length === 0) {
     return (
@@ -236,6 +236,7 @@ function ChartContentView({ chartGroups }) {
               <Badge color="default">{g.snapInfo.deviceName}</Badge>
               <Badge color="default">{g.rows.length} points</Badge>
               <Badge color="default">Session: {g.snapInfo.sessionId}</Badge>
+              <Badge color="default">Data unit: {g.snapInfo.dataUnit}</Badge>
             </div>
           </div>
         );

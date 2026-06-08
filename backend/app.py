@@ -8,7 +8,6 @@ import os
 import signal
 import uuid
 from pathlib import Path
-import re
 
 from flask import Flask, jsonify, request
 from flask_cors import CORS
@@ -22,7 +21,6 @@ from backend.utils.device_config_loader import DeviceConfigLoader
 
 SETTINGS_FILE = Path("settings.json")
 FRONTEND_BASE = os.getenv("FRONTEND_BASE", "http://localhost:8100")
-ANSI_ESCAPE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
 
 
 app = Flask(__name__)
@@ -482,9 +480,12 @@ def stop_logs_collection():
     if not isinstance(session_id, str):
         return _bad("session_id must be a string")
 
-    for device in get_current_devices():
+    current_devices = get_current_devices()
+    for device in current_devices:
         if device.device_name in selected_devices:
             device.stop_logs_collection()
+    for device in current_devices:
+        if device.device_name in selected_devices:
             device.wait_for_log_collection_teardown(timeout=60)
 
     base = FRONTEND_BASE
