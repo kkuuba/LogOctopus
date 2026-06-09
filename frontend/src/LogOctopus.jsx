@@ -634,8 +634,16 @@ function LogContentView({ rows, isChart, colorMode, chartGroups }) {
   );
 }
 
+// ── DOWNLOAD FORMATS ──────────────────────────────────────────────────────────
+const DOWNLOAD_FORMATS = [
+  { id: "csv",        label: "CSV",  icon: "📊", desc: "Spreadsheet-compatible" },
+  { id: "txt",        label: "TXT",  icon: "📄", desc: "Plain text, one row per line" },
+  { id: "json",       label: "JSON", icon: "🗂",  desc: "Structured JSON array" },
+  { id: "html-color", label: "HTML", icon: "🌐", desc: "Styled HTML with per-source color stripes" },
+];
+
 // ── DOWNLOAD MENU ─────────────────────────────────────────────────────────────
-function DownloadMenu({ onDownload }) {
+function DownloadMenu({ onDownload, disabled = false, loading = false, isChart = false }) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
 
@@ -645,28 +653,32 @@ function DownloadMenu({ onDownload }) {
     return () => document.removeEventListener("mousedown", handler);
   }, []);
 
-  const formats = [
-    { id: "csv",  label: "CSV",  icon: "📊", desc: "Spreadsheet-compatible" },
-    { id: "txt",  label: "TXT",  icon: "📄", desc: "Plain text, one line per row" },
-    { id: "json", label: "JSON", icon: "🗂", desc: "Structured JSON array" },
-    { id: "html", label: "HTML", icon: "🌐", desc: "Styled HTML table" },
-  ];
+  // Chart mode: JSON + HTML; text mode: all formats
+  const formats = isChart
+    ? [
+        { id: "json",       label: "JSON", icon: "🗂",  desc: "Structured JSON array" },
+        { id: "html-color", label: "HTML", icon: "🌐", desc: "Interactive charts in a standalone page" },
+      ]
+    : DOWNLOAD_FORMATS;
 
   return (
     <div ref={ref} style={{ position: "relative" }}>
       <button
-        onClick={() => setOpen((v) => !v)}
+        onClick={() => { if (!disabled && !loading) setOpen((v) => !v); }}
+        disabled={disabled || loading}
         style={{
           display: "flex", alignItems: "center", gap: 6,
           background: open ? "rgba(129,140,248,0.12)" : "rgba(255,255,255,0.06)",
           border: `1px solid ${open ? "rgba(129,140,248,0.35)" : "var(--border)"}`,
-          borderRadius: 8, color: open ? "var(--accent)" : "var(--text)",
+          borderRadius: 8, color: (disabled || loading) ? "var(--muted)" : open ? "var(--accent)" : "var(--text)",
           fontFamily: "var(--font-mono)", fontSize: 12, padding: "7px 14px",
-          cursor: "pointer", transition: "all 0.15s",
+          cursor: (disabled || loading) ? "not-allowed" : "pointer",
+          opacity: disabled ? 0.45 : 1,
+          transition: "all 0.15s",
         }}
       >
-        ⬇ Download
-        <span style={{ fontSize: 9, marginLeft: 2, opacity: 0.7 }}>{open ? "▲" : "▼"}</span>
+        {loading ? "⏳ Fetching…" : "⬇ Download"}
+        {!loading && <span style={{ fontSize: 9, marginLeft: 2, opacity: 0.7 }}>{open ? "▲" : "▼"}</span>}
       </button>
 
       {open && (
@@ -698,6 +710,169 @@ function DownloadMenu({ onDownload }) {
               </div>
             </button>
           ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── DOWNLOAD SELECTED SPLIT BUTTON ───────────────────────────────────────────
+/**
+ * Split-button for the snapshot toolbar.
+ * Left half: immediately downloads in the last-used format (default: csv).
+ * Right half (▾): opens a format picker dropdown.
+ * Shows a spinner while fetching, and is greyed out when nothing is selected.
+ */
+function DownloadSelectedBtn({ onDownload, disabled = false, loading = false, isChart = false }) {
+  const [open, setOpen]           = useState(false);
+  const [lastFmt, setLastFmt]     = useState("html-color");
+  const ref                       = useRef(null);
+
+  useEffect(() => {
+    const handler = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, []);
+
+  const formats = isChart
+    ? [
+        { id: "json",       label: "JSON", icon: "🗂",  desc: "Structured JSON array" },
+        { id: "html-color", label: "HTML", icon: "🌐", desc: "Interactive charts in a standalone page" },
+      ]
+    : DOWNLOAD_FORMATS;
+
+  const handlePick = (id) => {
+    setLastFmt(id);
+    setOpen(false);
+    onDownload(id);
+  };
+
+  const handleMain = () => {
+    if (disabled || loading) return;
+    onDownload(lastFmt);
+  };
+
+  const accentColor  = "var(--accent)";           // same indigo as the rest of the UI
+  const accentDim    = "var(--accent-dim)";        // rgba(129,140,248,0.12)
+  const accentBorder = "var(--accent-border)";     // rgba(129,140,248,0.3)
+  const isOff        = disabled || loading;
+
+  const sharedStyle = {
+    display: "inline-flex", alignItems: "center",
+    background: isOff ? "rgba(255,255,255,0.04)" : accentDim,
+    border: "none",
+    color: isOff ? "var(--muted)" : accentColor,
+    fontFamily: "var(--font-display)", fontWeight: 700,
+    fontSize: 13, letterSpacing: "0.03em",
+    cursor: isOff ? "not-allowed" : "pointer",
+    opacity: disabled ? 0.45 : 1,
+    transition: "background 0.15s, color 0.15s",
+  };
+
+  const currentFmtLabel = formats.find(f => f.id === lastFmt)?.label ?? formats[0].label;
+
+  return (
+    <div
+      ref={ref}
+      style={{
+        position: "relative",
+        display: "inline-flex",
+        borderRadius: 9,
+        border: `1px solid ${isOff ? "var(--border)" : accentBorder}`,
+        overflow: "visible",
+        boxShadow: isOff ? "none" : `0 0 0 0px ${accentColor}`,
+        transition: "box-shadow 0.2s",
+      }}
+    >
+      {/* ── Main action half ── */}
+      <button
+        onClick={handleMain}
+        disabled={isOff}
+        title={`Download as ${isChart ? "JSON" : currentFmtLabel}`}
+        style={{
+          ...sharedStyle,
+          borderRadius: "8px 0 0 8px",
+          padding: "8px 14px",
+          gap: 7,
+          borderRight: `1px solid ${isOff ? "var(--border)" : accentBorder}`,
+        }}
+        onMouseEnter={e => { if (!isOff) e.currentTarget.style.background = "rgba(129,140,248,0.22)"; }}
+        onMouseLeave={e => { e.currentTarget.style.background = isOff ? "rgba(255,255,255,0.04)" : "var(--accent-dim)"; }}
+      >
+        {loading
+          ? <><span style={{ fontSize: 13 }}>⏳</span> Fetching…</>
+          : <><span style={{ fontSize: 13 }}>⬇</span> Download {currentFmtLabel}</>
+        }
+      </button>
+
+      {/* ── Chevron / picker half ── */}
+      <button
+        onClick={() => { if (!isOff) setOpen(v => !v); }}
+        disabled={isOff}
+        title="Choose format"
+        style={{
+          ...sharedStyle,
+          borderRadius: "0 8px 8px 0",
+          padding: "8px 10px",
+          fontSize: 10,
+        }}
+        onMouseEnter={e => { if (!isOff) e.currentTarget.style.background = "rgba(129,140,248,0.22)"; }}
+        onMouseLeave={e => { e.currentTarget.style.background = isOff ? "rgba(255,255,255,0.04)" : "var(--accent-dim)"; }}
+      >
+        {open ? "▲" : "▼"}
+      </button>
+
+      {/* ── Dropdown ── */}
+      {open && (
+        <div style={{
+          position: "absolute", top: "calc(100% + 6px)", left: 0,
+          background: "var(--modal-bg)",
+          border: `1px solid ${accentBorder}`,
+          borderRadius: 10,
+          overflow: "hidden",
+          minWidth: 210,
+          boxShadow: `0 12px 40px rgba(0,0,0,0.55), 0 0 0 1px ${accentBorder}`,
+          zIndex: 300,
+        }}>
+          <div style={{
+            padding: "8px 14px 6px",
+            fontFamily: "var(--font-mono)", fontSize: 10,
+            color: accentColor, letterSpacing: "0.1em", textTransform: "uppercase",
+            borderBottom: "1px solid rgba(129,140,248,0.12)",
+          }}>
+            Download as
+          </div>
+          {formats.map((f, i) => {
+            const isActive = f.id === lastFmt;
+            return (
+              <button
+                key={f.id}
+                onClick={() => handlePick(f.id)}
+                style={{
+                  display: "flex", alignItems: "center", gap: 10, width: "100%",
+                  background: isActive ? "rgba(129,140,248,0.1)" : "transparent",
+                  border: "none",
+                  borderBottom: i < formats.length - 1 ? "1px solid rgba(255,255,255,0.04)" : "none",
+                  padding: "9px 14px", cursor: "pointer", textAlign: "left",
+                  transition: "background 0.1s",
+                }}
+                onMouseEnter={e => { if (!isActive) e.currentTarget.style.background = "rgba(129,140,248,0.08)"; }}
+                onMouseLeave={e => { e.currentTarget.style.background = isActive ? "rgba(129,140,248,0.1)" : "transparent"; }}
+              >
+                <span style={{ fontSize: 15 }}>{f.icon}</span>
+                <div style={{ flex: 1 }}>
+                  <div style={{
+                    fontFamily: "var(--font-mono)", fontSize: 12, fontWeight: 600,
+                    color: isActive ? accentColor : "var(--text)",
+                  }}>{f.label}</div>
+                  <div style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--muted)" }}>{f.desc}</div>
+                </div>
+                {isActive && (
+                  <span style={{ fontSize: 10, color: accentColor, marginLeft: "auto" }}>✓</span>
+                )}
+              </button>
+            );
+          })}
         </div>
       )}
     </div>
@@ -3219,6 +3394,7 @@ export default function App() {
   const [scenarioModal,           setScenarioModal]           = useState(false);
   const [scenarioInput,           setScenarioInput]           = useState("");
   const [scenarioError,           setScenarioError]           = useState(false);
+  const [downloadingSnaps,        setDownloadingSnaps]        = useState(false);
 
   // toasts
   const [toasts, setToasts] = useState([]);
@@ -3545,9 +3721,89 @@ export default function App() {
     fetchSnapshots("", "", isChart);
   };
 
-  const downloadLogs = (format = "csv") => {
+  const downloadLogs = (format = "html-color") => {
     if (isChart) {
-      addToast("Chart export requires backend — use the API endpoint directly.", "info");
+      const palette = ["#818cf8","#34d399","#fb923c","#f472b6","#60a5fa","#a78bfa","#facc15","#2dd4bf","#f87171","#c084fc"];
+
+      if (format === "json") {
+        const data = chartGroups.map((g) => ({
+          device: g.snapInfo.deviceName,
+          log_name: g.snapInfo.logName,
+          session_id: g.snapInfo.sessionId,
+          data_unit: g.snapInfo.dataUnit || "",
+          rows: g.rows,
+        }));
+        const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        a.download = "chart_data.json";
+        a.click();
+        addToast("Chart data exported as JSON.", "success");
+
+      } else {
+        const chartSections = chartGroups.map((g, i) => {
+          const color = palette[i % palette.length];
+          const label = `${g.snapInfo.deviceName} — ${g.snapInfo.logName}`;
+          const unit  = g.snapInfo.dataUnit || "";
+          const xs    = g.rows.map(d => d.time);
+          const ys    = g.rows.map(d => parseFloat(d.content));
+          const isNum = ys.some(v => !isNaN(v));
+          return `
+  <div class="chart-wrap">
+    <div id="chart-${i}" class="chart"></div>
+    <div class="badges">
+      <span class="badge" style="border-color:${color};color:${color};background:${color}18">${g.snapInfo.logName}</span>
+      <span class="badge">${g.snapInfo.deviceName}</span>
+      <span class="badge">${g.rows.length} points${unit ? " · " + unit : ""}</span>
+      <span class="badge">Session: ${g.snapInfo.sessionId}</span>
+    </div>
+  </div>
+  <script>
+    Plotly.newPlot('chart-${i}',
+      [{ x: ${JSON.stringify(xs)}, y: ${JSON.stringify(isNum ? ys : g.rows.map(d => d.content))},
+         type:'scatter', mode:'lines+markers', name:${JSON.stringify(label)},
+         line:{color:'${color}',width:2.5,shape:'spline',smoothing:0.8},
+         marker:{size:5,color:'${color}'},
+         hovertemplate: ${unit ? `'<b>%{y} ${unit}<extra></extra>'` : "'<b>%{y}<extra></extra>'"} }],
+      { title:{text:${JSON.stringify(label)},font:{color:'#e8eaf0',size:13,family:'JetBrains Mono,monospace'},x:0.04},
+        paper_bgcolor:'transparent', plot_bgcolor:'rgba(9,9,15,0.6)',
+        font:{color:'#6b7280',family:'JetBrains Mono,monospace',size:11},
+        xaxis:{gridcolor:'rgba(255,255,255,0.06)',tickfont:{color:'#6b7280',size:10}},
+        yaxis:{gridcolor:'rgba(255,255,255,0.06)',tickfont:{color:'#6b7280',size:10}${unit ? `,title:{text:'${unit}',font:{color:'#6b7280',size:11}}` : ""}},
+        margin:{t:40,r:20,b:48,l:56}, hovermode:'x unified',
+        hoverlabel:{bgcolor:'#111827',bordercolor:'${color}',font:{color:'#e8eaf0',size:12}} },
+      { responsive:true, displayModeBar:true, displaylogo:false }
+    );
+  <\/script>`;
+        }).join("\n");
+
+        const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<title>LogOctopus — Chart Export</title>
+<script src="https://cdn.plot.ly/plotly-2.32.0.min.js"><\/script>
+<style>
+  body{font-family:'JetBrains Mono',monospace;background:#09090f;color:#e4e4f0;margin:0;padding:24px}
+  h1{font-size:16px;color:#818cf8;margin-bottom:20px}
+  .chart-wrap{margin-bottom:32px;border:1px solid rgba(255,255,255,0.07);border-radius:10px;overflow:hidden;background:#12121f}
+  .chart{width:100%;height:300px}
+  .badges{display:flex;flex-wrap:wrap;gap:6px;padding:10px 14px;border-top:1px solid rgba(255,255,255,0.06)}
+  .badge{font-size:11px;padding:2px 10px;border-radius:12px;border:1px solid rgba(255,255,255,0.12);color:#6b7280;background:rgba(255,255,255,0.04)}
+</style>
+</head>
+<body>
+<h1>LogOctopus — Chart Export (${new Date().toISOString()})</h1>
+${chartSections}
+</body>
+</html>`;
+        const blob = new Blob([html], { type: "text/html" });
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        a.download = "charts.html";
+        a.click();
+        addToast(`${chartGroups.length} chart(s) exported as HTML.`, "success");
+      }
       return;
     }
     if (!logRows || logRows.length === 0) {
@@ -3581,15 +3837,38 @@ export default function App() {
       blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
       filename = "logs.json";
 
-    } else if (format === "html") {
+    } else if (format === "html" || format === "html-color") {
+      const palette = ["#818cf8","#34d399","#fb923c","#f472b6","#60a5fa","#a78bfa","#facc15","#2dd4bf","#f87171","#c084fc"];
+      // Build a stable (device, log_name) → color index map for the color variant
+      const pairColorMap = new Map();
+      if (format === "html-color") {
+        for (const r of logRows) {
+          const key = `${r.device_name ?? ""}|${r.log_name ?? ""}`;
+          if (!pairColorMap.has(key)) pairColorMap.set(key, pairColorMap.size % palette.length);
+        }
+      }
       const rows = logRows
-        .map(
-          (r) =>
-            `<tr><td>${r.time ?? ""}</td><td>${r.device_name ?? ""}</td><td>${r.log_name ?? ""}</td><td style="color:${
-              (r.content ?? "").startsWith("ERROR") ? "#f87171" : (r.content ?? "").startsWith("WARN") ? "#fbbf24" : "inherit"
-            }">${(r.content ?? "").replace(/</g, "&lt;").replace(/>/g, "&gt;")}</td></tr>`
-        )
+        .map((r) => {
+          const contentColor = (r.content ?? "").startsWith("ERROR") ? "#f87171"
+            : (r.content ?? "").startsWith("WARN") ? "#fbbf24" : "inherit";
+          const rowStyle = format === "html-color"
+            ? (() => {
+                const idx = pairColorMap.get(`${r.device_name ?? ""}|${r.log_name ?? ""}`) ?? 0;
+                const c = palette[idx];
+                return `style="background:${c}18;border-left:3px solid ${c}"`;
+              })()
+            : "";
+          return `<tr ${rowStyle}><td>${r.time ?? ""}</td><td>${r.device_name ?? ""}</td><td>${r.log_name ?? ""}</td><td style="color:${contentColor}">${(r.content ?? "").replace(/</g, "&lt;").replace(/>/g, "&gt;")}</td></tr>`;
+        })
         .join("\n");
+      const legendHtml = format === "html-color"
+        ? `<div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px">${
+            [...pairColorMap.entries()].map(([key, idx]) => {
+              const [dev, log] = key.split("|");
+              return `<span style="font-size:11px;padding:3px 10px;border-radius:12px;border:1px solid ${palette[idx]};color:${palette[idx]};background:${palette[idx]}18">${dev} · ${log}</span>`;
+            }).join("")
+          }</div>`
+        : "";
       const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -3601,12 +3880,12 @@ export default function App() {
   table{border-collapse:collapse;width:100%;font-size:12px}
   th{text-align:left;padding:8px 12px;border-bottom:2px solid rgba(255,255,255,0.12);color:#6b7280;text-transform:uppercase;font-size:10px;letter-spacing:.06em}
   td{padding:7px 12px;border-bottom:1px solid rgba(255,255,255,0.04);vertical-align:top;word-break:break-word}
-  tr:hover td{background:rgba(255,255,255,0.03)}
+  tr:hover td{filter:brightness(1.15)}
 </style>
 </head>
 <body>
 <h1>LogOctopus — Log Export (${new Date().toISOString()})</h1>
-<table>
+${legendHtml}<table>
 <thead><tr><th>Timestamp</th><th>Device</th><th>Log Name</th><th>Content</th></tr></thead>
 <tbody>
 ${rows}
@@ -3622,7 +3901,208 @@ ${rows}
     a.href = URL.createObjectURL(blob);
     a.download = filename;
     a.click();
-    addToast(`Logs exported as ${format.toUpperCase()}.`, "success");
+    addToast(`Logs exported as ${format === "html-color" ? "HTML" : format.toUpperCase()}.`, "success");
+  };
+
+  /**
+   * Fetches content for all selected snapshots and triggers a file download
+   * directly — without opening the log modal. Reuses the same fetch logic as
+   * openLogContent and the same format serialisation as downloadLogs.
+   */
+  const downloadSelectedLogs = async (format) => {
+    if (selectedSnaps.length === 0) return;
+    setDownloadingSnaps(true);
+    try {
+      const snapsToDownload = snapshots.filter((s) => selectedSnaps.includes(s.id));
+      const results = await Promise.all(
+        snapsToDownload.map((s) =>
+          apiFetch(`/api/snapshots/${s.id}/content?log_type=${isChart ? "chart" : "text"}`).then((r) => ({
+            snapInfo: s,
+            rows: r.rows,
+          }))
+        )
+      );
+
+      if (isChart) {
+        const palette = ["#818cf8","#34d399","#fb923c","#f472b6","#60a5fa","#a78bfa","#facc15","#2dd4bf","#f87171","#c084fc"];
+
+        if (format === "json") {
+          const data = results.map((r) => ({
+            device: r.snapInfo.deviceName,
+            log_name: r.snapInfo.logName,
+            session_id: r.snapInfo.sessionId,
+            data_unit: r.snapInfo.dataUnit || "",
+            rows: r.rows,
+          }));
+          const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+          const a = document.createElement("a");
+          a.href = URL.createObjectURL(blob);
+          a.download = "chart_data.json";
+          a.click();
+          addToast("Chart data exported as JSON.", "success");
+
+        } else {
+          // HTML — embed Plotly CDN and render one chart per snapshot
+          const chartSections = results.map((r, i) => {
+            const color = palette[i % palette.length];
+            const label = `${r.snapInfo.deviceName} — ${r.snapInfo.logName}`;
+            const unit  = r.snapInfo.dataUnit || "";
+            const xs    = r.rows.map(d => d.time);
+            const ys    = r.rows.map(d => parseFloat(d.content));
+            const isNum = ys.some(v => !isNaN(v));
+            return `
+  <div class="chart-wrap">
+    <div id="chart-${i}" class="chart"></div>
+    <div class="badges">
+      <span class="badge" style="border-color:${color};color:${color};background:${color}18">${r.snapInfo.logName}</span>
+      <span class="badge">${r.snapInfo.deviceName}</span>
+      <span class="badge">${r.rows.length} points${unit ? " · " + unit : ""}</span>
+      <span class="badge">Session: ${r.snapInfo.sessionId}</span>
+    </div>
+  </div>
+  <script>
+    Plotly.newPlot('chart-${i}',
+      [{ x: ${JSON.stringify(xs)}, y: ${JSON.stringify(isNum ? ys : r.rows.map(d => d.content))},
+         type:'scatter', mode:'lines+markers', name:${JSON.stringify(label)},
+         line:{color:'${color}',width:2.5,shape:'spline',smoothing:0.8},
+         marker:{size:5,color:'${color}'},
+         hovertemplate: ${unit ? `'<b>%{y} ${unit}<extra></extra>'` : "'<b>%{y}<extra></extra>'"} }],
+      { title:{text:${JSON.stringify(label)},font:{color:'#e8eaf0',size:13,family:'JetBrains Mono,monospace'},x:0.04},
+        paper_bgcolor:'transparent', plot_bgcolor:'rgba(9,9,15,0.6)',
+        font:{color:'#6b7280',family:'JetBrains Mono,monospace',size:11},
+        xaxis:{gridcolor:'rgba(255,255,255,0.06)',tickfont:{color:'#6b7280',size:10}},
+        yaxis:{gridcolor:'rgba(255,255,255,0.06)',tickfont:{color:'#6b7280',size:10}${unit ? `,title:{text:'${unit}',font:{color:'#6b7280',size:11}}` : ""}},
+        margin:{t:40,r:20,b:48,l:56}, hovermode:'x unified',
+        hoverlabel:{bgcolor:'#111827',bordercolor:'${color}',font:{color:'#e8eaf0',size:12}} },
+      { responsive:true, displayModeBar:true, displaylogo:false }
+    );
+  <\/script>`;
+          }).join("\n");
+
+          const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<title>LogOctopus — Chart Export</title>
+<script src="https://cdn.plot.ly/plotly-2.32.0.min.js"><\/script>
+<style>
+  body{font-family:'JetBrains Mono',monospace;background:#09090f;color:#e4e4f0;margin:0;padding:24px}
+  h1{font-size:16px;color:#818cf8;margin-bottom:20px}
+  .chart-wrap{margin-bottom:32px;border:1px solid rgba(255,255,255,0.07);border-radius:10px;overflow:hidden;background:#12121f}
+  .chart{width:100%;height:300px}
+  .badges{display:flex;flex-wrap:wrap;gap:6px;padding:10px 14px;border-top:1px solid rgba(255,255,255,0.06)}
+  .badge{font-size:11px;padding:2px 10px;border-radius:12px;border:1px solid rgba(255,255,255,0.12);color:#6b7280;background:rgba(255,255,255,0.04)}
+</style>
+</head>
+<body>
+<h1>LogOctopus — Chart Export (${new Date().toISOString()})</h1>
+${chartSections}
+</body>
+</html>`;
+          const blob = new Blob([html], { type: "text/html" });
+          const a = document.createElement("a");
+          a.href = URL.createObjectURL(blob);
+          a.download = "charts.html";
+          a.click();
+          addToast(`${results.length} chart(s) exported as HTML.`, "success");
+        }
+        return;
+      }
+
+      // Merge and sort text rows (same as openLogContent)
+      const merged = results.flatMap((r) =>
+        r.rows.map((row) => ({ ...row, device_name: r.snapInfo.deviceName ?? r.snapInfo.device_name ?? "" }))
+      );
+      merged.sort((a, b) => {
+        const ta = a.timestamp || a.time || "";
+        const tb = b.timestamp || b.time || "";
+        return ta < tb ? -1 : ta > tb ? 1 : 0;
+      });
+
+      if (merged.length === 0) { addToast("No log data to export.", "info"); return; }
+
+      let blob, filename;
+      if (format === "csv") {
+        const content =
+          "Time,Device,Log Name,Content\n" +
+          merged.map((r) => `"${r.time}","${r.device_name ?? ""}","${r.log_name}","${(r.content ?? "").replace(/"/g, '""')}"`).join("\n");
+        blob = new Blob([content], { type: "text/csv" });
+        filename = "logs.csv";
+      } else if (format === "txt") {
+        const lines = merged.map((r) => `[${r.time}] [${r.device_name ?? ""}] [${r.log_name}] ${r.content ?? ""}`);
+        blob = new Blob([lines.join("\n")], { type: "text/plain" });
+        filename = "logs.txt";
+      } else if (format === "json") {
+        const data = merged.map((r) => ({ time: r.time, device: r.device_name ?? "", log_name: r.log_name, content: r.content }));
+        blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+        filename = "logs.json";
+      } else if (format === "html" || format === "html-color") {
+        const palette = ["#818cf8","#34d399","#fb923c","#f472b6","#60a5fa","#a78bfa","#facc15","#2dd4bf","#f87171","#c084fc"];
+        const pairColorMap = new Map();
+        if (format === "html-color") {
+          for (const r of merged) {
+            const key = `${r.device_name ?? ""}|${r.log_name ?? ""}`;
+            if (!pairColorMap.has(key)) pairColorMap.set(key, pairColorMap.size % palette.length);
+          }
+        }
+        const rowsHtml = merged.map((r) => {
+          const contentColor = (r.content ?? "").startsWith("ERROR") ? "#f87171"
+            : (r.content ?? "").startsWith("WARN") ? "#fbbf24" : "inherit";
+          const rowStyle = format === "html-color"
+            ? (() => {
+                const idx = pairColorMap.get(`${r.device_name ?? ""}|${r.log_name ?? ""}`) ?? 0;
+                const c = palette[idx];
+                return `style="background:${c}18;border-left:3px solid ${c}"`;
+              })()
+            : "";
+          return `<tr ${rowStyle}><td>${r.time ?? ""}</td><td>${r.device_name ?? ""}</td><td>${r.log_name ?? ""}</td><td style="color:${contentColor}">${(r.content ?? "").replace(/</g, "&lt;").replace(/>/g, "&gt;")}</td></tr>`;
+        }).join("\n");
+        const legendHtml = format === "html-color"
+          ? `<div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px">${
+              [...pairColorMap.entries()].map(([key, idx]) => {
+                const [dev, log] = key.split("|");
+                return `<span style="font-size:11px;padding:3px 10px;border-radius:12px;border:1px solid ${palette[idx]};color:${palette[idx]};background:${palette[idx]}18">${dev} · ${log}</span>`;
+              }).join("")
+            }</div>`
+          : "";
+        const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<title>LogOctopus Export</title>
+<style>
+  body{font-family:'JetBrains Mono',monospace;background:#09090f;color:#e4e4f0;margin:0;padding:24px}
+  h1{font-size:16px;color:#818cf8;margin-bottom:16px}
+  table{border-collapse:collapse;width:100%;font-size:12px}
+  th{text-align:left;padding:8px 12px;border-bottom:2px solid rgba(255,255,255,0.12);color:#6b7280;text-transform:uppercase;font-size:10px;letter-spacing:.06em}
+  td{padding:7px 12px;border-bottom:1px solid rgba(255,255,255,0.04);vertical-align:top;word-break:break-word}
+  tr:hover td{filter:brightness(1.15)}
+</style>
+</head>
+<body>
+<h1>LogOctopus — Log Export (${new Date().toISOString()})</h1>
+${legendHtml}<table>
+<thead><tr><th>Timestamp</th><th>Device</th><th>Log Name</th><th>Content</th></tr></thead>
+<tbody>
+${rowsHtml}
+</tbody>
+</table>
+</body>
+</html>`;
+        blob = new Blob([html], { type: "text/html" });
+        filename = "logs.html";
+      }
+
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = filename;
+      a.click();
+      addToast(`${merged.length} log rows exported as ${format === "html-color" ? "HTML" : format.toUpperCase()}.`, "success");
+    } catch (e) {
+      addToast(`Download failed: ${e.message}`);
+    } finally {
+      setDownloadingSnaps(false);
+    }
   };
 
   // Modal title with chart count info
@@ -3864,6 +4344,12 @@ ${rows}
             >
               {isChart ? `📈 View ${selectedSnaps.length > 1 ? `${selectedSnaps.length} Charts` : "Chart"}` : "📋 View Selected"}
             </Btn>
+            <DownloadSelectedBtn
+              onDownload={downloadSelectedLogs}
+              disabled={selectedSnaps.length === 0}
+              loading={downloadingSnaps}
+              isChart={isChart}
+            />
             <Toggle checked={isChart} onChange={(v) => { setIsChart(v); setSelectedSnaps([]); }} labelLeft="Text" labelRight="Chart" />
             <div style={{ display: "flex", alignItems: "center", gap: 8, marginLeft: 8 }}>
               <select
@@ -4000,7 +4486,7 @@ ${rows}
         footer={
           <>
             {!isChart && <Toggle checked={colorMode} onChange={setColorMode} labelLeft="Raw" labelRight="Color mode" />}
-            {!isChart && <DownloadMenu onDownload={downloadLogs} />}
+            <DownloadMenu onDownload={downloadLogs} isChart={isChart} />
             <Btn variant="ghost" onClick={() => setLogModal(false)}>Close</Btn>
           </>
         }
