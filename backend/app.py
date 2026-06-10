@@ -604,7 +604,8 @@ def _build_fabric_connection(hop: dict, gateway=None):
     """Construct a Fabric Connection for a single SSH hop.
 
     Args:
-        hop (dict): Keys: ip_address, port (default 22), user, password.
+        hop (dict): Keys: ip_address, port (default 22), user, password,
+                    ssh_key_string (optional PEM private key as a string).
         gateway: An already-constructed Fabric Connection to use as the jump
                  host, or None for a direct connection.
 
@@ -617,6 +618,24 @@ def _build_fabric_connection(hop: dict, gateway=None):
     connect_kwargs = {}
     if hop.get("password"):
         connect_kwargs["password"] = hop["password"]
+
+    if hop.get("ssh_key_string"):
+        import io
+        import paramiko
+        key_str = hop["ssh_key_string"].strip()
+        key_file = io.StringIO(key_str)
+        # Try key types in order; raise if none match
+        pkey = None
+        for key_cls in (paramiko.RSAKey, paramiko.Ed25519Key, paramiko.ECDSAKey, paramiko.DSSKey):
+            try:
+                key_file.seek(0)
+                pkey = key_cls.from_private_key(key_file)
+                break
+            except paramiko.SSHException:
+                continue
+        if pkey is None:
+            raise ValueError("ssh_key_string is not a recognised private key format (RSA / Ed25519 / ECDSA / DSS)")
+        connect_kwargs["pkey"] = pkey
 
     conn = Connection(
         host=hop["ip_address"].strip(),
@@ -643,7 +662,9 @@ def _build_nested_connection(body: dict):
     Args:
         body (dict): Parsed JSON request body.  Required keys on the target:
                      ip_address, user.  Optional: port (default 22), password,
-                     gateways (list of hop dicts).
+                     ssh_key_string (PEM private key as a plain string),
+                     gateways (list of hop dicts; each may also carry
+                     ssh_key_string).
 
     Returns:
         fabric.Connection: Fully configured nested connection.
@@ -682,8 +703,9 @@ def test_device_connection():
         - port (int)                - SSH port (default 22).
         - user (str)                - SSH username.
         - password (str)            - SSH password.
+        - ssh_key_string (str)      - Optional PEM private key as a plain string.
         - gateways (list[dict])     - Optional ordered list of jump-host specs.
-          Each entry: { ip_address, port, user, password }.
+          Each entry: { ip_address, port, user, password, ssh_key_string }.
 
     Returns:
         200 OK:
@@ -732,12 +754,13 @@ def exec_device_command():
         - port (int)                 - SSH port (default 22).
         - user (str)                 - SSH username.
         - password (str)             - SSH password.
+        - ssh_key_string (str)       - Optional PEM private key as a plain string.
         - command (str)              - Shell command to run on the remote device.
         - custom_shell_prompt (str)  - Optional. When set, the command is sent
           to an interactive shell and output is captured until this prompt
           string appears in the stream.
         - gateways (list[dict])      - Optional ordered list of jump-host specs.
-          Each entry: { ip_address, port, user, password }.
+          Each entry: { ip_address, port, user, password, ssh_key_string }.
 
     Returns:
         200 OK:

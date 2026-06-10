@@ -2205,7 +2205,7 @@ const EMPTY_LOG_ENTRY = () => ({
   log_name: "",
   log_file_cmd: "",
   data_extraction_regex: "",
-  log_activation_cmd: "true",
+  log_activation_cmd: "",
   log_deactivation_cmd: "",
   custom_shell_prompt: "",
   log_type: "text",
@@ -2219,7 +2219,7 @@ const FIELD_LABEL = {
 
 const CARD = {
   background: "var(--card-bg)", border: "1px solid var(--border)",
-  borderRadius: 10, padding: "16px 18px", marginBottom: 14,
+  borderRadius: 12, padding: "18px 22px", marginBottom: 16,
 };
 
 // Convert Python-style (?P<NAME>...) named groups to JS (?<NAME>...) syntax
@@ -2227,395 +2227,566 @@ function pyRegexToJs(pattern) {
   return pattern.replace(/\(\?P</g, "(?<");
 }
 
-function RegexTestOverlay({ output, regex }) {
-  if (!output) return null;
-  const lines = output.split("\n");
-  let re = null;
-  let reErr = "";
-  try {
-    if (regex) re = new RegExp(pyRegexToJs(regex));
-  } catch (e) {
-    reErr = e.message;
+// Escape a literal string for use inside a regex pattern
+function escapeForRegex(str) {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// ── REGEX BUILDER ─────────────────────────────────────────────────────────────
+// Given a sample line, two optional marked spans (TIME / ENTRY), build a
+// Python named-group regex that captures those spans.
+//
+// Strategy: for each marked span we generalise it to a pattern:
+//   - digits-only chunks  → \d+
+//   - alpha-only chunks   → \w+
+//   - word characters     → \S+ (non-space run)
+//   - everything          → .*
+// Surrounding literal text is escaped and anchored.
+function buildRegexFromSpans(line, timeSpan, entrySpan) {
+  // Sort spans left-to-right
+  const spans = [];
+  if (timeSpan)  spans.push({ ...timeSpan,  group: "TIME"  });
+  if (entrySpan) spans.push({ ...entrySpan, group: "ENTRY" });
+  spans.sort((a, b) => a.start - b.start);
+
+  if (spans.length === 0) return "";
+
+  let pattern = "^";
+  let cursor = 0;
+
+  for (const span of spans) {
+    // Literal prefix between cursor and span start
+    if (span.start > cursor) {
+      pattern += escapeForRegex(line.slice(cursor, span.start));
+    }
+    // Generalise the captured text into a pattern
+    const captured = line.slice(span.start, span.end);
+    const inner = generaliseCapture(captured);
+    pattern += `(?P<${span.group}>${inner})`;
+    cursor = span.end;
   }
 
+  // If the last span is ENTRY and it goes to end-of-line, anchor with .*
+  const lastSpan = spans[spans.length - 1];
+  if (lastSpan.group === "ENTRY" && lastSpan.end >= line.length) {
+    // already captured to end
+  } else if (cursor < line.length) {
+    // literal suffix — omit for flexibility, just don't anchor end
+  }
+
+  return pattern;
+}
+
+function generaliseCapture(text) {
+  // Pure digits (and separators like : - /)  → timestamp-like pattern
+  if (/^[\d:.\-/ ]+$/.test(text)) {
+    // Build a pattern that allows digits, colons, dashes, slashes, dots, spaces
+    return "[\\d:.\\/\\- ]+";
+  }
+  // Pure word characters  → \w+
+  if (/^\w+$/.test(text)) return "\\w+";
+  // Mix of word + common separators → \S+
+  if (!/\s/.test(text)) return "\\S+";
+  // Has whitespace inside (e.g. "Jan 12 10:00:00") → collapse runs
+  return text
+    .split(/(\s+)/)
+    .map(tok => tok.match(/^\s+$/) ? "\\s+" : (tok ? generaliseCapture(tok) : ""))
+    .join("");
+}
+
+// ── TERMINAL OUTPUT WITH REGEX HIGHLIGHTING ───────────────────────────────────
+function TerminalOutput({ lines, regex, regexError, onMarkSpan, markMode }) {
+  // markMode: null | "TIME" | "ENTRY"
+  // onMarkSpan(lineIdx, start, end, text)
+
+  const handleMouseUp = (lineIdx, lineText) => {
+    if (!markMode) return;
+    const sel = window.getSelection();
+    if (!sel || sel.isCollapsed) return;
+    const selected = sel.toString();
+    if (!selected) return;
+    // Find the start offset within the line text
+    const start = lineText.indexOf(selected);
+    if (start === -1) return;
+    onMarkSpan(lineIdx, start, start + selected.length, selected);
+    sel.removeAllRanges();
+  };
+
+  let re = null;
+  try { if (regex && !regexError) re = new RegExp(pyRegexToJs(regex)); } catch {}
+
   return (
-    <div style={{ marginTop: 10 }}>
-      {reErr && (
-        <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "#f87171",
-          background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.2)",
-          borderRadius: 6, padding: "6px 10px", marginBottom: 6 }}>
-          Regex error: {reErr}
-        </div>
-      )}
-      <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, lineHeight: 1.65,
-        background: "rgba(0,0,0,0.35)", border: "1px solid var(--border)", borderRadius: 8,
-        padding: "10px 14px", maxHeight: 260, overflowY: "auto", whiteSpace: "pre-wrap",
-        wordBreak: "break-all" }}>
-        {lines.map((line, i) => {
-          if (!line) return <div key={i} style={{ height: 4 }} />;
-          if (!re) return <div key={i} style={{ color: "#94a3b8" }}>{line}</div>;
-          const m = re.exec(line);
-          if (!m) return (
-            <div key={i} style={{ color: "#4b5563", borderLeft: "2px solid rgba(255,255,255,0.05)", paddingLeft: 8 }}>
+    <div style={{
+      fontFamily: "var(--font-mono)", fontSize: 11, lineHeight: 1.7,
+      background: "rgba(0,0,0,0.45)", borderRadius: "0 0 8px 8px",
+      padding: "10px 14px", maxHeight: 400, overflowY: "auto",
+      whiteSpace: "pre-wrap", wordBreak: "break-all",
+      cursor: markMode ? "crosshair" : "text",
+      userSelect: markMode ? "text" : "auto",
+    }}>
+      {lines.map((line, i) => {
+        if (!line) return <div key={i} style={{ height: 3 }} />;
+        if (!re) {
+          return (
+            <div key={i} onMouseUp={() => handleMouseUp(i, line)}
+              style={{ color: "#94a3b8", padding: "1px 0" }}>
               {line}
             </div>
           );
-          const groups = m.groups || {};
-          const TIME = groups.TIME || "";
-          const ENTRY = groups.ENTRY || "";
+        }
+        const m = re.exec(line);
+        if (!m) {
           return (
-            <div key={i} style={{ display: "flex", gap: 8, alignItems: "baseline" }}>
-              {TIME && <span style={{ color: "#6b7280", flexShrink: 0 }}>{TIME}</span>}
-              {ENTRY && <span style={{ color: "#86efac", flex: 1 }}>{ENTRY}</span>}
-              {!TIME && !ENTRY && <span style={{ color: "#fbbf24" }}>{line}</span>}
+            <div key={i} onMouseUp={() => handleMouseUp(i, line)}
+              style={{ color: "#374151", borderLeft: "2px solid rgba(255,255,255,0.04)", paddingLeft: 8, padding: "1px 0 1px 8px" }}>
+              {line}
             </div>
           );
-        })}
-      </div>
-      <div style={{ display: "flex", gap: 12, marginTop: 6, flexWrap: "wrap" }}>
-        {lines.filter(l => l && re?.test(l)).length > 0 && (
-          <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "#4ade80" }}>
-            ✔ {lines.filter(l => l && re?.test(l)).length} / {lines.filter(l => l).length} lines matched
-          </span>
-        )}
-        {re && lines.filter(l => l).length > 0 && lines.filter(l => l && re?.test(l)).length === 0 && (
-          <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "#f87171" }}>
-            ✖ No lines matched — check your regex
-          </span>
-        )}
-      </div>
+        }
+        // Render matched line with TIME/ENTRY segments highlighted
+        const groups = m.groups || {};
+        const TIME  = groups.TIME  !== undefined ? groups.TIME  : null;
+        const ENTRY = groups.ENTRY !== undefined ? groups.ENTRY : null;
+        const timeIdx  = TIME  != null ? line.indexOf(TIME)  : -1;
+        const entryIdx = ENTRY != null ? line.indexOf(ENTRY, timeIdx >= 0 ? timeIdx + TIME.length : 0) : -1;
+
+        const parts = [];
+        let cur = 0;
+        const addPart = (end, color, label) => {
+          if (cur < end) {
+            parts.push({ text: line.slice(cur, end), color, label });
+            cur = end;
+          }
+        };
+        // Build parts in order
+        const segs = [];
+        if (TIME  != null && timeIdx  >= 0) segs.push({ start: timeIdx,  end: timeIdx  + TIME.length,  color: "#f59e0b", label: "TIME"  });
+        if (ENTRY != null && entryIdx >= 0) segs.push({ start: entryIdx, end: entryIdx + ENTRY.length, color: "#86efac", label: "ENTRY" });
+        segs.sort((a, b) => a.start - b.start);
+        for (const seg of segs) {
+          if (seg.start > cur) parts.push({ text: line.slice(cur, seg.start), color: "#4b5563", label: null });
+          parts.push({ text: line.slice(seg.start, seg.end), color: seg.color, label: seg.label });
+          cur = seg.end;
+        }
+        if (cur < line.length) parts.push({ text: line.slice(cur), color: "#4b5563", label: null });
+
+        return (
+          <div key={i} onMouseUp={() => handleMouseUp(i, line)}
+            style={{ display: "flex", flexWrap: "wrap", gap: 0, alignItems: "baseline", padding: "1px 0" }}>
+            {parts.map((p, pi) => (
+              <span key={pi} style={{
+                color: p.color,
+                background: p.label ? (p.label === "TIME" ? "rgba(245,158,11,0.15)" : "rgba(134,239,172,0.12)") : "transparent",
+                borderRadius: p.label ? 2 : 0,
+              }}>{p.text}</span>
+            ))}
+          </div>
+        );
+      })}
     </div>
   );
 }
 
+// ── LOG ENTRY EDITOR ──────────────────────────────────────────────────────────
 function LogEntryEditor({ entry, conn, index, onChange, onRemove, onDuplicate }) {
-  const [expanded, setExpanded]         = useState(index === 0);
+  const [expanded, setExpanded] = useState(index === 0);
+  const [activeTab, setActiveTab] = useState("collect"); // "collect" | "activate" | "deactivate"
 
-  // Per-command test state: "log" (main cmd), "activation", "deactivation"
-  const [activePane, setActivePane]     = useState(null); // null | "log" | "activation" | "deactivation"
-  const [testing, setTesting]           = useState(null); // null | "log" | "activation" | "deactivation"
-  const [paneOutputs, setPaneOutputs]   = useState({ log: null, activation: null, deactivation: null });
-  const [paneErrors, setPaneErrors]     = useState({ log: "", activation: "", deactivation: "" });
+  // Per-command terminal state
+  const [outputs, setOutputs]   = useState({ collect: null, activate: null, deactivate: null });
+  const [errors,  setErrors]    = useState({ collect: "",   activate: "",   deactivate: ""   });
+  const [running, setRunning]   = useState(null); // null | "collect" | "activate" | "deactivate"
 
+  // Regex builder state
+  const [markMode,   setMarkMode]   = useState(null);  // null | "TIME" | "ENTRY"
+  const [markedLine, setMarkedLine] = useState(null);  // index of line used for regex building
+  const [timeSpan,   setTimeSpan]   = useState(null);  // { start, end, text }
+  const [entrySpan,  setEntrySpan]  = useState(null);  // { start, end, text }
+
+  // Local editable command strings (so the user can edit without committing on every keystroke)
   const set = (k, v) => onChange({ ...entry, [k]: v });
 
-  const execCmd = async (cmdKey, cmd) => {
+  const execCmd = async (tab) => {
+    const cmdMap = { collect: entry.log_file_cmd, activate: entry.log_activation_cmd, deactivate: entry.log_deactivation_cmd };
+    const cmd = cmdMap[tab];
     if (!conn.ip_address || !conn.user) {
-      setPaneErrors(prev => ({ ...prev, [cmdKey]: "Fill in connection details first (Step 1)." }));
-      setActivePane(cmdKey);
+      setErrors(p => ({ ...p, [tab]: "Fill in connection details first (Step 1)." }));
       return;
     }
     if (!cmd || !cmd.trim()) {
-      setPaneErrors(prev => ({ ...prev, [cmdKey]: "No command to run." }));
-      setActivePane(cmdKey);
+      setErrors(p => ({ ...p, [tab]: "No command entered." }));
       return;
     }
-    setTesting(cmdKey);
-    setPaneOutputs(prev => ({ ...prev, [cmdKey]: null }));
-    setPaneErrors(prev => ({ ...prev, [cmdKey]: "" }));
-    setActivePane(cmdKey);
+    setRunning(tab);
+    setOutputs(p => ({ ...p, [tab]: null }));
+    setErrors(p => ({ ...p, [tab]: "" }));
     try {
       const payload = {
-        ip_address: conn.ip_address,
-        port: Number(conn.port || 22),
-        user: conn.user,
-        password: conn.password,
-        gateways: conn.gateways || [],
-        command: cmd,
+        ip_address: conn.ip_address, port: Number(conn.port || 22),
+        user: conn.user, password: conn.password,
+        ssh_key_string: conn.ssh_key_string || "",
+        gateways: conn.gateways || [], command: cmd,
       };
-      if (entry.custom_shell_prompt && entry.custom_shell_prompt.trim()) {
-        payload.custom_shell_prompt = entry.custom_shell_prompt.trim();
-      }
-      const res = await apiFetch("/api/devices/exec-command", {
-        method: "POST",
-        body: JSON.stringify(payload),
-      });
-      setPaneOutputs(prev => ({ ...prev, [cmdKey]: res.stdout || res.stderr || "(empty output)" }));
+      if (entry.custom_shell_prompt?.trim()) payload.custom_shell_prompt = entry.custom_shell_prompt.trim();
+      const res = await apiFetch("/api/devices/exec-command", { method: "POST", body: JSON.stringify(payload) });
+      const out = res.stdout || res.stderr || "(empty output)";
+      setOutputs(p => ({ ...p, [tab]: out }));
       if (res.exit_code !== 0 && res.stderr) {
-        setPaneErrors(prev => ({ ...prev, [cmdKey]: `Exit code ${res.exit_code}: ${res.stderr.slice(0, 160)}` }));
+        setErrors(p => ({ ...p, [tab]: `exit ${res.exit_code}: ${res.stderr.slice(0, 200)}` }));
       }
     } catch (e) {
-      setPaneErrors(prev => ({ ...prev, [cmdKey]: e.message }));
+      setErrors(p => ({ ...p, [tab]: e.message }));
     } finally {
-      setTesting(null);
+      setRunning(null);
     }
+  };
+
+  // When user marks a span in the terminal, update timeSpan/entrySpan and rebuild regex
+  const handleMarkSpan = (lineIdx, start, end, text) => {
+    if (!markMode) return;
+    const span = { start, end, text };
+    let newTime = timeSpan, newEntry = entrySpan;
+    if (markMode === "TIME")  { newTime  = span; setTimeSpan(span);  setMarkedLine(lineIdx); }
+    if (markMode === "ENTRY") { newEntry = span; setEntrySpan(span); setMarkedLine(lineIdx); }
+    setMarkMode(null);
+    // Rebuild regex from the line
+    const lines = (outputs.collect || "").split("\n").filter(l => l.trim());
+    const line = lines[markedLine != null && markMode === "ENTRY" ? markedLine : lineIdx] || "";
+    const built = buildRegexFromSpans(line, markMode === "TIME" ? span : newTime, markMode === "ENTRY" ? span : newEntry);
+    if (built) set("data_extraction_regex", built);
+  };
+
+  const clearSpans = () => { setTimeSpan(null); setEntrySpan(null); setMarkedLine(null); setMarkMode(null); };
+
+  // Regex validation
+  let reErr = "";
+  try { if (entry.data_extraction_regex) new RegExp(pyRegexToJs(entry.data_extraction_regex)); }
+  catch (e) { reErr = e.message; }
+
+  const collectLines = (outputs.collect || "").split("\n");
+  const matchCount = (() => {
+    if (!entry.data_extraction_regex || reErr) return null;
+    try {
+      const re = new RegExp(pyRegexToJs(entry.data_extraction_regex));
+      const nonEmpty = collectLines.filter(l => l.trim());
+      return { matched: nonEmpty.filter(l => re.test(l)).length, total: nonEmpty.length };
+    } catch { return null; }
+  })();
+
+  // Tab config
+  const TABS = [
+    { key: "collect",    icon: "▶", label: "collect",    cmdKey: "log_file_cmd",        hint: "Command that fetches log data" },
+    { key: "activate",   icon: "⚡", label: "activate",   cmdKey: "log_activation_cmd",  hint: "Runs before collection. Must exit 0 to enable. Use `true` to always enable." },
+    { key: "deactivate", icon: "⛔", label: "deactivate", cmdKey: "log_deactivation_cmd", hint: "Runs on collection stop to disable the log source. Optional." },
+  ];
+  const currentTab = TABS.find(t => t.key === activeTab);
+
+  // Styles
+  const S = {
+    terminal: {
+      background: "#0a0d12", border: "1px solid rgba(255,255,255,0.08)",
+      borderRadius: 8, overflow: "hidden",
+    },
+    termBar: {
+      background: "#111520", borderBottom: "1px solid rgba(255,255,255,0.07)",
+      display: "flex", alignItems: "center", padding: "0 0 0 14px", gap: 0,
+    },
+    termTab: (active, hasOutput, hasErr) => ({
+      display: "flex", alignItems: "center", gap: 5,
+      fontFamily: "var(--font-mono)", fontSize: 11, fontWeight: active ? 700 : 400,
+      padding: "7px 14px", cursor: "pointer", border: "none",
+      borderBottom: active ? "2px solid var(--accent)" : "2px solid transparent",
+      background: active ? "rgba(129,140,248,0.08)" : "transparent",
+      color: active ? "var(--accent)" : (hasErr ? "#f87171" : hasOutput ? "#4ade80" : "var(--muted)"),
+      transition: "all 0.12s", whiteSpace: "nowrap",
+    }),
+    promptLine: {
+      display: "flex", alignItems: "center", gap: 8,
+      padding: "8px 14px", borderTop: "1px solid rgba(255,255,255,0.05)",
+      background: "rgba(0,0,0,0.2)",
+    },
+    runBtn: (busy) => ({
+      display: "flex", alignItems: "center", gap: 6,
+      background: busy ? "rgba(129,140,248,0.06)" : "rgba(129,140,248,0.12)",
+      border: "1px solid rgba(129,140,248,0.3)", borderRadius: 5,
+      color: "var(--accent)", fontFamily: "var(--font-mono)", fontSize: 11, fontWeight: 700,
+      padding: "4px 12px", cursor: busy ? "not-allowed" : "pointer",
+      opacity: busy ? 0.6 : 1, flexShrink: 0, whiteSpace: "nowrap",
+    }),
+    cmdInput: {
+      flex: 1, background: "transparent", border: "none", outline: "none",
+      color: "#e2e8f0", fontFamily: "var(--font-mono)", fontSize: 11,
+      padding: 0, caretColor: "var(--accent)",
+    },
+    markBtn: (active, color) => ({
+      display: "flex", alignItems: "center", gap: 4,
+      background: active ? `${color}22` : "rgba(255,255,255,0.04)",
+      border: `1px solid ${active ? color : "rgba(255,255,255,0.1)"}`,
+      borderRadius: 4, color: active ? color : "var(--muted)",
+      fontFamily: "var(--font-mono)", fontSize: 10, fontWeight: 700,
+      padding: "3px 8px", cursor: "pointer", transition: "all 0.12s", whiteSpace: "nowrap",
+    }),
   };
 
   const logTypeColors = { text: "cyan", chart: "violet" };
 
-  const RunBtn = ({ cmdKey, label, cmd }) => {
-    const isBusy = testing === cmdKey;
-    const hasTested = paneOutputs[cmdKey] !== null || paneErrors[cmdKey];
-    const isActive = activePane === cmdKey;
-    return (
-      <button
-        onClick={() => execCmd(cmdKey, cmd)}
-        disabled={!!testing}
-        style={{
-          display: "flex", alignItems: "center", gap: 5,
-          background: isActive
-            ? (hasTested ? "rgba(74,222,128,0.12)" : "rgba(129,140,248,0.18)")
-            : "rgba(129,140,248,0.08)",
-          border: `1px solid ${isActive ? (hasTested ? "rgba(74,222,128,0.35)" : "rgba(129,140,248,0.45)") : "rgba(129,140,248,0.25)"}`,
-          borderRadius: 6,
-          color: isActive ? (hasTested ? "#4ade80" : "var(--accent)") : "var(--accent)",
-          fontFamily: "var(--font-mono)", fontSize: 11,
-          padding: "4px 10px", cursor: testing ? "not-allowed" : "pointer",
-          opacity: (testing && testing !== cmdKey) ? 0.5 : 1,
-          transition: "all 0.15s",
-          whiteSpace: "nowrap",
-        }}
-      >
-        {isBusy ? (
-          <><svg width="10" height="10" viewBox="0 0 10 10" style={{ animation: "spin 1s linear infinite", flexShrink: 0 }}>
-            <circle cx="5" cy="5" r="4" fill="none" stroke="currentColor" strokeWidth="1.5" strokeDasharray="12" strokeDashoffset="6" />
-          </svg> Running…</>
-        ) : (hasTested && isActive ? "✔ " : "▶ ") + label}
-      </button>
-    );
-  };
-
   return (
     <div style={{
-      background: "var(--card-bg)", border: "1px solid var(--border)", borderRadius: 10,
-      marginBottom: 10, overflow: "hidden", transition: "border-color 0.15s",
+      background: "#0d1117", border: `1px solid ${expanded ? "rgba(129,140,248,0.25)" : "var(--border)"}`,
+      borderRadius: 10, marginBottom: 10, overflow: "hidden", transition: "border-color 0.15s",
     }}>
-      {/* Header row */}
+      {/* ── Header ── */}
       <div
-        style={{
-          display: "flex", alignItems: "center", gap: 10, padding: "11px 14px",
-          cursor: "pointer", borderBottom: expanded ? "1px solid var(--border)" : "none",
-          background: expanded ? "rgba(129,140,248,0.04)" : "transparent",
-        }}
         onClick={() => setExpanded(v => !v)}
+        style={{
+          display: "flex", alignItems: "center", gap: 10, padding: "10px 14px",
+          cursor: "pointer", background: expanded ? "rgba(129,140,248,0.04)" : "transparent",
+          borderBottom: expanded ? "1px solid rgba(255,255,255,0.07)" : "none",
+        }}
       >
-        <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--muted)", width: 22, textAlign: "center" }}>
-          {index + 1}
+        {/* index pill */}
+        <span style={{
+          fontFamily: "var(--font-mono)", fontSize: 9, fontWeight: 700,
+          background: "rgba(129,140,248,0.12)", color: "var(--accent)",
+          border: "1px solid rgba(129,140,248,0.2)", borderRadius: 4,
+          padding: "1px 6px", flexShrink: 0,
+        }}>{String(index + 1).padStart(2, "0")}</span>
+
+        {/* log name */}
+        <span style={{ flex: 1, fontFamily: "var(--font-mono)", fontSize: 12, color: entry.log_name ? "#e2e8f0" : "#374151" }}>
+          {entry.log_name || <span style={{ fontStyle: "italic", color: "#374151" }}>unnamed entry</span>}
         </span>
-        <span style={{ flex: 1, fontFamily: "var(--font-mono)", fontSize: 13, color: entry.log_name ? "var(--text)" : "var(--muted)" }}>
-          {entry.log_name || <span style={{ fontStyle: "italic" }}>unnamed entry</span>}
-        </span>
+
+        {/* badges */}
         <Badge color={logTypeColors[entry.log_type] || "default"}>{entry.log_type}</Badge>
-        {paneOutputs.log && <Badge color="green">cmd tested</Badge>}
-        {paneOutputs.activation && <Badge color="cyan">act tested</Badge>}
-        {paneOutputs.deactivation && <Badge color="violet">deact tested</Badge>}
-        <button
-          onClick={e => { e.stopPropagation(); onDuplicate(); }}
-          title="Duplicate"
-          style={{ background: "none", border: "none", cursor: "pointer", color: "var(--muted)", fontSize: 13, padding: "2px 6px" }}
-        >⎘</button>
-        <button
-          onClick={e => { e.stopPropagation(); onRemove(); }}
-          title="Remove"
-          style={{ background: "none", border: "none", cursor: "pointer", color: "#f87171", fontSize: 15, padding: "2px 6px" }}
-        >×</button>
-        <span style={{ color: "var(--muted)", fontSize: 11, marginLeft: 2 }}>{expanded ? "▲" : "▼"}</span>
+        {outputs.collect    && <Badge color="green">collect ✔</Badge>}
+        {outputs.activate   && <Badge color="cyan">activate ✔</Badge>}
+        {outputs.deactivate && <Badge color="violet">deactivate ✔</Badge>}
+        {entry.data_extraction_regex && !reErr && matchCount && (
+          <Badge color={matchCount.matched > 0 ? "green" : "red"}>
+            {matchCount.matched}/{matchCount.total} lines
+          </Badge>
+        )}
+
+        <button onClick={e => { e.stopPropagation(); onDuplicate(); }} title="Duplicate"
+          style={{ background: "none", border: "none", cursor: "pointer", color: "var(--muted)", fontSize: 13, padding: "2px 6px" }}>⎘</button>
+        <button onClick={e => { e.stopPropagation(); onRemove(); }} title="Remove"
+          style={{ background: "none", border: "none", cursor: "pointer", color: "#f87171", fontSize: 15, padding: "2px 6px" }}>×</button>
+        <span style={{ color: "var(--muted)", fontSize: 10 }}>{expanded ? "▲" : "▼"}</span>
       </div>
 
       {expanded && (
-        <div style={{ padding: "16px 16px 14px" }}>
-          {/* Row 1: Log Name + Log Type */}
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
+        <div style={{ padding: "14px 16px 16px" }}>
+
+          {/* ── Row 1: Log Name / Type / Data Unit ── */}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr auto auto", gap: 10, marginBottom: 14, alignItems: "end" }}>
             <div>
               <div style={FIELD_LABEL}>Log Name *</div>
-              <input
-                value={entry.log_name}
-                onChange={e => set("log_name", e.target.value)}
-                placeholder="e.g. syslog, cpu_usage_percent"
-                style={inputStyle}
-              />
+              <input value={entry.log_name} onChange={e => set("log_name", e.target.value)}
+                placeholder="e.g. syslog, cpu_usage" style={inputStyle} />
             </div>
             <div>
-              <div style={FIELD_LABEL}>Log Type</div>
-              <div style={{ display: "flex", gap: 6 }}>
+              <div style={FIELD_LABEL}>Type</div>
+              <div style={{ display: "flex", gap: 4 }}>
                 {["text", "chart"].map(t => (
-                  <button
-                    key={t}
-                    onClick={() => set("log_type", t)}
-                    style={{
-                      flex: 1, padding: "8px 0", borderRadius: 7, cursor: "pointer",
-                      border: "1px solid",
-                      fontFamily: "var(--font-mono)", fontSize: 12, fontWeight: 600,
-                      background: entry.log_type === t ? (t === "text" ? "rgba(34,211,238,0.14)" : "rgba(167,139,250,0.14)") : "rgba(255,255,255,0.03)",
-                      color: entry.log_type === t ? (t === "text" ? "#22d3ee" : "#a78bfa") : "var(--muted)",
-                      borderColor: entry.log_type === t ? (t === "text" ? "rgba(34,211,238,0.4)" : "rgba(167,139,250,0.4)") : "var(--border)",
-                      transition: "all 0.12s",
-                    }}
-                  >
-                    {t === "text" ? "📄 text" : "📈 chart"}
-                  </button>
+                  <button key={t} onClick={() => set("log_type", t)} style={{
+                    padding: "9px 14px", borderRadius: 7, cursor: "pointer", border: "1px solid",
+                    fontFamily: "var(--font-mono)", fontSize: 11, fontWeight: 600,
+                    background: entry.log_type === t ? (t === "text" ? "rgba(34,211,238,0.14)" : "rgba(167,139,250,0.14)") : "rgba(255,255,255,0.03)",
+                    color: entry.log_type === t ? (t === "text" ? "#22d3ee" : "#a78bfa") : "var(--muted)",
+                    borderColor: entry.log_type === t ? (t === "text" ? "rgba(34,211,238,0.4)" : "rgba(167,139,250,0.4)") : "var(--border)",
+                    transition: "all 0.12s",
+                  }}>{t === "text" ? "📄 text" : "📈 chart"}</button>
                 ))}
               </div>
             </div>
+            {entry.log_type === "chart" && (
+              <div>
+                <div style={FIELD_LABEL}>Unit</div>
+                <input value={entry.data_unit || ""} onChange={e => set("data_unit", e.target.value)}
+                  placeholder="%, °C, ms…" style={{ ...inputStyle, width: 90 }} />
+              </div>
+            )}
           </div>
 
-          {/* Data Unit (for chart type) */}
-          {entry.log_type === "chart" && (
-            <div style={{ marginBottom: 12 }}>
-              <div style={FIELD_LABEL}>Data Unit <span style={{ color: "var(--muted)", textTransform: "none", letterSpacing: 0 }}>(optional, shown on chart axis)</span></div>
-              <input
-                value={entry.data_unit || ""}
-                onChange={e => set("data_unit", e.target.value)}
-                placeholder="e.g. dBm, Hz, %, °C, ms, Mbps"
-                style={{ ...inputStyle, fontFamily: "var(--font-mono)", fontSize: 12 }}
-              />
-              <div style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--muted)", marginTop: 4 }}>
-                Unit label shown on the Y-axis of the chart. Leave empty to hide.
-              </div>
-            </div>
-          )}
-
-          {/* Custom Shell Prompt */}
-          <div style={{ marginBottom: 12 }}>
-            <div style={FIELD_LABEL}>Custom Shell Prompt <span style={{ color: "var(--muted)", textTransform: "none", letterSpacing: 0 }}>(optional)</span></div>
-            <input
-              value={entry.custom_shell_prompt || ""}
+          {/* ── Custom Shell Prompt (collapsed inline) ── */}
+          <div style={{ marginBottom: 14, display: "flex", alignItems: "center", gap: 10 }}>
+            <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--muted)", flexShrink: 0 }}>shell prompt</span>
+            <input value={entry.custom_shell_prompt || ""}
               onChange={e => set("custom_shell_prompt", e.target.value)}
-              placeholder="e.g. router# or $"
-              style={{ ...inputStyle, fontFamily: "var(--font-mono)", fontSize: 12 }}
-            />
-            <div style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--muted)", marginTop: 4 }}>
-              When set, all test commands use an interactive shell and read output until this prompt appears. Leave empty for standard SSH exec.
-            </div>
+              placeholder="leave empty for standard exec  ·  e.g. router# or $"
+              style={{ ...inputStyle, fontSize: 11, padding: "7px 12px", background: "rgba(255,255,255,0.02)" }} />
           </div>
 
-          {/* Log Cmd */}
-          <div style={{ marginBottom: 12 }}>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 5 }}>
-              <div style={FIELD_LABEL}>Command *</div>
-              <RunBtn cmdKey="log" label="Run on Device" cmd={entry.log_file_cmd} />
-            </div>
-            <textarea
-              value={entry.log_file_cmd}
-              onChange={e => set("log_file_cmd", e.target.value)}
-              placeholder="e.g. sudo journalctl -n 200 --no-pager"
-              rows={3}
-              style={{ ...inputStyle, resize: "vertical", lineHeight: 1.55, fontFamily: "var(--font-mono)", fontSize: 12 }}
-            />
-          </div>
-
-          {/* Extraction Regex */}
-          <div style={{ marginBottom: 12 }}>
-            <div style={FIELD_LABEL}>Extraction Regex (named groups TIME, ENTRY)</div>
-            <input
-              value={entry.data_extraction_regex}
-              onChange={e => set("data_extraction_regex", e.target.value)}
-              placeholder={`^(?P<TIME>\\w+\\s+\\d+\\s+\\d+:\\d+:\\d+)\\s+(?P<ENTRY>.*)`}
-              style={{ ...inputStyle, fontFamily: "var(--font-mono)", fontSize: 11 }}
-            />
-            <div style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--muted)", marginTop: 4 }}>
-              Use Python named groups: <code style={{ color: "#22d3ee" }}>(?P&lt;TIME&gt;…)</code> for timestamp and <code style={{ color: "#86efac" }}>(?P&lt;ENTRY&gt;…)</code> for value/content
-            </div>
-          </div>
-
-          {/* Activation + Deactivation side by side */}
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 4 }}>
-            <div>
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 5 }}>
-                <div style={FIELD_LABEL}>Activation Command</div>
-                <RunBtn cmdKey="activation" label="Test Activation" cmd={entry.log_activation_cmd} />
+          {/* ── Terminal Panel ── */}
+          <div style={S.terminal}>
+            {/* Tab bar */}
+            <div style={S.termBar}>
+              {/* Traffic lights */}
+              <div style={{ display: "flex", gap: 5, marginRight: 12 }}>
+                {["#f87171","#fbbf24","#4ade80"].map((c, i) => (
+                  <div key={i} style={{ width: 9, height: 9, borderRadius: "50%", background: c, opacity: 0.6 }} />
+                ))}
               </div>
+              {TABS.map(tab => (
+                <button key={tab.key} onClick={() => setActiveTab(tab.key)}
+                  style={S.termTab(
+                    activeTab === tab.key,
+                    outputs[tab.key] != null,
+                    !!errors[tab.key],
+                  )}>
+                  <span>{tab.icon}</span>
+                  <span>{tab.label}</span>
+                  {running === tab.key && (
+                    <svg width="9" height="9" viewBox="0 0 9 9" style={{ animation: "spin 1s linear infinite", flexShrink: 0 }}>
+                      <circle cx="4.5" cy="4.5" r="3.5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeDasharray="11" strokeDashoffset="5.5" />
+                    </svg>
+                  )}
+                  {outputs[tab.key] != null && running !== tab.key && (
+                    <span style={{ fontSize: 9, color: errors[tab.key] ? "#f87171" : "#4ade80" }}>
+                      {errors[tab.key] ? "✖" : "✔"}
+                    </span>
+                  )}
+                </button>
+              ))}
+              <div style={{ flex: 1 }} />
+              <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "#1f2937", paddingRight: 12 }}>
+                {conn.user && conn.ip_address ? `${conn.user}@${conn.ip_address}` : "not connected"}
+              </span>
+            </div>
+
+            {/* Command prompt input line */}
+            <div style={S.promptLine}>
+              <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "#4ade80", flexShrink: 0 }}>$</span>
               <input
-                value={entry.log_activation_cmd}
-                onChange={e => set("log_activation_cmd", e.target.value)}
-                placeholder="true"
-                style={{ ...inputStyle, fontFamily: "var(--font-mono)", fontSize: 12 }}
+                value={entry[currentTab.cmdKey] || ""}
+                onChange={e => set(currentTab.cmdKey, e.target.value)}
+                onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); execCmd(activeTab); } }}
+                placeholder={currentTab.hint}
+                style={S.cmdInput}
               />
-              <div style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--muted)", marginTop: 4 }}>
-                Must exit 0 for this log to be active. Use <code>true</code> to always enable.
-              </div>
+              <button onClick={() => execCmd(activeTab)} disabled={!!running} style={S.runBtn(!!running)}>
+                {running === activeTab ? (
+                  <><svg width="9" height="9" viewBox="0 0 9 9" style={{ animation: "spin 1s linear infinite" }}>
+                    <circle cx="4.5" cy="4.5" r="3.5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeDasharray="11" strokeDashoffset="5.5" />
+                  </svg> running</>
+                ) : "run ↵"}
+              </button>
             </div>
-            <div>
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 5 }}>
-                <div style={FIELD_LABEL}>Deactivation Command <span style={{ color: "var(--muted)", textTransform: "none", letterSpacing: 0 }}>(optional)</span></div>
-                <RunBtn cmdKey="deactivation" label="Test Deactivation" cmd={entry.log_deactivation_cmd} />
-              </div>
-              <input
-                value={entry.log_deactivation_cmd || ""}
-                onChange={e => set("log_deactivation_cmd", e.target.value)}
-                placeholder="e.g. service mylogd stop"
-                style={{ ...inputStyle, fontFamily: "var(--font-mono)", fontSize: 12 }}
+
+            {/* Error bar */}
+            {errors[activeTab] && (
+              <div style={{
+                fontFamily: "var(--font-mono)", fontSize: 11, color: "#f87171",
+                background: "rgba(248,113,113,0.07)", borderTop: "1px solid rgba(248,113,113,0.15)",
+                padding: "6px 14px",
+              }}>⚠ {errors[activeTab]}</div>
+            )}
+
+            {/* Output area */}
+            {outputs[activeTab] != null ? (
+              <TerminalOutput
+                lines={outputs[activeTab].split("\n")}
+                regex={activeTab === "collect" ? entry.data_extraction_regex : null}
+                regexError={reErr}
+                onMarkSpan={handleMarkSpan}
+                markMode={activeTab === "collect" ? markMode : null}
               />
-              <div style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--muted)", marginTop: 4 }}>
-                Run on collection stop to disable the log source.
+            ) : (
+              <div style={{
+                fontFamily: "var(--font-mono)", fontSize: 11, color: "#1f2937",
+                padding: "18px 14px", textAlign: "center",
+              }}>
+                {running === activeTab
+                  ? "executing…"
+                  : `press run ↵ to test ${activeTab} command`}
               </div>
-            </div>
+            )}
           </div>
 
-          {/* Live output pane — shows whichever cmd was last tested */}
-          {activePane && (
+          {/* ── Regex Builder (only shown when collect has output) ── */}
+          {activeTab === "collect" && outputs.collect != null && (
             <div style={{
-              marginTop: 14, background: "rgba(0,0,0,0.25)", border: "1px solid rgba(129,140,248,0.2)",
+              marginTop: 10, background: "#0a0d12",
+              border: `1px solid ${reErr ? "rgba(248,113,113,0.3)" : "rgba(129,140,248,0.18)"}`,
               borderRadius: 8, padding: "12px 14px",
             }}>
-              {/* Pane tab selector */}
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
-                <div style={{ display: "flex", gap: 6 }}>
-                  {[
-                    { key: "log", label: "▶ Command" },
-                    { key: "activation", label: "⚡ Activation" },
-                    { key: "deactivation", label: "⛔ Deactivation" },
-                  ].filter(tab => paneOutputs[tab.key] !== null || paneErrors[tab.key] || activePane === tab.key).map(tab => (
-                    <button
-                      key={tab.key}
-                      onClick={() => setActivePane(tab.key)}
-                      style={{
-                        fontFamily: "var(--font-mono)", fontSize: 11, fontWeight: 700,
-                        background: activePane === tab.key ? "rgba(129,140,248,0.15)" : "transparent",
-                        border: `1px solid ${activePane === tab.key ? "rgba(129,140,248,0.4)" : "transparent"}`,
-                        borderRadius: 5, padding: "3px 9px",
-                        color: activePane === tab.key ? "var(--accent)" : "var(--muted)",
-                        cursor: "pointer", transition: "all 0.12s",
-                      }}
-                    >
-                      {tab.label}
-                      {paneOutputs[tab.key] !== null && (
-                        <span style={{ marginLeft: 5, color: paneErrors[tab.key] ? "#f87171" : "#4ade80", fontSize: 10 }}>
-                          {paneErrors[tab.key] ? "✖" : "✔"}
-                        </span>
-                      )}
-                    </button>
-                  ))}
-                </div>
+              {/* Header row */}
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
+                <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.08em" }}>
+                  extraction regex
+                </span>
+                {matchCount && (
+                  <span style={{
+                    fontFamily: "var(--font-mono)", fontSize: 10,
+                    color: matchCount.matched > 0 ? "#4ade80" : "#f87171",
+                    background: matchCount.matched > 0 ? "rgba(74,222,128,0.08)" : "rgba(248,113,113,0.08)",
+                    border: `1px solid ${matchCount.matched > 0 ? "rgba(74,222,128,0.2)" : "rgba(248,113,113,0.2)"}`,
+                    borderRadius: 4, padding: "2px 7px",
+                  }}>
+                    {matchCount.matched > 0 ? `✔ ${matchCount.matched}/${matchCount.total} lines matched` : `✖ 0/${matchCount.total} matched`}
+                  </span>
+                )}
+                <div style={{ flex: 1 }} />
+                {/* Mark-mode buttons */}
+                <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "#374151" }}>click to mark →</span>
                 <button
-                  onClick={() => setActivePane(null)}
-                  style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer", fontSize: 15 }}
-                >×</button>
+                  onClick={() => setMarkMode(markMode === "TIME" ? null : "TIME")}
+                  style={S.markBtn(markMode === "TIME", "#f59e0b")}
+                >
+                  {timeSpan ? `TIME: "${timeSpan.text.slice(0,16)}${timeSpan.text.length>16?"…":""}"` : "⏱ mark TIME"}
+                </button>
+                <button
+                  onClick={() => setMarkMode(markMode === "ENTRY" ? null : "ENTRY")}
+                  style={S.markBtn(markMode === "ENTRY", "#86efac")}
+                >
+                  {entrySpan ? `ENTRY: "${entrySpan.text.slice(0,16)}${entrySpan.text.length>16?"…":""}"` : "📌 mark ENTRY"}
+                </button>
+                {(timeSpan || entrySpan) && (
+                  <button onClick={clearSpans} style={{ background: "none", border: "none", color: "#374151", fontFamily: "var(--font-mono)", fontSize: 10, cursor: "pointer", padding: "2px 4px" }}>
+                    ✕ clear
+                  </button>
+                )}
               </div>
 
-              {paneErrors[activePane] && (
-                <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "#f87171",
-                  background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.2)",
-                  borderRadius: 6, padding: "6px 10px", marginBottom: 8 }}>
-                  ⚠ {paneErrors[activePane]}
-                </div>
-              )}
-
-              {testing === activePane && (
-                <div style={{ display: "flex", alignItems: "center", gap: 8, color: "var(--muted)", fontFamily: "var(--font-mono)", fontSize: 12 }}>
-                  <svg width="12" height="12" viewBox="0 0 12 12" style={{ animation: "spin 1s linear infinite" }}>
-                    <circle cx="6" cy="6" r="5" fill="none" stroke="var(--accent)" strokeWidth="1.8" strokeDasharray="16" strokeDashoffset="8" />
-                  </svg>
-                  Executing on device{entry.custom_shell_prompt ? " (custom shell)" : ""}…
-                </div>
-              )}
-
-              {activePane === "log" && paneOutputs.log && (
-                <RegexTestOverlay output={paneOutputs.log} regex={entry.data_extraction_regex} />
-              )}
-
-              {activePane !== "log" && paneOutputs[activePane] && (
+              {/* Mark-mode active hint */}
+              {markMode && (
                 <div style={{
-                  fontFamily: "var(--font-mono)", fontSize: 11, lineHeight: 1.65,
-                  background: "rgba(0,0,0,0.35)", border: "1px solid var(--border)", borderRadius: 8,
-                  padding: "10px 14px", maxHeight: 220, overflowY: "auto", whiteSpace: "pre-wrap",
-                  wordBreak: "break-all", color: "#94a3b8",
+                  fontFamily: "var(--font-mono)", fontSize: 11,
+                  color: markMode === "TIME" ? "#f59e0b" : "#86efac",
+                  background: markMode === "TIME" ? "rgba(245,158,11,0.08)" : "rgba(134,239,172,0.08)",
+                  border: `1px solid ${markMode === "TIME" ? "rgba(245,158,11,0.25)" : "rgba(134,239,172,0.2)"}`,
+                  borderRadius: 5, padding: "6px 10px", marginBottom: 8,
                 }}>
-                  {paneOutputs[activePane]}
+                  ✦ Select the <strong>{markMode}</strong> portion in the terminal output above, then release.
+                  {markMode === "TIME" ? " This will capture the timestamp." : " This will capture the log value/content."}
                 </div>
               )}
+
+              {/* Regex input */}
+              <input
+                value={entry.data_extraction_regex}
+                onChange={e => { set("data_extraction_regex", e.target.value); clearSpans(); }}
+                placeholder="^(?P<TIME>\\w+\\s+\\d+\\s+\\d+:\\d+:\\d+)\\s+(?P<ENTRY>.*)"
+                style={{
+                  ...inputStyle,
+                  fontFamily: "var(--font-mono)", fontSize: 11,
+                  background: "rgba(0,0,0,0.4)",
+                  borderColor: reErr ? "rgba(248,113,113,0.5)" : "rgba(129,140,248,0.25)",
+                  color: reErr ? "#f87171" : "#a5b4fc",
+                }}
+              />
+              {reErr && (
+                <div style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "#f87171", marginTop: 5 }}>
+                  ⚠ {reErr}
+                </div>
+              )}
+              <div style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "#1f2937", marginTop: 5 }}>
+                Named groups: <span style={{ color: "#f59e0b" }}>(?P&lt;TIME&gt;…)</span> for timestamp · <span style={{ color: "#86efac" }}>(?P&lt;ENTRY&gt;…)</span> for value
+              </div>
             </div>
           )}
+
         </div>
       )}
     </div>
@@ -2627,7 +2798,7 @@ function ConfigBuilderModal({ open, onClose, onSave }) {
   const [step, setStep] = useState(1); // 1=connection, 2=log entries
   const EMPTY_CONN = () => ({
     device_name: "", ip_address: "", port: 22,
-    user: "pi", password: "", collection_interval: 30,
+    user: "pi", password: "", ssh_key_string: "", authMode: "password", collection_interval: 30,
     gateways: [],
   });
   const [conn, setConn] = useState(EMPTY_CONN);
@@ -2647,6 +2818,7 @@ function ConfigBuilderModal({ open, onClose, onSave }) {
           port: Number(conn.port),
           user: conn.user,
           password: conn.password,
+          ssh_key_string: conn.ssh_key_string || "",
           gateways: conn.gateways,
         }),
       });
@@ -2671,16 +2843,26 @@ function ConfigBuilderModal({ open, onClose, onSave }) {
   };
 
   const buildConfig = () => {
-    const log_file_configs = entries.map(({ _id, ...rest }) => rest);
+    const log_file_configs = entries.map(({ _id, ...rest }) => {
+      // Drop optional keys that were left empty so they don't appear in the config
+      const entry = { ...rest };
+      if (!entry.log_activation_cmd)   delete entry.log_activation_cmd;
+      if (!entry.log_deactivation_cmd) delete entry.log_deactivation_cmd;
+      if (!entry.custom_shell_prompt)  delete entry.custom_shell_prompt;
+      return entry;
+    });
     const config = {
       device_name: conn.device_name || `device-${conn.ip_address}`,
       ip_address: conn.ip_address,
       port: Number(conn.port),
       user: conn.user,
-      password: conn.password,
       collection_interval: Number(conn.collection_interval),
       log_file_configs,
     };
+
+    // Include whichever auth method is populated; omit the other if empty
+    if (conn.ssh_key_string) config.ssh_key_string = conn.ssh_key_string;
+    if (conn.password)       config.password        = conn.password;
 
     // Convert flat gateways[] → nested { gateway: { ..., gateway: { ... } } }
     // Hops are ordered outermost-first, so fold right-to-left.
@@ -2692,8 +2874,9 @@ function ConfigBuilderModal({ open, onClose, onSave }) {
             ip_address: hop.ip_address,
             port: Number(hop.port || 22),
             user: hop.user,
-            password: hop.password,
           };
+          if (hop.ssh_key_string) hopObj.ssh_key_string = hop.ssh_key_string;
+          if (hop.password)       hopObj.password        = hop.password;
           if (inner) hopObj.gateway = inner;
           return hopObj;
         }, null);
@@ -2736,11 +2919,11 @@ function ConfigBuilderModal({ open, onClose, onSave }) {
   const step2Valid = entries.length > 0 && entries.every(e => e.log_name && e.log_file_cmd);
 
   const stepTabStyle = (s) => ({
-    display: "flex", alignItems: "center", gap: 8, padding: "10px 20px",
-    background: step === s ? "rgba(129,140,248,0.12)" : "transparent",
+    display: "flex", alignItems: "center", gap: 9, padding: "12px 24px",
+    background: step === s ? "rgba(129,140,248,0.08)" : "transparent",
     border: "none", borderBottom: `2px solid ${step === s ? "var(--accent)" : "transparent"}`,
     color: step === s ? "var(--accent)" : step > s ? "#4ade80" : "var(--muted)",
-    fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 12,
+    fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 13,
     cursor: "pointer", transition: "all 0.15s", letterSpacing: "0.04em",
     opacity: (s === 2 && !step1Valid) ? 0.4 : 1,
   });
@@ -2751,22 +2934,25 @@ function ConfigBuilderModal({ open, onClose, onSave }) {
       <div style={{ position: "absolute", inset: 0, background: "rgba(0,0,0,0.8)", backdropFilter: "blur(6px)" }} />
       <div style={{
         position: "relative", zIndex: 1, background: "var(--modal-bg)", border: "1px solid var(--border)",
-        borderRadius: 14, width: 820, maxWidth: "calc(100vw - 32px)",
+        borderRadius: 16, width: 1060, maxWidth: "calc(100vw - 32px)",
         maxHeight: "calc(100vh - 40px)", display: "flex", flexDirection: "column",
-        boxShadow: "0 24px 80px rgba(0,0,0,0.6)",
+        boxShadow: "0 32px 96px rgba(0,0,0,0.7), 0 0 0 1px rgba(129,140,248,0.06)",
       }}>
         {/* Header */}
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "18px 24px", borderBottom: "1px solid var(--border)", flexShrink: 0 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-            <div style={{ width: 34, height: 34, borderRadius: "50%", background: "rgba(129,140,248,0.14)", border: "1px solid rgba(129,140,248,0.3)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "20px 28px", borderBottom: "1px solid var(--border)", flexShrink: 0, background: "rgba(129,140,248,0.03)" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+            <div style={{ width: 38, height: 38, borderRadius: 10, background: "linear-gradient(135deg, rgba(129,140,248,0.2) 0%, rgba(167,139,250,0.12) 100%)", border: "1px solid rgba(129,140,248,0.3)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, boxShadow: "0 2px 8px rgba(129,140,248,0.15)" }}>
               🛠
             </div>
             <div>
-              <div style={{ fontFamily: "var(--font-display)", fontWeight: 800, fontSize: 16, color: "var(--text)", letterSpacing: "0.03em" }}>Device Config Builder</div>
-              <div style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--muted)", marginTop: 1 }}>Build and test your configuration interactively</div>
+              <div style={{ fontFamily: "var(--font-display)", fontWeight: 800, fontSize: 17, color: "var(--text)", letterSpacing: "0.02em" }}>Device Config Builder</div>
+              <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--muted)", marginTop: 2 }}>Build and test your configuration interactively</div>
             </div>
           </div>
-          <button onClick={onClose} style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer", fontSize: 22, lineHeight: 1, padding: "2px 6px" }}>×</button>
+          <button onClick={onClose} style={{ background: "rgba(255,255,255,0.06)", border: "1px solid var(--border)", borderRadius: 8, color: "var(--muted)", cursor: "pointer", fontSize: 18, lineHeight: 1, padding: "5px 9px", transition: "all 0.15s" }}
+            onMouseEnter={e => e.currentTarget.style.color = "var(--text)"}
+            onMouseLeave={e => e.currentTarget.style.color = "var(--muted)"}
+          >×</button>
         </div>
 
         {/* Step tabs */}
@@ -2785,7 +2971,7 @@ function ConfigBuilderModal({ open, onClose, onSave }) {
         </div>
 
         {/* Body */}
-        <div style={{ flex: 1, overflowY: "auto", padding: "22px 26px", minHeight: 0 }}>
+        <div style={{ flex: 1, overflowY: "auto", padding: "26px 32px", minHeight: 0 }}>
 
           {/* ── STEP 1: Connection ── */}
           {step === 1 && (
@@ -2807,7 +2993,23 @@ function ConfigBuilderModal({ open, onClose, onSave }) {
               </div>
 
               <div style={CARD}>
-                <div style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 13, color: "var(--text)", marginBottom: 14 }}>SSH Credentials</div>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
+                  <div style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 13, color: "var(--text)" }}>SSH Credentials</div>
+                  {/* Auth mode toggle */}
+                  <div style={{ display: "flex", gap: 0, borderRadius: 7, border: "1px solid var(--border)", overflow: "hidden" }}>
+                    {["password", "key"].map(mode => (
+                      <button key={mode} onClick={() => setC("authMode", mode)} style={{
+                        padding: "5px 14px", border: "none", cursor: "pointer",
+                        fontFamily: "var(--font-mono)", fontSize: 11, fontWeight: 600,
+                        background: conn.authMode === mode ? "rgba(129,140,248,0.18)" : "transparent",
+                        color: conn.authMode === mode ? "var(--accent)" : "var(--muted)",
+                        transition: "all 0.12s",
+                      }}>
+                        {mode === "password" ? "🔑 Password" : "📄 SSH Key"}
+                      </button>
+                    ))}
+                  </div>
+                </div>
                 <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 14, marginBottom: 12 }}>
                   <div>
                     <div style={FIELD_LABEL}>IP Address *</div>
@@ -2820,18 +3022,46 @@ function ConfigBuilderModal({ open, onClose, onSave }) {
                       style={{ ...inputStyle, width: 80 }} />
                   </div>
                 </div>
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: conn.authMode === "key" ? 12 : 0 }}>
                   <div>
                     <div style={FIELD_LABEL}>Username *</div>
                     <input value={conn.user} onChange={e => setC("user", e.target.value)}
                       placeholder="pi" style={inputStyle} />
                   </div>
-                  <div>
-                    <div style={FIELD_LABEL}>Password</div>
-                    <input type="password" value={conn.password} onChange={e => setC("password", e.target.value)}
-                      placeholder="••••••••" style={inputStyle} />
-                  </div>
+                  {conn.authMode === "password" ? (
+                    <div>
+                      <div style={FIELD_LABEL}>Password</div>
+                      <input type="password" value={conn.password} onChange={e => setC("password", e.target.value)}
+                        placeholder="••••••••" style={inputStyle} />
+                    </div>
+                  ) : (
+                    <div style={{ display: "flex", alignItems: "flex-end" }}>
+                      <div style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--muted)", padding: "10px 0 10px 2px", letterSpacing: "0.04em" }}>
+                        Paste the private key below
+                      </div>
+                    </div>
+                  )}
                 </div>
+                {conn.authMode === "key" && (
+                  <div style={{ marginBottom: 0 }}>
+                    <div style={FIELD_LABEL}>Private Key (PEM)</div>
+                    <textarea
+                      value={conn.ssh_key_string}
+                      onChange={e => setC("ssh_key_string", e.target.value)}
+                      placeholder={"-----BEGIN OPENSSH PRIVATE KEY-----\n...\n-----END OPENSSH PRIVATE KEY-----"}
+                      rows={6}
+                      style={{
+                        ...inputStyle,
+                        fontFamily: "var(--font-mono)", fontSize: 11, lineHeight: 1.6,
+                        resize: "vertical", minHeight: 110,
+                        whiteSpace: "pre", overflowX: "auto",
+                      }}
+                    />
+                    <div style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--muted)", marginTop: 5 }}>
+                      Paste the full contents of your private key file (e.g. <span style={{ color: "var(--accent)" }}>~/.ssh/id_rsa</span>)
+                    </div>
+                  </div>
+                )}
 
                 {/* Test connection */}
                 <div style={{ marginTop: 16, display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
@@ -2878,7 +3108,7 @@ function ConfigBuilderModal({ open, onClose, onSave }) {
                     </div>
                   </div>
                   <button
-                    onClick={() => setC("gateways", [...(conn.gateways || []), { _id: Math.random().toString(36).slice(2), ip_address: "", port: 22, user: "", password: "" }])}
+                    onClick={() => setC("gateways", [...(conn.gateways || []), { _id: Math.random().toString(36).slice(2), ip_address: "", port: 22, user: "", password: "", ssh_key_string: "", authMode: "password" }])}
                     style={{ background: "rgba(129,140,248,0.1)", border: "1px solid rgba(129,140,248,0.3)", borderRadius: 7, color: "var(--accent)", fontFamily: "var(--font-mono)", fontSize: 11, fontWeight: 700, padding: "5px 12px", cursor: "pointer", whiteSpace: "nowrap" }}
                   >
                     + Add Hop
@@ -2918,7 +3148,7 @@ function ConfigBuilderModal({ open, onClose, onSave }) {
                         </div>
                       </div>
                       {/* Hop fields */}
-                      <div style={{ display: "grid", gridTemplateColumns: "1fr 70px 1fr 1fr", gap: 10 }}>
+                      <div style={{ display: "grid", gridTemplateColumns: "1fr 70px 1fr 1fr", gap: 10, marginBottom: hop.authMode === "key" ? 10 : 0 }}>
                         <div>
                           <div style={FIELD_LABEL}>IP Address</div>
                           <input value={hop.ip_address} onChange={e => setHop("ip_address", e.target.value)} placeholder="10.0.1.1" style={inputStyle} />
@@ -2932,10 +3162,44 @@ function ConfigBuilderModal({ open, onClose, onSave }) {
                           <input value={hop.user} onChange={e => setHop("user", e.target.value)} placeholder="admin" style={inputStyle} />
                         </div>
                         <div>
-                          <div style={FIELD_LABEL}>Password</div>
-                          <input type="password" value={hop.password} onChange={e => setHop("password", e.target.value)} placeholder="••••••" style={inputStyle} />
+                          <div style={{ ...FIELD_LABEL, display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 5 }}>
+                            <span>Auth</span>
+                            <div style={{ display: "flex", gap: 0, borderRadius: 5, border: "1px solid var(--border)", overflow: "hidden" }}>
+                              {["password", "key"].map(mode => (
+                                <button key={mode} onClick={() => setHop("authMode", mode)} style={{
+                                  padding: "2px 9px", border: "none", cursor: "pointer",
+                                  fontFamily: "var(--font-mono)", fontSize: 10, fontWeight: 600,
+                                  background: hop.authMode === mode ? "rgba(129,140,248,0.18)" : "transparent",
+                                  color: hop.authMode === mode ? "var(--accent)" : "var(--muted)",
+                                  transition: "all 0.12s",
+                                }}>{mode === "password" ? "pwd" : "key"}</button>
+                              ))}
+                            </div>
+                          </div>
+                          {hop.authMode !== "key" ? (
+                            <input type="password" value={hop.password} onChange={e => setHop("password", e.target.value)} placeholder="••••••" style={inputStyle} />
+                          ) : (
+                            <input value="(key set below)" readOnly style={{ ...inputStyle, color: "var(--accent)", cursor: "default", opacity: 0.7 }} />
+                          )}
                         </div>
                       </div>
+                      {hop.authMode === "key" && (
+                        <div>
+                          <div style={FIELD_LABEL}>Private Key (PEM)</div>
+                          <textarea
+                            value={hop.ssh_key_string}
+                            onChange={e => setHop("ssh_key_string", e.target.value)}
+                            placeholder={"-----BEGIN OPENSSH PRIVATE KEY-----\n...\n-----END OPENSSH PRIVATE KEY-----"}
+                            rows={4}
+                            style={{
+                              ...inputStyle,
+                              fontFamily: "var(--font-mono)", fontSize: 11, lineHeight: 1.6,
+                              resize: "vertical", minHeight: 80,
+                              whiteSpace: "pre", overflowX: "auto",
+                            }}
+                          />
+                        </div>
+                      )}
                     </div>
                   );
                 })}
@@ -3004,7 +3268,7 @@ function ConfigBuilderModal({ open, onClose, onSave }) {
         </div>
 
         {/* Footer */}
-        <div style={{ borderTop: "1px solid var(--border)", padding: "14px 24px", display: "flex", gap: 10, justifyContent: "space-between", alignItems: "center", flexShrink: 0 }}>
+        <div style={{ borderTop: "1px solid var(--border)", padding: "16px 28px", display: "flex", gap: 10, justifyContent: "space-between", alignItems: "center", flexShrink: 0, background: "rgba(0,0,0,0.12)" }}>
           <div style={{ display: "flex", gap: 8 }}>
             {step === 2 && (
               <button
