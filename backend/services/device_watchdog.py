@@ -20,7 +20,7 @@ class DeviceWatchdog:
     """
     A class used to logs collection for target device using defined configuration.
     """
-    def __init__(self, device_config):
+    def __init__(self, device_config, device_config_id):
         """
         Initializes a DeviceWatchdog instance.
 
@@ -28,7 +28,7 @@ class DeviceWatchdog:
             device_config (dict): Connection and logging configuraiton for target device.
         """
         self.device_config = device_config
-        self.device_name = device_config["device_name"]
+        self.device_config_id = device_config_id
         self.ssh_channels = {}
         self.collected_data = {}
         self.errors = pd.DataFrame({"time": [], "error_info": []})
@@ -189,7 +189,7 @@ class DeviceWatchdog:
             log_type = self.get_target_log_param_based_on_log_name(log_name, "log_type")
             data_unit = self.get_target_log_param_based_on_log_name(log_name, "data_unit")
             if not log_content.empty:
-                self.log_snapshots.append(LogSnapshot(self.device_name, log_name, session_id, session_scenario, data_unit, log_type, log_content))
+                self.log_snapshots.append(LogSnapshot(self.device_config_id, self.device_config["device_name"], log_name, session_id, session_scenario, data_unit, log_type, log_content))
 
     def get_target_log_param_based_on_log_name(self, log_name, log_param):
         """
@@ -341,7 +341,7 @@ if __name__ == '__main__':
     arg_parser.add_argument("device_config_file_path", help="Path to target device config file")
     args = arg_parser.parse_args()
     init_device_config = get_current_device_config(args.device_config_file_path)
-    device_watchdog = DeviceWatchdog(init_device_config)
+    device_watchdog = DeviceWatchdog(init_device_config, args.device_config_file_path.split("/")[1])
     auto_collection_timer = 0
     while True:
         current_device_config = get_current_device_config(args.device_config_file_path)
@@ -363,6 +363,6 @@ if __name__ == '__main__':
         device_watchdog.get_connection_status()
         update_device_config_parameter(args.device_config_file_path, "connected", device_watchdog.connection_status)
         update_device_config_parameter(args.device_config_file_path, "logs_available", device_watchdog.log_access)
-        errors_file_path = f"data/{device_watchdog.device_name}/errors.feather"
+        errors_file_path = f"data/{device_watchdog.device_config_id}/errors.feather"
         device_watchdog.errors.to_feather(errors_file_path)
         sleep(5)

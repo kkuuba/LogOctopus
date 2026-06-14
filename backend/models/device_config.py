@@ -10,13 +10,23 @@ class DeviceConfig:
     A class used to store and manage device configuration.
     """
     def __init__(self, file_content_str):
+        self.watchdog_data = {
+                "logs_collection": False,
+                "current_session_id": "no_active_session",
+                "session_scenario": "no_active_session",
+                "connected": False,
+                "logs_available": False,
+                "watchdog_process_pid": 0,
+                "auto_collection_enabled": False,
+                "auto_collection_interval": 0
+            }
         self.device_config_id = self.save_config_file(file_content_str)
         self.device_config_path = f"/tmp/{self.device_config_id}.json"
         self.device_config = None
 
     def save_config_file(self, file_content_str):
         decoded = base64.b64decode(file_content_str)
-        device_config_id = hashlib.sha256(json.loads(decoded)["device_name"].encode()).hexdigest()[:12]
+        device_config_id = self.get_device_config_id(json.loads(decoded))
         with open(f"/tmp/{device_config_id}.json", "wb") as f:
             f.write(decoded)
 
@@ -30,20 +40,10 @@ class DeviceConfig:
         try:
             with open(self.device_config_path, encoding='utf-8', errors='ignore') as config_file:
                 config_data = json.load(config_file)
-            watchdog_data = {
-                "logs_collection": False,
-                "current_session_id": "no_active_session",
-                "session_scenario": "no_active_session",
-                "connected": False,
-                "logs_available": False,
-                "watchdog_process_pid": 0,
-                "auto_collection_enabled": False,
-                "auto_collection_interval": 0
-            }
-            config_data.update(watchdog_data)
+            config_data.update(self.watchdog_data)
             with open(self.device_config_path, 'w', encoding='utf-8') as config_file:
                 json.dump(config_data, config_file, indent=2)
-            target_device_directory = f"data/{config_data['device_name']}"
+            target_device_directory = f"data/{self.device_config_id}"
             target_config_path = f"{target_device_directory}/{self.device_config_path.split('/')[-1]}"
             if not os.path.exists(target_device_directory):
                 os.mkdir(target_device_directory)
@@ -84,3 +84,9 @@ class DeviceConfig:
         data[key] = value
         with open(config_path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
+
+    def get_device_config_id(self, device_config):
+        for not_const_key in list(self.watchdog_data.keys()):
+            if not_const_key in device_config.keys():
+                device_config.pop(not_const_key)
+        return hashlib.sha256(json.dumps(device_config, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()[:12]

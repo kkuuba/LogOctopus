@@ -3812,16 +3812,6 @@ export default function App() {
       // Decode name from config to check for conflicts before hitting the API
       const raw = contents.includes(",") ? contents.split(",")[1] : contents;
       const parsed = JSON.parse(atob(raw));
-      const incomingName = (parsed.device_name || "").toLowerCase();
-      const taken = [
-        ...devices.map(d => d.name.toLowerCase()),
-        ...groups.map(g => g.name.toLowerCase()),
-      ];
-      if (incomingName && taken.includes(incomingName)) {
-        addToast(`A device or group named "${parsed.device_name}" already exists.`);
-        return;
-      }
-
       const { device } = await apiFetch("/api/devices", { method: "POST", body: JSON.stringify({ contents }) });
       setDevices((prev) => [...prev, device]);
       addToast("Device added successfully.", "success");

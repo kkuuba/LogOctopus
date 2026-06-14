@@ -1,6 +1,5 @@
 import os
 import shutil
-import json
 import time
 import subprocess
 import pandas as pd
@@ -21,7 +20,7 @@ class Device:
         self.watchdog_process_pid = self.device_config["watchdog_process_pid"]
         self.auto_collection_enabled = self.device_config["auto_collection_enabled"]
         self.auto_collection_interval = self.device_config["auto_collection_interval"]
-        self.log_snapshots = LogSnapshotsLoader(os.path.join("data", self.device_name)).load_all_log_snapshots()
+        self.log_snapshots = LogSnapshotsLoader(os.path.join("data", self.device_config_id)).load_all_log_snapshots()
         self.errors = pd.DataFrame({"time": [], "error_info": []})
         if  self.watchdog_process_pid == 0 or not self.is_process_active():
             watchdog_process = subprocess.Popen(["python", "-m", "backend.services.device_watchdog", self.device_config_instance.device_config_path])
@@ -34,7 +33,7 @@ class Device:
         Returns:
             list: List of all error log entries for target device.
         """
-        self.errors = pd.read_parquet(f"data/{self.device_name}/errors.feather")
+        self.errors = pd.read_parquet(f"data/{self.device_config_id}/errors.feather")
 
     def start_logs_collection(self, session_id, session_scenario):
         """
@@ -58,7 +57,7 @@ class Device:
         """
         Remove all data files conected with this target device.
         """
-        device_directory_path = f"data/{self.device_name}"
+        device_directory_path = f"data/{self.device_config_id}"
         shutil.rmtree(device_directory_path)
 
     def is_process_active(self):

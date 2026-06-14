@@ -8,10 +8,11 @@ class LogSnapshot:
     """
     A class to perform basic operations on collected logs.
     """
-    def __init__(self, device_name, log_name, session_id, session_scenario, data_unit, log_type, collected_data, loaded_from_file=False):
+    def __init__(self, device_id, device_name, log_name, session_id, session_scenario, data_unit, log_type, collected_data, loaded_from_file=False):
+        self.device_id = device_id
         self.device_name = device_name
         self.log_name = log_name
-        self.id = hashlib.md5(f"{device_name}_{log_name}_{session_id}".encode()).hexdigest()[:16]
+        self.id = hashlib.md5(f"{device_id}_{log_name}_{session_id}".encode()).hexdigest()[:16]
         self.collected_data = collected_data
         self.creation_time =datetime.now()
         self.session_id = session_id
@@ -22,7 +23,7 @@ class LogSnapshot:
         self.logs_collection_duration = self.calcaute_logs_collection_duration()
         self.size_in_bytes = self.get_size_of_collected_data_in_bytes()
         if not loaded_from_file:
-            self.data_file_name = self.create_parquet_data_file(device_name)
+            self.data_file_name = self.create_parquet_data_file()
 
     def calcaute_logs_collection_duration(self):
         """
@@ -64,13 +65,10 @@ class LogSnapshot:
 
         return size_in_bytes
 
-    def create_parquet_data_file(self, device_name):
+    def create_parquet_data_file(self):
         """
         Save all data into file in 'parqet' format with all collected logs.
         
-        Args:
-            device_name (str): Name of target device where logs were collected.
-
         Returns:
             str: Data file path for LogSnapshot in 'parqet' format.
         """
@@ -80,6 +78,7 @@ class LogSnapshot:
             "session_scenario": self.session_scenario,
             "data_unit": self.data_unit,
             "log_type": self.log_type,
+            "device_name": self.device_name,
         }
         collected_data_table = pa.Table.from_pandas(self.collected_data)
         existing_metadata = collected_data_table.schema.metadata or {}
@@ -89,7 +88,7 @@ class LogSnapshot:
         }
         collected_data_table_with_metadata = collected_data_table.replace_schema_metadata(new_metadata)
 
-        data_file_path = f"data/{device_name}/{self.id}_{self.creation_time.strftime('%Y%m%d_%H%M%S')}.parquet"
+        data_file_path = f"data/{self.device_id}/{self.id}_{self.creation_time.strftime('%Y%m%d_%H%M%S')}.parquet"
         pq.write_table(collected_data_table_with_metadata, data_file_path)
 
         return data_file_path

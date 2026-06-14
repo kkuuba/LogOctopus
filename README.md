@@ -12,15 +12,27 @@
   </a>
 </p>
 
-LogOctopus collects, stores, and visualises logs from remote devices over SSH. It is designed for use in automated test pipelines where you need to capture system events, performance metrics, and application/hardware logs from multiple machines simultaneously — and then analyse them through a web UI or query them programmatically via REST API.
+SSH-native test execution observability platform for distributed and automated test environments.
+LogOctopus automatically collects, stores, and visualises logs and system data from remote devices over SSH.
+Built for automated and distributed testing workflows, it captures logs, system events, performance metrics, and command outputs from multiple devices within the context of a single test scenario — making debugging and root cause analysis significantly faster.
+Instead of manually gathering logs from different machines after a failed test, LogOctopus centralises all test evidence into one place and exposes it through an interactive web UI and REST API.
 
 ## Fast Track
 
-**What is it?** - LogOctopus is a tool that collects, stores, and visualises logs from remote devices over SSH, offering both a web UI and a REST API for querying the data.
+**What is it?** - LogOctopus is an SSH-native test observability platform that collects logs and execution data from multiple remote devices and organises everything per test session or scenario.
 
-**What problem does it solves?** - It eliminates the manual effort of capturing and correlating system logs from multiple machines during automated test runs, centralising everything into a single searchable interface.
+**What problem does it solves?** - Debugging automated and distributed tests often requires manually collecting and correlating logs across multiple machines, environments, and devices. LogOctopus automates this process by creating a single source of truth for every test execution — including logs, metrics, and execution timelines.
 
-**Who should us that?** - QA and DevOps engineers who need to monitor and analyse logs across multiple remote devices as part of automated test pipelines or CI workflows.
+**Who should us that?** - QA engineers, test automation engineers, DevOps teams, and developers who need to investigate failures, analyse behaviour across multiple devices, and reduce time spent debugging automated test pipelines.
+
+**Typical use cases**
+
+- Collect logs from multiple devices during automated test execution
+- Capture and review system state per test scenario
+- Trigger log collection manually during exploratory testing
+- Correlate logs and metrics across distributed environments
+- Investigate flaky tests and reduce time-to-debug
+- Integrate test diagnostics into CI/CD workflows
 
 ### Deploy with Docker
 
