@@ -308,10 +308,21 @@ def list_snapshots():
         - search_value (str, optional) - Value to match against search_param.
           Filtering is only applied when both parameters are present.
         - log_type (str, optional) - '"text"' (default) or '"chart"'.
+        - page (int, optional) - 1-based page number. Defaults to '1'.
+        - page_size (int, optional) - Items per page. Defaults to '25'.
+          Clamped to the range [1, 500].
 
     Returns:
         200 OK:
-            JSON array of snapshot objects.  Each element contains:
+            JSON object with pagination envelope:
+
+            - items (list[dict]) - Snapshot objects for the requested page.
+            - total (int) - Total matching snapshots across all pages.
+            - page (int) - Current 1-based page number.
+            - page_size (int) - Number of items per page.
+            - total_pages (int) - Total number of pages.
+
+            Each item contains:
 
             - id (str) - Unique snapshot ID.
             - deviceName (str) - Originating device name.
@@ -325,24 +336,36 @@ def list_snapshots():
 
             Example::
 
-                [
-                    {
-                        "id": "snap-001",
-                        "deviceName": "Router-A",
-                        "logName": "syslog",
-                        "startTime": "2024-01-01 10:00:00",
-                        "finishTime": "2024-01-01 10:05:00",
-                        "duration": 300.0,
-                        "sizeKb": 42,
-                        "sessionId": "a1b2c3d4e5f6",
-                        "isChart": false
-                    }
-                ]
+                {
+                    "items": [
+                        {
+                            "id": "snap-001",
+                            "deviceName": "Router-A",
+                            "logName": "syslog",
+                            "startTime": "2024-01-01 10:00:00",
+                            "finishTime": "2024-01-01 10:05:00",
+                            "duration": 300.0,
+                            "sizeKb": 42,
+                            "sessionId": "a1b2c3d4e5f6",
+                            "isChart": false
+                        }
+                    ],
+                    "total": 1,
+                    "page": 1,
+                    "page_size": 25,
+                    "total_pages": 1
+                }
     """
     search_param = request.args.get("search_param")
     search_value = request.args.get("search_value")
     log_type     = request.args.get("log_type", "text")
     is_chart     = log_type == "chart"
+
+    try:
+        page      = max(1, int(request.args.get("page", 1)))
+        page_size = max(1, min(500, int(request.args.get("page_size", 25))))
+    except (TypeError, ValueError):
+        return _bad("page and page_size must be integers")
 
     devices = get_current_devices()
 
@@ -353,7 +376,19 @@ def list_snapshots():
     else:
         snapshots = ConfigurationHelper.get_log_snapshots_list(devices, is_chart)
 
-    return jsonify([snapshot_to_dict(s) for s in snapshots])
+    total       = len(snapshots)
+    total_pages = max(1, -(-total // page_size))   # ceiling division
+    page        = min(page, total_pages)            # clamp to valid range
+    start       = (page - 1) * page_size
+    page_items  = snapshots[start : start + page_size]
+
+    return jsonify({
+        "items":       [snapshot_to_dict(s) for s in page_items],
+        "total":       total,
+        "page":        page,
+        "page_size":   page_size,
+        "total_pages": total_pages,
+    })
 
 
 @app.get("/api/snapshots/<snapshot_id>/content")

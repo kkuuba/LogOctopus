@@ -890,7 +890,7 @@ function DownloadSelectedBtn({ onDownload, disabled = false, loading = false, is
  *     which persists the schedule and uses APScheduler to execute collections.
  *  2. Security — admin password change (stored in localStorage).
  */
-function SettingsModal({ open, onClose, isAdmin, onRequestLogin, auth, addToast }) {
+function SettingsModal({ open, onClose, isAdmin, onRequestLogin, auth, addToast, pageSize, onPageSizeChange }) {
   const [tab, setTab] = useState("security");
 
   // ── Password change state ──
@@ -957,11 +957,56 @@ function SettingsModal({ open, onClose, isAdmin, onRequestLogin, auth, addToast 
 
         {/* Tabs */}
         <div style={{ display: "flex", gap: 4, padding: "12px 20px 0", borderBottom: "1px solid var(--border)", flexShrink: 0 }}>
+          <button style={tabStyle(tab === "display")} onClick={() => setTab("display")}>🖥 Display</button>
           <button style={tabStyle(tab === "security")} onClick={() => setTab("security")}>🔐 Security</button>
         </div>
 
         {/* Body */}
         <div style={{ flex: 1, overflowY: "auto", padding: "20px 24px" }}>
+
+          {/* ── DISPLAY TAB ── */}
+          {tab === "display" && (
+            <div>
+              <div style={card}>
+                <div style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 14, color: "var(--text)", marginBottom: 14 }}>Snapshots per page</div>
+                <div style={{ fontFamily: "var(--font-mono)", fontSize: 12, color: "var(--muted)", marginBottom: 14 }}>
+                  Controls how many rows the server returns per page. Changes apply immediately and are saved in the browser.
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                  {[10, 25, 50, 100, 200].map(n => (
+                    <button
+                      key={n}
+                      onClick={() => onPageSizeChange(n)}
+                      style={{
+                        padding: "7px 18px", borderRadius: 7,
+                        fontFamily: "var(--font-mono)", fontSize: 12,
+                        fontWeight: n === pageSize ? 700 : 400,
+                        cursor: "pointer",
+                        border: `1px solid ${n === pageSize ? "rgba(129,140,248,0.5)" : "var(--border)"}`,
+                        background: n === pageSize ? "rgba(129,140,248,0.15)" : "transparent",
+                        color: n === pageSize ? "var(--accent)" : "var(--text)",
+                        transition: "all 0.12s",
+                      }}
+                    >{n}</button>
+                  ))}
+                  <span style={{ color: "var(--muted)", fontFamily: "var(--font-mono)", fontSize: 11 }}>or custom:</span>
+                  <input
+                    type="number" min={1} max={500} defaultValue={pageSize}
+                    onBlur={e => { const v = parseInt(e.target.value, 10); if (v > 0) onPageSizeChange(v); }}
+                    onKeyDown={e => { if (e.key === "Enter") { const v = parseInt(e.target.value, 10); if (v > 0) onPageSizeChange(v); } }}
+                    style={{
+                      background: "var(--card-bg)", border: "1px solid var(--border)", borderRadius: 7,
+                      color: "var(--text)", fontFamily: "var(--font-mono)", fontSize: 12,
+                      padding: "7px 10px", width: 72, outline: "none",
+                    }}
+                  />
+                </div>
+                <div style={{ marginTop: 14, fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--muted)" }}>
+                  Current: <span style={{ color: "var(--accent)", fontWeight: 700 }}>{pageSize}</span> per page
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* ── SECURITY TAB ── */}
           {tab === "security" && (
@@ -1779,6 +1824,58 @@ function StatusRow({ label, ok, pulseWhenTrue }) {
 }
 
 // ── SNAPSHOTS TABLE ───────────────────────────────────────────────────────────
+// ── SNAPSHOTS PAGINATION ──────────────────────────────────────────────────────
+function SnapshotsPagination({ page, totalPages, total, pageSize, onPage }) {
+  const from = total === 0 ? 0 : (page - 1) * pageSize + 1;
+  const to   = Math.min(page * pageSize, total);
+
+  const btnStyle = (active, disabled) => ({
+    display: "inline-flex", alignItems: "center", justifyContent: "center",
+    minWidth: 32, height: 28, padding: "0 8px",
+    background: active ? "rgba(129,140,248,0.18)" : "transparent",
+    border: `1px solid ${active ? "rgba(129,140,248,0.45)" : "var(--border)"}`,
+    borderRadius: 6,
+    color: active ? "var(--accent)" : disabled ? "var(--muted)" : "var(--text)",
+    fontFamily: "var(--font-mono)", fontSize: 11, fontWeight: active ? 700 : 400,
+    cursor: disabled ? "not-allowed" : "pointer",
+    opacity: disabled ? 0.4 : 1,
+    transition: "all 0.12s",
+  });
+
+  // Build page list: always first/last + a window around current, with ellipsis
+  const WINDOW = 2;
+  const pages = [];
+  for (let i = 1; i <= totalPages; i++) {
+    if (i === 1 || i === totalPages || (i >= page - WINDOW && i <= page + WINDOW)) {
+      pages.push(i);
+    } else if (pages[pages.length - 1] !== "...") {
+      pages.push("...");
+    }
+  }
+
+  return (
+    <div style={{
+      display: "flex", alignItems: "center", justifyContent: "space-between",
+      padding: "10px 16px", borderTop: "1px solid var(--border)",
+      fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--muted)",
+      flexWrap: "wrap", gap: 8,
+    }}>
+      <span>{total === 0 ? "No results" : `${from}–${to} of ${total}`}</span>
+      <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+        <button style={btnStyle(false, page <= 1)} onClick={() => page > 1 && onPage(page - 1)} disabled={page <= 1}>‹ Prev</button>
+        {pages.map((p, i) =>
+          p === "..." ? (
+            <span key={`e${i}`} style={{ padding: "0 4px", color: "var(--muted)" }}>…</span>
+          ) : (
+            <button key={p} style={btnStyle(p === page, false)} onClick={() => p !== page && onPage(p)}>{p}</button>
+          )
+        )}
+        <button style={btnStyle(false, page >= totalPages)} onClick={() => page < totalPages && onPage(page + 1)} disabled={page >= totalPages}>Next ›</button>
+      </div>
+    </div>
+  );
+}
+
 function SnapshotsTable({ snapshots, selected, onSelect, onView }) {
   if (snapshots.length === 0) {
     return (
@@ -3250,7 +3347,7 @@ function ConfigBuilderModal({ open, onClose, onSave }) {
                 <LogEntryEditor
                   key={entry._id}
                   entry={entry}
-                  conn={{ ip_address: conn.ip_address, port: Number(conn.port), user: conn.user, password: conn.password, gateways: conn.gateways || [] }}
+                  conn={{ ip_address: conn.ip_address, port: Number(conn.port), user: conn.user, password: conn.password, ssh_key_string: conn.ssh_key_string || "", gateways: conn.gateways || [] }}
                   index={idx}
                   onChange={updated => updateEntry(idx, updated)}
                   onRemove={() => removeEntry(idx)}
@@ -3632,6 +3729,13 @@ export default function App() {
   const [newGroupName, setNewGroupName] = useState("");
   const [creatingGroup, setCreatingGroup] = useState(false);
   const [snapshots,       setSnapshots]       = useState([]);
+  const [snapsTotal,      setSnapsTotal]      = useState(0);
+  const [snapsTotalPages, setSnapsTotalPages] = useState(1);
+  const [snapsPage,       setSnapsPage]       = useState(1);
+  const [pageSize,        setPageSize]        = useState(() => {
+    const stored = parseInt(localStorage.getItem("lo_page_size"), 10);
+    return (stored > 0 && stored <= 500) ? stored : 25;
+  });
   const [snapsLoading,    setSnapsLoading]    = useState(true);
   const [selectedSnaps,   setSelectedSnaps]   = useState([]);
   const [isChart,         setIsChart]         = useState(false);
@@ -3676,18 +3780,23 @@ export default function App() {
     }
   }, [addToast]);
 
-  const fetchSnapshots = useCallback(async (param, value, chart) => {
+  const fetchSnapshots = useCallback(async (param, value, chart, page = 1, pSize) => {
     setSnapsLoading(true);
     try {
-      let url = `/api/snapshots?log_type=${chart ? "chart" : "text"}`;
+      const ps = pSize ?? pageSize;
+      let url = `/api/snapshots?log_type=${chart ? "chart" : "text"}&page=${page}&page_size=${ps}`;
       if (param && value) url += `&search_param=${encodeURIComponent(param)}&search_value=${encodeURIComponent(value)}`;
-      setSnapshots(await apiFetch(url));
+      const data = await apiFetch(url);
+      setSnapshots(data.items ?? []);
+      setSnapsTotal(data.total ?? 0);
+      setSnapsTotalPages(data.total_pages ?? 1);
+      setSnapsPage(data.page ?? 1);
     } catch (e) {
       addToast(`Failed to load snapshots: ${e.message}`);
     } finally {
       setSnapsLoading(false);
     }
-  }, [addToast]);
+  }, [addToast, pageSize]);
 
   useEffect(() => {
     localStorage.setItem("lo_device_groups", JSON.stringify(groups));
@@ -3871,15 +3980,15 @@ export default function App() {
     const pollSaved = async () => {
       try {
         const url = session_id
-          ? `/api/snapshots?log_type=text&search_param=Session%20ID&search_value=${session_id}`
-          : `/api/snapshots?log_type=text`;
+          ? `/api/snapshots?log_type=text&page_size=9999&search_param=Session%20ID&search_value=${session_id}`
+          : `/api/snapshots?log_type=text&page_size=9999`;
         const snaps = await apiFetch(url);
         // Count both text and chart snapshots produced so far
         const chartUrl = session_id
-          ? `/api/snapshots?log_type=chart&search_param=Session%20ID&search_value=${session_id}`
-          : `/api/snapshots?log_type=chart`;
+          ? `/api/snapshots?log_type=chart&page_size=9999&search_param=Session%20ID&search_value=${session_id}`
+          : `/api/snapshots?log_type=chart&page_size=9999`;
         const chartSnaps = await apiFetch(chartUrl);
-        const total = (snaps?.length || 0) + (chartSnaps?.length || 0);
+        const total = (snaps?.total || 0) + (chartSnaps?.total || 0);
         setStopProgress(prev => ({ ...prev, saved: total }));
       } catch { /* ignore poll errors */ }
     };
@@ -3973,6 +4082,17 @@ export default function App() {
     setSearchParam(""); setSearchValue(""); setFilterActive(false);
     window.history.replaceState(null, "", window.location.pathname);
     fetchSnapshots("", "", isChart);
+  };
+
+  const goToPage = (p) => {
+    fetchSnapshots(filterActive ? searchParam : "", filterActive ? searchValue : "", isChart, p);
+  };
+
+  const savePageSize = (newSize) => {
+    const n = Math.max(1, Math.min(500, parseInt(newSize, 10) || 25));
+    localStorage.setItem("lo_page_size", String(n));
+    setPageSize(n);
+    fetchSnapshots(filterActive ? searchParam : "", filterActive ? searchValue : "", isChart, 1, n);
   };
 
   const downloadLogs = (format = "html-color") => {
@@ -4626,7 +4746,7 @@ ${rowsHtml}
               {filterActive && <Btn variant="ghost" size="sm" onClick={clearFilter}>✕ Clear</Btn>}
             </div>
             <div style={{ marginLeft: "auto", fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--muted)" }}>
-              {snapshots.filter(s => visibleDeviceNames.size === 0 || visibleDeviceNames.has(s.deviceName)).length} snapshot(s)
+              {snapsTotal} snapshot(s)
               {collapsedGroups.size > 0 && (
                 <span style={{ marginLeft: 6, color: "#fbbf24" }}>· {collapsedGroups.size} group{collapsedGroups.size > 1 ? "s" : ""} collapsed</span>
               )}
@@ -4644,6 +4764,15 @@ ${rowsHtml}
                 selected={selectedSnaps}
                 onSelect={toggleSnap}
                 onView={openLogContent}
+              />
+            )}
+            {!snapsLoading && snapsTotalPages > 1 && (
+              <SnapshotsPagination
+                page={snapsPage}
+                totalPages={snapsTotalPages}
+                total={snapsTotal}
+                pageSize={pageSize}
+                onPage={goToPage}
               />
             )}
           </div>
@@ -4718,6 +4847,8 @@ ${rowsHtml}
         onRequestLogin={() => { setSettingsModal(false); setLoginModal(true); }}
         auth={auth}
         addToast={addToast}
+        pageSize={pageSize}
+        onPageSizeChange={savePageSize}
       />
 
 
