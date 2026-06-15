@@ -401,7 +401,7 @@ def start_logs_collection():
     POST '/api/start-logs-collection'
 
     Request body (JSON):
-        - selected_devices (list[str]) - Device names to start collecting from.
+        - selected_devices (list[str]) - Device IDs to start collecting from.
         - session_scenario (str, **required**) - A label describing the scenario
           under which this collection session is being started.  Must be a
           non-empty string.  Passed as the second argument to
@@ -430,7 +430,7 @@ def start_logs_collection():
 
     session_id = uuid.uuid1().hex[:12]
     for device in get_current_devices():
-        if device.device_name in selected_devices:
+        if device.device_config_id in selected_devices:
             device.start_logs_collection(session_id, session_scenario)
 
     return jsonify({"status": "logs collection started", "session_id": session_id})
@@ -446,7 +446,7 @@ def stop_logs_collection():
     until its teardown is complete before returning.
 
     Request body (JSON):
-        - selected_devices (list[str]) - Device names to stop collecting from.
+        - selected_devices (list[str]) - Device IDs to stop collecting from.
         - session_id (str) - The session ID returned by '/api/start-logs-collection'.
 
     Returns:
@@ -482,10 +482,10 @@ def stop_logs_collection():
 
     current_devices = get_current_devices()
     for device in current_devices:
-        if device.device_name in selected_devices:
+        if device.device_config_id in selected_devices:
             device.stop_logs_collection()
     for device in current_devices:
-        if device.device_name in selected_devices:
+        if device.device_config_id in selected_devices:
             device.wait_for_log_collection_teardown(timeout=300)
 
     base = FRONTEND_BASE

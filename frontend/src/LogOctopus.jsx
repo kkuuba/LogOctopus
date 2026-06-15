@@ -3838,12 +3838,12 @@ export default function App() {
 
   const confirmStartCollection = async () => {
     if (!scenarioInput.trim()) { setScenarioError(true); return; }
-    const names = devices.filter((d) => selectedDevices.includes(d.id)).map((d) => d.name);
+    const ids = devices.filter((d) => selectedDevices.includes(d.id)).map((d) => d.id);
     setScenarioModal(false);
     try {
       await apiFetch("/api/start-logs-collection", {
         method: "POST",
-        body: JSON.stringify({ selected_devices: names, session_scenario: scenarioInput.trim() }),
+        body: JSON.stringify({ selected_devices: ids, session_scenario: scenarioInput.trim() }),
       });
       addToast("Log collection started.", "success");
       fetchDevices();
@@ -3853,7 +3853,7 @@ export default function App() {
 
   const stopCollection = async () => {
     const selectedDevObjs = devices.filter((d) => selectedDevices.includes(d.id));
-    const names = selectedDevObjs.map((d) => d.name);
+    const ids = selectedDevObjs.map((d) => d.id);
     const runningDev = selectedDevObjs.find((d) => d.collecting);
     const session_id = runningDev?.config?.current_session_id || "";
 
@@ -3886,7 +3886,7 @@ export default function App() {
     pollId = setInterval(pollSaved, 1500);
 
     try {
-      const result = await apiFetch("/api/stop-logs-collection", { method: "POST", body: JSON.stringify({ selected_devices: names, session_id }) });
+      const result = await apiFetch("/api/stop-logs-collection", { method: "POST", body: JSON.stringify({ selected_devices: ids, session_id }) });
       clearInterval(pollId);
       // Final poll to get accurate count
       await pollSaved();

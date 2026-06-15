@@ -25,7 +25,6 @@ class LogSnapshotsLoader():
             k.decode(): v.decode()
             for k, v in raw_meta.items()
         }
-        print(self.device_config_id)
         return LogSnapshot(self.device_config_id, log_metadata["device_name"], log_metadata["log_name"], log_metadata["session_id"], log_metadata["session_scenario"], log_metadata["data_unit"], log_metadata["log_type"], pyarrow_table.to_pandas(), True)
 
 
@@ -38,9 +37,7 @@ class LogSnapshotsLoader():
         """
         log_snapshots_list = []
         log_snapshots_paths = list(Path(self.log_snapshots_dir_path).glob("*.parquet"))
-        print(self.log_snapshots_dir_path)
         for log_snapshot_path in log_snapshots_paths:
-            print(log_snapshot_path)
             log_snapshot = self.load_log_snapshots_from_file(log_snapshot_path)
             if log_snapshot:
                 log_snapshots_list.append(log_snapshot)

@@ -444,7 +444,6 @@ class TestSetAutoCollection:
     def test_reflects_enabled_false_in_response(self, client):
         with patch("backend.app.get_current_devices", return_value=[]):
             resp = self._post(client, {"enabled": False, "interval_hours": 1, "device_ids": []})
-        print(resp.get_json())
         assert resp.get_json()["devices"] == []
 
 
