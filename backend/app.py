@@ -529,7 +529,11 @@ def stop_logs_collection():
     POST '/api/stop-logs-collection'
 
     Each device is stopped and the call blocks (up to 300 seconds per device)
-    until its teardown is complete before returning.
+    until its teardown is complete before returning. If teardown does not
+    finish within the timeout for a device (i.e. not all snapshots were
+    saved in time), the request still returns 200 with whatever session
+    URLs are available — partial results are preferred over failing the
+    request outright.
 
     Request body (JSON):
         - selected_devices (list[str]) - Device IDs to stop collecting from.
@@ -572,7 +576,14 @@ def stop_logs_collection():
             device.stop_logs_collection()
     for device in current_devices:
         if device.device_config_id in selected_devices:
-            device.wait_for_log_collection_teardown(timeout=300)
+            try:
+                device.wait_for_log_collection_teardown(timeout=300)
+            except Exception:
+                # Teardown didn't finish within the timeout (e.g. not all
+                # snapshots were saved in time). Don't fail the request for
+                # this — fall through and return the session URLs anyway so
+                # the frontend can still show whatever was saved so far.
+                pass
 
     base = FRONTEND_BASE
     qs   = f"search_param=Session%20ID&search_value={session_id}"

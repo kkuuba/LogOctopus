@@ -3459,17 +3459,30 @@ function AddDeviceBtn({ onUpload, onBuildConfig }) {
   const fileRef = useRef();
 
   const handleFile = (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = (ev) => { onUpload(ev.target.result); setChoiceOpen(false); };
-    reader.readAsDataURL(file);
+    const files = Array.from(e.target.files || []);
+    if (files.length === 0) return;
+
+    Promise.all(
+      files.map(
+        (file) =>
+          new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = (ev) => resolve(ev.target.result);
+            reader.onerror = () => reject(reader.error);
+            reader.readAsDataURL(file);
+          })
+      )
+    ).then((contentsList) => {
+      onUpload(contentsList.length === 1 ? contentsList[0] : contentsList);
+      setChoiceOpen(false);
+    });
+
     e.target.value = "";
   };
 
   return (
     <>
-      <input ref={fileRef} type="file" accept=".json" style={{ display: "none" }} onChange={handleFile} />
+      <input ref={fileRef} type="file" accept=".json" multiple style={{ display: "none" }} onChange={handleFile} />
       <Btn variant="primary" onClick={() => setChoiceOpen(true)}>＋ Add Device</Btn>
 
       {choiceOpen && (
@@ -3513,7 +3526,7 @@ function AddDeviceBtn({ onUpload, onBuildConfig }) {
                   Upload JSON
                 </div>
                 <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--muted)", lineHeight: 1.55 }}>
-                  Import an existing device configuration file
+                  Import one or more existing device configuration files
                 </div>
               </button>
 
@@ -3745,9 +3758,27 @@ function CollectionLoadingOverlay({ open, saved, expected }) {
 }
 
 // ── SESSION INFO ──────────────────────────────────────────────────────────────
-function SessionInfo({ sessionId, textUrl, chartUrl }) {
+function SessionInfo({ sessionId, textUrl, chartUrl, partial = false }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16, alignItems: "center", padding: "10px 0" }}>
+      {partial && (
+        <div
+          style={{
+            width: "100%",
+            boxSizing: "border-box",
+            background: "rgba(251,191,36,0.1)",
+            border: "1px solid rgba(251,191,36,0.3)",
+            borderRadius: 8,
+            padding: "10px 14px",
+            fontFamily: "var(--font-mono)",
+            fontSize: 12,
+            color: "#fbbf24",
+            textAlign: "center",
+          }}
+        >
+          ⚠ Time ran out before all snapshots finished saving. More snapshots may still land under this session ID.
+        </div>
+      )}
       <div style={{ textAlign: "center" }}>
         <div style={{ fontFamily: "var(--font-mono)", fontSize: 12, color: "var(--muted)", marginBottom: 4 }}>Session ID</div>
         <code style={{ fontSize: 20, fontFamily: "var(--font-mono)", color: "var(--accent)", letterSpacing: "0.1em" }}>
@@ -3977,16 +4008,44 @@ export default function App() {
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── handlers ───────────────────────────────────────────────────────────────
+  const uploadOne = async (contents) => {
+    // Decode name from config to check for conflicts before hitting the API
+    const raw = contents.includes(",") ? contents.split(",")[1] : contents;
+    JSON.parse(atob(raw)); // throws if not valid base64 JSON
+    const { device } = await apiFetch("/api/devices", { method: "POST", body: JSON.stringify({ contents }) });
+    setDevices((prev) => [...prev, device]);
+  };
+
   const handleUpload = async (contents) => {
-    try {
-      // Decode name from config to check for conflicts before hitting the API
-      const raw = contents.includes(",") ? contents.split(",")[1] : contents;
-      const parsed = JSON.parse(atob(raw));
-      const { device } = await apiFetch("/api/devices", { method: "POST", body: JSON.stringify({ contents }) });
-      setDevices((prev) => [...prev, device]);
-      addToast("Device added successfully.", "success");
-    } catch (e) {
-      addToast(e.status === 422 ? "Incorrect config file — could not parse device configuration." : `Upload failed: ${e.message}`);
+    // Single file: keep the original behaviour/messages unchanged.
+    if (!Array.isArray(contents)) {
+      try {
+        await uploadOne(contents);
+        addToast("Device added successfully.", "success");
+      } catch (e) {
+        addToast(e.status === 422 ? "Incorrect config file — could not parse device configuration." : `Upload failed: ${e.message}`);
+      }
+      return;
+    }
+
+    // Multiple files: upload each independently so one bad config doesn't
+    // block the rest, then report an aggregate result.
+    let succeeded = 0;
+    const failures = [];
+    for (let i = 0; i < contents.length; i++) {
+      try {
+        await uploadOne(contents[i]);
+        succeeded++;
+      } catch (e) {
+        failures.push(e.status === 422 ? `file ${i + 1}: invalid config` : `file ${i + 1}: ${e.message}`);
+      }
+    }
+
+    if (succeeded > 0) {
+      addToast(`Added ${succeeded} device${succeeded !== 1 ? "s" : ""} successfully.`, "success");
+    }
+    if (failures.length > 0) {
+      addToast(`Failed to add ${failures.length} device(s) — ${failures.join("; ")}`);
     }
   };
 
@@ -4051,7 +4110,10 @@ export default function App() {
         const chartSnaps = await apiFetch(chartUrl);
         const total = (snaps?.total || 0) + (chartSnaps?.total || 0);
         setStopProgress(prev => ({ ...prev, saved: total }));
-      } catch { /* ignore poll errors */ }
+        return total;
+      } catch {
+        return null; // ignore poll errors
+      }
     };
     pollId = setInterval(pollSaved, 1500);
 
@@ -4059,13 +4121,35 @@ export default function App() {
       const result = await apiFetch("/api/stop-logs-collection", { method: "POST", body: JSON.stringify({ selected_devices: ids, session_id }) });
       clearInterval(pollId);
       // Final poll to get accurate count
-      await pollSaved();
-      setSessionModal({ sessionId: result.session_id, textUrl: result.text_logs_url, chartUrl: result.chart_logs_url });
+      const saved = await pollSaved();
+      const partial = expected > 0 && saved != null && saved < expected;
+      setSessionModal({
+        sessionId: result.session_id,
+        textUrl: result.text_logs_url,
+        chartUrl: result.chart_logs_url,
+        partial,
+      });
       fetchDevices();
       fetchSnapshots(filterActive ? searchParam : "", filterActive ? searchValue : "", isChart);
     } catch (e) {
       clearInterval(pollId);
-      addToast(`Failed to stop collection: ${e.message}`);
+      // Even if the stop request itself errored or timed out server-side
+      // (e.g. not all snapshots were saved before the teardown timeout),
+      // still surface whatever was collected so far rather than leaving
+      // the user with nothing but a toast.
+      if (session_id) {
+        await pollSaved();
+        const qs = `search_param=Session%20ID&search_value=${session_id}`;
+        setSessionModal({
+          sessionId: session_id,
+          textUrl: `${window.location.origin}/?${qs}&log_type=text`,
+          chartUrl: `${window.location.origin}/?${qs}&log_type=chart`,
+          partial: true,
+        });
+        fetchDevices();
+        fetchSnapshots(filterActive ? searchParam : "", filterActive ? searchValue : "", isChart);
+      }
+      addToast(`Stop collection: not all snapshots finished saving (${e.message})`);
     } finally {
       setStoppingCollection(false);
       setStopProgress({ saved: 0, expected: 0, sessionId: "" });
