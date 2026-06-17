@@ -427,6 +427,57 @@ def get_snapshot_content(snapshot_id: str):
     return jsonify({"rows": rows})
 
 
+@app.delete("/api/snapshots")
+def remove_snapshots():
+    """Remove one or more log snapshots and delete their underlying files.
+
+    DELETE '/api/snapshots'
+
+    Request body (JSON):
+        - snapshot_ids (list[str]) - IDs of the snapshots to remove. Required,
+          must be a non-empty list.
+        - log_type (str, optional) - '"text"' (default) or '"chart"'.
+          Must match the type of the target snapshots.
+
+    Returns:
+        200 OK:
+            JSON object summarising the outcome:
+
+            - removed (list[str]) - IDs that were found and removed.
+            - not_found (list[str]) - IDs that did not match any snapshot
+              of the requested log_type.
+
+            Example::
+
+                { "removed": ["snap-001", "snap-002"], "not_found": [] }
+
+        400 Bad Request:
+            '{ "error": "snapshot_ids must be a non-empty list" }'
+    """
+    body         = request.get_json(force=True)
+    snapshot_ids = body.get("snapshot_ids", [])
+    is_chart     = body.get("log_type", "text") == "chart"
+
+    if not isinstance(snapshot_ids, list) or not snapshot_ids:
+        return _bad("snapshot_ids must be a non-empty list")
+
+    devices   = get_current_devices()
+    snapshots = ConfigurationHelper.get_log_snapshots_list(devices, is_chart)
+    by_id     = {s.id: s for s in snapshots}
+
+    removed   = []
+    not_found = []
+    for snapshot_id in snapshot_ids:
+        target = by_id.get(snapshot_id)
+        if not target:
+            not_found.append(snapshot_id)
+            continue
+        target.remove_log_snapshot()
+        removed.append(snapshot_id)
+
+    return jsonify({"removed": removed, "not_found": not_found})
+
+
 # ── log collection ────────────────────────────────────────────────────────────
 
 @app.post("/api/start-logs-collection")

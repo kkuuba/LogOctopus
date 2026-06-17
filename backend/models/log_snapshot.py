@@ -1,3 +1,6 @@
+import os
+import glob
+import logging
 from datetime import datetime
 import pandas as pd
 import pyarrow as pa
@@ -64,6 +67,17 @@ class LogSnapshot:
         size_in_bytes = size_in_bytes + self.collected_data.memory_usage(deep=True).sum()
 
         return size_in_bytes
+    
+    def remove_log_snapshot(self):
+        """
+        Remove log snapshot parquet data file.
+        """
+        for log_snapshot_parquet_file in glob.glob(f"data/{self.device_id}/{self.id}_*.parquet"):
+            if os.path.exists(log_snapshot_parquet_file):
+                os.remove(log_snapshot_parquet_file)
+                logging.info("Log snapshot data file -> '%s' was successfuly deleted", log_snapshot_parquet_file)
+            else:
+                logging.error("Log snapshot data file -> '%s' not exists ", log_snapshot_parquet_file)
 
     def create_parquet_data_file(self):
         """

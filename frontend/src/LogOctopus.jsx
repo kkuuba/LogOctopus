@@ -1318,6 +1318,55 @@ function Modal({ open, onClose, title, size = "lg", children, footer }) {
   );
 }
 
+// ── CONFIRM DIALOG ────────────────────────────────────────────────────────────
+/**
+ * Generic confirmation dialog for destructive actions (device removal,
+ * snapshot removal, etc). Built on top of the shared `Modal` component.
+ *
+ * Props:
+ *   open      - whether the dialog is visible
+ *   title     - modal title (e.g. "Remove Devices?")
+ *   message   - short description of what will happen
+ *   count     - optional number of items affected, shown as a badge-like line
+ *   itemLabel - noun describing the affected items, e.g. "device" / "snapshot"
+ *   confirmLabel - label for the confirm button (default "Remove")
+ *   onConfirm - called when the user confirms
+ *   onCancel  - called when the user cancels / closes the dialog
+ *   loading   - disables buttons and shows a busy confirm label while pending
+ */
+function ConfirmDialog({ open, title, message, count, itemLabel = "item", confirmLabel = "Remove", onConfirm, onCancel, loading = false }) {
+  return (
+    <Modal
+      open={open}
+      onClose={loading ? () => {} : onCancel}
+      title={title}
+      size="sm"
+      footer={
+        <>
+          <Btn variant="danger" onClick={onConfirm} disabled={loading}>
+            {loading ? "Removing…" : `🗑 ${confirmLabel}`}
+          </Btn>
+          <Btn variant="ghost" onClick={onCancel} disabled={loading}>Cancel</Btn>
+        </>
+      }
+    >
+      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        <p style={{ margin: 0, fontFamily: "var(--font-mono)", fontSize: 13, color: "var(--text)" }}>
+          {message}
+        </p>
+        {typeof count === "number" && (
+          <p style={{ margin: 0, fontFamily: "var(--font-mono)", fontSize: 12, color: "var(--muted)" }}>
+            {count} {itemLabel}{count !== 1 ? "s" : ""} selected
+          </p>
+        )}
+        <p style={{ margin: 0, fontFamily: "var(--font-mono)", fontSize: 11, color: "#f87171" }}>
+          This action cannot be undone.
+        </p>
+      </div>
+    </Modal>
+  );
+}
+
 // ── BADGE ─────────────────────────────────────────────────────────────────────
 function Badge({ color = "default", children }) {
   const colors = {
@@ -2022,6 +2071,12 @@ requests.post(f"{BASE}/api/stop-logs-collection",
       desc: "Retrieve full log content rows for a single snapshot.",
       req: null,
       res: `{\n  "rows": [\n    {\n      "time": "2024-01-01 10:00:01",\n      "log_name": "syslog",\n      "content": "INFO kernel: started"\n    }\n  ]\n}`,
+    },
+    {
+      method: "DELETE", path: "/api/snapshots",
+      desc: "Remove one or more snapshots and delete their underlying log files.",
+      req: `{\n  "snapshot_ids": ["snap-001", "snap-002"],\n  "log_type": "text"\n}`,
+      res: `{\n  "removed": ["snap-001", "snap-002"],\n  "not_found": []\n}`,
     },
     {
       method: "POST", path: "/api/start-logs-collection",
@@ -3764,6 +3819,12 @@ export default function App() {
   const [scenarioError,           setScenarioError]           = useState(false);
   const [downloadingSnaps,        setDownloadingSnaps]        = useState(false);
 
+  // removal confirmation dialogs
+  const [confirmRemoveDevices,    setConfirmRemoveDevices]    = useState(false);
+  const [removingDevices,         setRemovingDevices]         = useState(false);
+  const [confirmRemoveSnaps,      setConfirmRemoveSnaps]      = useState(false);
+  const [removingSnaps,           setRemovingSnaps]           = useState(false);
+
   // toasts
   const [toasts, setToasts] = useState([]);
   const addToast    = useCallback((message, type = "error") => setToasts((prev) => [...prev, { id: Date.now(), message, type }]), []);
@@ -4012,6 +4073,7 @@ export default function App() {
   };
 
   const removeSelected = async () => {
+    setRemovingDevices(true);
     await Promise.all(
       selectedDevices.map((id) =>
         apiFetch(`/api/devices/${id}`, { method: "DELETE" }).catch((e) => addToast(`Remove failed: ${e.message}`))
@@ -4019,6 +4081,36 @@ export default function App() {
     );
     setSelectedDevices([]);
     fetchDevices();
+    setRemovingDevices(false);
+    setConfirmRemoveDevices(false);
+  };
+
+  /**
+   * Deletes the currently selected snapshots (text or chart, depending on
+   * the active `isChart` toggle) via the backend, which removes each
+   * snapshot's underlying file through `LogSnapshot.remove_log_snapshot`.
+   * Called after the user confirms in the removal confirmation dialog.
+   */
+  const removeSelectedSnaps = async () => {
+    if (selectedSnaps.length === 0) return;
+    setRemovingSnaps(true);
+    try {
+      const result = await apiFetch("/api/snapshots", {
+        method: "DELETE",
+        body: JSON.stringify({ snapshot_ids: selectedSnaps, log_type: isChart ? "chart" : "text" }),
+      });
+      if (result?.not_found?.length) {
+        addToast(`${result.not_found.length} snapshot(s) could not be found`, "info");
+      }
+      addToast(`Removed ${result?.removed?.length || 0} snapshot(s)`, "success");
+      setSelectedSnaps([]);
+      fetchSnapshots(filterActive ? searchParam : "", filterActive ? searchValue : "", isChart);
+    } catch (e) {
+      addToast(`Remove failed: ${e.message}`);
+    } finally {
+      setRemovingSnaps(false);
+      setConfirmRemoveSnaps(false);
+    }
   };
 
   const toggleSnap = (id, checked) =>
@@ -4619,7 +4711,7 @@ ${rowsHtml}
             <AddDeviceBtn onUpload={handleUpload} onBuildConfig={() => setBuilderModal(true)} />
             <Btn variant="success" onClick={startCollection} disabled={!anySelected}>▶ Start Collection</Btn>
             <Btn variant="danger"  onClick={stopCollection}  disabled={!anySelected}>⏹ Stop Collection</Btn>
-            <Btn variant="ghost"   onClick={removeSelected}  disabled={!anySelected}>🗑 Remove Selected</Btn>
+            <Btn variant="ghost"   onClick={() => setConfirmRemoveDevices(true)}  disabled={!anySelected}>🗑 Remove Selected</Btn>
             <div style={{ marginLeft: "auto", fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--muted)" }}>
               {selectedDevices.length} device(s) selected
             </div>
@@ -4724,6 +4816,13 @@ ${rowsHtml}
               loading={downloadingSnaps}
               isChart={isChart}
             />
+            <Btn
+              variant="ghost"
+              onClick={() => setConfirmRemoveSnaps(true)}
+              disabled={selectedSnaps.length === 0}
+            >
+              🗑 Remove Selected
+            </Btn>
             <Toggle checked={isChart} onChange={(v) => { setIsChart(v); setSelectedSnaps([]); }} labelLeft="Text" labelRight="Chart" />
             <div style={{ display: "flex", alignItems: "center", gap: 8, marginLeft: 8 }}>
               <select
@@ -4838,6 +4937,32 @@ ${rowsHtml}
           )}
         </div>
       </Modal>
+
+      {/* Confirm removal of selected devices */}
+      <ConfirmDialog
+        open={confirmRemoveDevices}
+        title="Remove Devices?"
+        message="This will permanently delete the selected device(s) and their data."
+        count={selectedDevices.length}
+        itemLabel="device"
+        confirmLabel="Remove"
+        loading={removingDevices}
+        onConfirm={removeSelected}
+        onCancel={() => setConfirmRemoveDevices(false)}
+      />
+
+      {/* Confirm removal of selected snapshots */}
+      <ConfirmDialog
+        open={confirmRemoveSnaps}
+        title="Remove Snapshots?"
+        message="This will permanently delete the selected snapshot(s) and their log files."
+        count={selectedSnaps.length}
+        itemLabel="snapshot"
+        confirmLabel="Remove"
+        loading={removingSnaps}
+        onConfirm={removeSelectedSnaps}
+        onCancel={() => setConfirmRemoveSnaps(false)}
+      />
 
       {/* Settings modal */}
       <SettingsModal
