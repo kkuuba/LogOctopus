@@ -247,11 +247,12 @@ class TestListSnapshots:
 
         assert resp.status_code == 200
         data = resp.get_json()
-        assert len(data) == 1
-        assert data[0]["id"]        == "snap-001"
-        assert data[0]["deviceName"] == "Router-A"
-        assert data[0]["sizeKb"]    == 42
-        assert data[0]["isChart"]   is False
+        assert data["total"] == 1
+        assert len(data["items"]) == 1
+        assert data["items"][0]["id"]        == "snap-001"
+        assert data["items"][0]["deviceName"] == "Router-A"
+        assert data["items"][0]["sizeKb"]    == 42
+        assert data["items"][0]["isChart"]   is False
 
     def test_uses_filtered_list_when_search_params_provided(self, client):
         snap = _make_snapshot()
@@ -285,7 +286,9 @@ class TestListSnapshots:
             patch("backend.app.ConfigurationHelper.get_log_snapshots_list", return_value=[]),
         ):
             resp = client.get("/api/snapshots")
-        assert resp.get_json() == []
+        data = resp.get_json()
+        assert data["items"] == []
+        assert data["total"] == 0
 
 
 # ── GET /api/snapshots/<snapshot_id>/content ─────────────────────────────────
