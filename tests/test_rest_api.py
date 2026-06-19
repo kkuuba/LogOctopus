@@ -332,9 +332,9 @@ class TestStartLogsCollection:
         )
 
     def test_starts_collection_on_matching_devices(self, client):
-        device = _make_device(name="Router-A")
+        device = _make_device(device_id="dev-001", name="Router-A")
         with patch("backend.app.get_current_devices", return_value=[device]):
-            resp = self._post(client, {"selected_devices": ["Router-A"], "session_scenario": "test_1"})
+            resp = self._post(client, {"selected_devices": ["dev-001"], "session_scenario": "test_1"})
 
         assert resp.status_code == 200
         data = resp.get_json()
@@ -372,8 +372,8 @@ class TestStopLogsCollection:
         )
 
     def test_stops_collection_and_returns_urls(self, client):
-        device = _make_device(name="Router-A")
-        body   = {"selected_devices": ["Router-A"], "session_id": "abc123def456"}
+        device = _make_device(device_id="dev-001", name="Router-A")
+        body   = {"selected_devices": ["dev-001"], "session_id": "abc123def456"}
 
         with patch("backend.app.get_current_devices", return_value=[device]):
             resp = self._post(client, body)

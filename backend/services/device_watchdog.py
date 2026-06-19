@@ -1,16 +1,15 @@
 from fabric import Connection
 from concurrent.futures import ThreadPoolExecutor
 from backend.models.log_snapshot import LogSnapshot
+from backend.utils.fabric_connection import build_fabric_connection
 import pandas as pd
 from paramiko_expect import SSHClientInteraction
 from datetime import datetime
 from dateutil import parser
 import re
-import io
 import uuid
 import time
 import threading
-from paramiko import RSAKey
 from time import sleep
 import argparse
 import json
@@ -333,67 +332,20 @@ class DeviceWatchdog:
         """
         Create a Fabric SSH Connection from the device config.
 
+        Uses the shared connection builder (backend.utils.fabric_connection),
+        the same one used by the config builder's Test Connection / Exec
+        Command endpoints in app.py. This guarantees that any connection
+        which passed "Test Connection" in the UI — including the SSH key
+        type detection (RSA / Ed25519 / ECDSA / DSS) and passphrase
+        handling — behaves identically here. Accepts either the nested
+        ``gateway: {...}`` shape (as saved by the config builder) or a flat
+        ``gateways: [...]`` list.
+
         Returns:
             Configured Fabric Connection object.
         """
-        return Connection(
-            host=self.device_config["ip_address"],
-            user=self.device_config["user"],
-            port=self.device_config.get("port", 22),
-            connect_kwargs=self._build_connect_kwargs(self.device_config),
-            gateway=self._build_gateway(self.device_config.get("gateway")),
-        )
+        return build_fabric_connection(self.device_config)
 
-    @staticmethod
-    def _build_connect_kwargs(config: dict) -> dict:
-        """
-        Build Fabric connect_kwargs from a config dict.
-
-        Args:
-            config: Source configuration dict.
-
-        Returns:
-            Dict suitable for Fabric's connect_kwargs parameter.
-        """
-        connect_kwargs: dict = {}
-
-        if "ssh_key_path" in config:
-            connect_kwargs["key_filename"] = config["ssh_key_path"]
-        elif "ssh_key_string" in config:
-            private_key = RSAKey.from_private_key(
-                io.StringIO(config["ssh_key_string"]),
-                password=config.get("ssh_key_passphrase"),
-            )
-            connect_kwargs["pkey"] = private_key
-
-        if "password" in config:
-            connect_kwargs["password"] = config["password"]
-
-        if "ssh_key_passphrase" in config and "ssh_key_path" in config:
-            connect_kwargs["passphrase"] = config["ssh_key_passphrase"]
-
-        return connect_kwargs
-
-    @classmethod
-    def _build_gateway(cls, gateway_config: dict | None) -> Connection | None:
-        """
-        Recursively build a gateway Connection from config.
-
-        Args:
-            gateway_config: Gateway configuration dict, or None.
-
-        Returns:
-            Fabric Connection for the gateway, or None.
-        """
-        if not gateway_config:
-            return None
-        return Connection(
-            host=gateway_config["ip_address"],
-            user=gateway_config["user"],
-            port=gateway_config.get("port", 22),
-            connect_kwargs=cls._build_connect_kwargs(gateway_config),
-            gateway=cls._build_gateway(gateway_config.get("gateway")),
-        )
 
 
 # ---------------------------------------------------------------------------

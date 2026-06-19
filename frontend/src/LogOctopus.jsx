@@ -3776,7 +3776,7 @@ function SessionInfo({ sessionId, textUrl, chartUrl, partial = false }) {
             textAlign: "center",
           }}
         >
-          ⚠ Time ran out before all snapshots finished saving. More snapshots may still land under this session ID.
+          ⚠ More log snapshots may still land under this session ID.
         </div>
       )}
       <div style={{ textAlign: "center" }}>
