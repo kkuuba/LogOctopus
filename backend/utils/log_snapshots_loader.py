@@ -6,7 +6,7 @@ import pyarrow.parquet as pq
 class LogSnapshotsLoader():
 
     def __init__(self, log_snapshots_dir_path):
-        self.device_name = log_snapshots_dir_path.split("/")[-1]
+        self.device_config_id = log_snapshots_dir_path.split("/")[-1]
         self.log_snapshots_dir_path = log_snapshots_dir_path
 
     def load_log_snapshots_from_file(self, log_snapshot_path):
@@ -25,8 +25,7 @@ class LogSnapshotsLoader():
             k.decode(): v.decode()
             for k, v in raw_meta.items()
         }
-
-        return LogSnapshot(self.device_name, log_metadata["log_name"], log_metadata["session_id"], log_metadata["session_scenario"], log_metadata["log_type"], pyarrow_table.to_pandas(), True)
+        return LogSnapshot(self.device_config_id, log_metadata["device_name"], log_metadata["log_name"], log_metadata["session_id"], log_metadata["session_scenario"], log_metadata["data_unit"], log_metadata["log_type"], pyarrow_table.to_pandas(), True)
 
 
     def load_all_log_snapshots(self):

@@ -1,3 +1,6 @@
+import os
+import glob
+import logging
 from datetime import datetime
 import pandas as pd
 import pyarrow as pa
@@ -8,20 +11,22 @@ class LogSnapshot:
     """
     A class to perform basic operations on collected logs.
     """
-    def __init__(self, device_name, log_name, session_id, session_scenario, log_type, collected_data, loaded_from_file=False):
+    def __init__(self, device_id, device_name, log_name, session_id, session_scenario, data_unit, log_type, collected_data, loaded_from_file=False):
+        self.device_id = device_id
         self.device_name = device_name
         self.log_name = log_name
-        self.id = hashlib.md5(f"{log_name}_{session_id}".encode()).hexdigest()[:16]
+        self.id = hashlib.md5(f"{device_id}_{log_name}_{session_id}".encode()).hexdigest()[:16]
         self.collected_data = collected_data
         self.creation_time =datetime.now()
         self.session_id = session_id
         self.session_scenario = session_scenario
+        self.data_unit = data_unit
         self.log_type = log_type
         self.start_time, self.finish_time = self.get_start_and_finish_timestamps()
         self.logs_collection_duration = self.calcaute_logs_collection_duration()
         self.size_in_bytes = self.get_size_of_collected_data_in_bytes()
         if not loaded_from_file:
-            self.data_file_name = self.create_parquet_data_file(device_name)
+            self.data_file_name = self.create_parquet_data_file()
 
     def calcaute_logs_collection_duration(self):
         """
@@ -62,14 +67,22 @@ class LogSnapshot:
         size_in_bytes = size_in_bytes + self.collected_data.memory_usage(deep=True).sum()
 
         return size_in_bytes
+    
+    def remove_log_snapshot(self):
+        """
+        Remove log snapshot parquet data file.
+        """
+        for log_snapshot_parquet_file in glob.glob(f"data/{self.device_id}/{self.id}_*.parquet"):
+            if os.path.exists(log_snapshot_parquet_file):
+                os.remove(log_snapshot_parquet_file)
+                logging.info("Log snapshot data file -> '%s' was successfuly deleted", log_snapshot_parquet_file)
+            else:
+                logging.error("Log snapshot data file -> '%s' not exists ", log_snapshot_parquet_file)
 
-    def create_parquet_data_file(self, device_name):
+    def create_parquet_data_file(self):
         """
         Save all data into file in 'parqet' format with all collected logs.
         
-        Args:
-            device_name (str): Name of target device where logs were collected.
-
         Returns:
             str: Data file path for LogSnapshot in 'parqet' format.
         """
@@ -77,7 +90,9 @@ class LogSnapshot:
             "log_name": self.log_name,
             "session_id": self.session_id,
             "session_scenario": self.session_scenario,
+            "data_unit": self.data_unit,
             "log_type": self.log_type,
+            "device_name": self.device_name,
         }
         collected_data_table = pa.Table.from_pandas(self.collected_data)
         existing_metadata = collected_data_table.schema.metadata or {}
@@ -87,7 +102,7 @@ class LogSnapshot:
         }
         collected_data_table_with_metadata = collected_data_table.replace_schema_metadata(new_metadata)
 
-        data_file_path = f"data/{device_name}/{self.id}_{self.creation_time.strftime('%Y%m%d_%H%M%S')}.parquet"
+        data_file_path = f"data/{self.device_id}/{self.id}_{self.creation_time.strftime('%Y%m%d_%H%M%S')}.parquet"
         pq.write_table(collected_data_table_with_metadata, data_file_path)
 
         return data_file_path

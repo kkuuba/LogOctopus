@@ -11,6 +11,7 @@ from pathlib import Path
 
 from flask import Flask, jsonify, request
 from flask_cors import CORS
+from paramiko_expect import SSHClientInteraction
 
 from backend.models.device import Device
 from backend.models.device_config import DeviceConfig
@@ -20,6 +21,7 @@ from backend.utils.device_config_loader import DeviceConfigLoader
 
 SETTINGS_FILE = Path("settings.json")
 FRONTEND_BASE = os.getenv("FRONTEND_BASE", "http://localhost:8100")
+
 
 app = Flask(__name__)
 CORS(app)  # allow the React dev-server / built bundle to call the API
@@ -110,6 +112,7 @@ def snapshot_to_dict(snapshot) -> dict:
         "sessionId":       snapshot.session_id,
         "sessionScenario": getattr(snapshot, "session_scenario", ""),
         "isChart":         snapshot.log_type,
+        "dataUnit":        getattr(snapshot, "data_unit", ""),
     }
 
 
@@ -305,10 +308,21 @@ def list_snapshots():
         - search_value (str, optional) - Value to match against search_param.
           Filtering is only applied when both parameters are present.
         - log_type (str, optional) - '"text"' (default) or '"chart"'.
+        - page (int, optional) - 1-based page number. Defaults to '1'.
+        - page_size (int, optional) - Items per page. Defaults to '25'.
+          Clamped to the range [1, 500].
 
     Returns:
         200 OK:
-            JSON array of snapshot objects.  Each element contains:
+            JSON object with pagination envelope:
+
+            - items (list[dict]) - Snapshot objects for the requested page.
+            - total (int) - Total matching snapshots across all pages.
+            - page (int) - Current 1-based page number.
+            - page_size (int) - Number of items per page.
+            - total_pages (int) - Total number of pages.
+
+            Each item contains:
 
             - id (str) - Unique snapshot ID.
             - deviceName (str) - Originating device name.
@@ -322,24 +336,36 @@ def list_snapshots():
 
             Example::
 
-                [
-                    {
-                        "id": "snap-001",
-                        "deviceName": "Router-A",
-                        "logName": "syslog",
-                        "startTime": "2024-01-01 10:00:00",
-                        "finishTime": "2024-01-01 10:05:00",
-                        "duration": 300.0,
-                        "sizeKb": 42,
-                        "sessionId": "a1b2c3d4e5f6",
-                        "isChart": false
-                    }
-                ]
+                {
+                    "items": [
+                        {
+                            "id": "snap-001",
+                            "deviceName": "Router-A",
+                            "logName": "syslog",
+                            "startTime": "2024-01-01 10:00:00",
+                            "finishTime": "2024-01-01 10:05:00",
+                            "duration": 300.0,
+                            "sizeKb": 42,
+                            "sessionId": "a1b2c3d4e5f6",
+                            "isChart": false
+                        }
+                    ],
+                    "total": 1,
+                    "page": 1,
+                    "page_size": 25,
+                    "total_pages": 1
+                }
     """
     search_param = request.args.get("search_param")
     search_value = request.args.get("search_value")
     log_type     = request.args.get("log_type", "text")
     is_chart     = log_type == "chart"
+
+    try:
+        page      = max(1, int(request.args.get("page", 1)))
+        page_size = max(1, min(500, int(request.args.get("page_size", 25))))
+    except (TypeError, ValueError):
+        return _bad("page and page_size must be integers")
 
     devices = get_current_devices()
 
@@ -350,7 +376,19 @@ def list_snapshots():
     else:
         snapshots = ConfigurationHelper.get_log_snapshots_list(devices, is_chart)
 
-    return jsonify([snapshot_to_dict(s) for s in snapshots])
+    total       = len(snapshots)
+    total_pages = max(1, -(-total // page_size))   # ceiling division
+    page        = min(page, total_pages)            # clamp to valid range
+    start       = (page - 1) * page_size
+    page_items  = snapshots[start : start + page_size]
+
+    return jsonify({
+        "items":       [snapshot_to_dict(s) for s in page_items],
+        "total":       total,
+        "page":        page,
+        "page_size":   page_size,
+        "total_pages": total_pages,
+    })
 
 
 @app.get("/api/snapshots/<snapshot_id>/content")
@@ -389,6 +427,57 @@ def get_snapshot_content(snapshot_id: str):
     return jsonify({"rows": rows})
 
 
+@app.delete("/api/snapshots")
+def remove_snapshots():
+    """Remove one or more log snapshots and delete their underlying files.
+
+    DELETE '/api/snapshots'
+
+    Request body (JSON):
+        - snapshot_ids (list[str]) - IDs of the snapshots to remove. Required,
+          must be a non-empty list.
+        - log_type (str, optional) - '"text"' (default) or '"chart"'.
+          Must match the type of the target snapshots.
+
+    Returns:
+        200 OK:
+            JSON object summarising the outcome:
+
+            - removed (list[str]) - IDs that were found and removed.
+            - not_found (list[str]) - IDs that did not match any snapshot
+              of the requested log_type.
+
+            Example::
+
+                { "removed": ["snap-001", "snap-002"], "not_found": [] }
+
+        400 Bad Request:
+            '{ "error": "snapshot_ids must be a non-empty list" }'
+    """
+    body         = request.get_json(force=True)
+    snapshot_ids = body.get("snapshot_ids", [])
+    is_chart     = body.get("log_type", "text") == "chart"
+
+    if not isinstance(snapshot_ids, list) or not snapshot_ids:
+        return _bad("snapshot_ids must be a non-empty list")
+
+    devices   = get_current_devices()
+    snapshots = ConfigurationHelper.get_log_snapshots_list(devices, is_chart)
+    by_id     = {s.id: s for s in snapshots}
+
+    removed   = []
+    not_found = []
+    for snapshot_id in snapshot_ids:
+        target = by_id.get(snapshot_id)
+        if not target:
+            not_found.append(snapshot_id)
+            continue
+        target.remove_log_snapshot()
+        removed.append(snapshot_id)
+
+    return jsonify({"removed": removed, "not_found": not_found})
+
+
 # ── log collection ────────────────────────────────────────────────────────────
 
 @app.post("/api/start-logs-collection")
@@ -398,7 +487,7 @@ def start_logs_collection():
     POST '/api/start-logs-collection'
 
     Request body (JSON):
-        - selected_devices (list[str]) - Device names to start collecting from.
+        - selected_devices (list[str]) - Device IDs to start collecting from.
         - session_scenario (str, **required**) - A label describing the scenario
           under which this collection session is being started.  Must be a
           non-empty string.  Passed as the second argument to
@@ -427,7 +516,7 @@ def start_logs_collection():
 
     session_id = uuid.uuid1().hex[:12]
     for device in get_current_devices():
-        if device.device_name in selected_devices:
+        if device.device_config_id in selected_devices:
             device.start_logs_collection(session_id, session_scenario)
 
     return jsonify({"status": "logs collection started", "session_id": session_id})
@@ -439,11 +528,15 @@ def stop_logs_collection():
 
     POST '/api/stop-logs-collection'
 
-    Each device is stopped and the call blocks (up to 60 seconds per device)
-    until its teardown is complete before returning.
+    Each device is stopped and the call blocks (up to 300 seconds per device)
+    until its teardown is complete before returning. If teardown does not
+    finish within the timeout for a device (i.e. not all snapshots were
+    saved in time), the request still returns 200 with whatever session
+    URLs are available — partial results are preferred over failing the
+    request outright.
 
     Request body (JSON):
-        - selected_devices (list[str]) - Device names to stop collecting from.
+        - selected_devices (list[str]) - Device IDs to stop collecting from.
         - session_id (str) - The session ID returned by '/api/start-logs-collection'.
 
     Returns:
@@ -477,10 +570,20 @@ def stop_logs_collection():
     if not isinstance(session_id, str):
         return _bad("session_id must be a string")
 
-    for device in get_current_devices():
-        if device.device_name in selected_devices:
+    current_devices = get_current_devices()
+    for device in current_devices:
+        if device.device_config_id in selected_devices:
             device.stop_logs_collection()
-            device.wait_for_log_collection_teardown(timeout=60)
+    for device in current_devices:
+        if device.device_config_id in selected_devices:
+            try:
+                device.wait_for_log_collection_teardown(timeout=300)
+            except Exception:
+                # Teardown didn't finish within the timeout (e.g. not all
+                # snapshots were saved in time). Don't fail the request for
+                # this — fall through and return the session URLs anyway so
+                # the frontend can still show whatever was saved so far.
+                pass
 
     base = FRONTEND_BASE
     qs   = f"search_param=Session%20ID&search_value={session_id}"
@@ -590,6 +693,155 @@ def set_auto_collection():
             })
 
     return jsonify({"status": "ok", "devices": updated})
+
+
+# ── device config builder helpers ─────────────────────────────────────────────
+#
+# Connection building now lives in backend.utils.fabric_connection, shared
+# with device_watchdog.py, so that a connection (including ssh_key_string of
+# any supported type, with or without a passphrase, and either gateway
+# shape) which passes Test Connection here behaves identically once the
+# watchdog picks up the saved config. See that module's docstring for the
+# accepted field/gateway shapes.
+from backend.utils.fabric_connection import build_nested_connection as _build_nested_connection
+
+
+@app.post("/api/devices/test-connection")
+def test_device_connection():
+    """Test SSH connectivity to a device using provided credentials.
+
+    Supports an optional ``gateways`` list for multi-hop / jump-host setups.
+    Each gateway entry uses the same schema as the target device.  Hops are
+    chained left-to-right: gateways[0] → gateways[1] → … → target.
+
+    POST '/api/devices/test-connection'
+
+    Request body (JSON):
+        - ip_address (str)          - Target IP address.
+        - port (int)                - SSH port (default 22).
+        - user (str)                - SSH username.
+        - password (str)            - SSH password.
+        - ssh_key_string (str)      - Optional PEM private key as a plain string.
+          RSA, Ed25519, ECDSA, and DSS keys are all auto-detected.
+        - ssh_key_path (str)        - Optional path to a private key file on
+          the server, as an alternative to ssh_key_string.
+        - ssh_key_passphrase (str)  - Optional passphrase for an encrypted
+          ssh_key_string / ssh_key_path.
+        - gateways (list[dict])     - Optional ordered list of jump-host specs.
+          Each entry uses the same auth fields as the target
+          (ip_address, port, user, password, ssh_key_string, ssh_key_path,
+          ssh_key_passphrase).
+
+    Returns:
+        200 OK:
+            '{ "success": true,  "message": "Connected to …" }'
+        200 OK (failure):
+            '{ "success": false, "message": "<error details>" }'
+        400 Bad Request:
+            '{ "error": "missing required fields" }'
+    """
+    try:
+        from fabric import Connection  # noqa: F401  (validate import)
+    except ImportError:
+        return jsonify({"success": False, "message": "fabric not installed on server"}), 200
+
+    body = request.get_json(force=True)
+    ip   = body.get("ip_address", "").strip()
+    port = int(body.get("port", 22))
+    user = body.get("user", "").strip()
+
+    if not ip or not user:
+        return _bad("missing required fields: ip_address, user")
+
+    try:
+        conn = _build_nested_connection(body)
+        conn.open()
+        conn.close()
+        hops = body.get("gateways") or []
+        via  = f" via {len(hops)} gateway(s)" if hops else ""
+        return jsonify({"success": True, "message": f"Connected to {ip}:{port} as {user}{via}"})
+    except Exception as exc:
+        return jsonify({"success": False, "message": str(exc)})
+
+
+@app.post("/api/devices/exec-command")
+def exec_device_command():
+    """Execute a shell command on a remote device via SSH and return its output.
+
+    Uses Fabric for the SSH transport.  Supports multi-hop gateway chains and
+    an optional custom-shell-prompt mode for interactive shells (e.g. network
+    devices that don't expose a standard exec channel).
+
+    POST '/api/devices/exec-command'
+
+    Request body (JSON):
+        - ip_address (str)           - Target IP address.
+        - port (int)                 - SSH port (default 22).
+        - user (str)                 - SSH username.
+        - password (str)             - SSH password.
+        - ssh_key_string (str)       - Optional PEM private key as a plain string.
+          RSA, Ed25519, ECDSA, and DSS keys are all auto-detected.
+        - ssh_key_path (str)         - Optional path to a private key file on
+          the server, as an alternative to ssh_key_string.
+        - ssh_key_passphrase (str)   - Optional passphrase for an encrypted
+          ssh_key_string / ssh_key_path.
+        - command (str)              - Shell command to run on the remote device.
+        - custom_shell_prompt (str)  - Optional. When set, the command is sent
+          to an interactive shell and output is captured until this prompt
+          string appears in the stream.
+        - gateways (list[dict])      - Optional ordered list of jump-host specs.
+          Each entry uses the same auth fields as the target
+          (ip_address, port, user, password, ssh_key_string, ssh_key_path,
+          ssh_key_passphrase).
+
+    Returns:
+        200 OK:
+            '{ "stdout": "...", "stderr": "...", "exit_code": 0 }'
+        400 Bad Request:
+            '{ "error": "missing required fields" }'
+        200 OK (connection failure):
+            '{ "stdout": "", "stderr": "<error>", "exit_code": -1 }'
+    """
+    body                = request.get_json(force=True)
+    command             = body.get("command", "").strip()
+    custom_shell_prompt = body.get("custom_shell_prompt", "").strip()
+
+    if not body.get("ip_address", "").strip() or not body.get("user", "").strip() or not command:
+        return _bad("missing required fields: ip_address, user, command")
+
+    try:
+        conn = _build_nested_connection(body)
+        if custom_shell_prompt:
+            conn.open()
+            client = conn.client
+            interact = SSHClientInteraction(client, timeout=20, display=False)
+            interact.expect(custom_shell_prompt)
+            cmd_output = ""
+            for single_cmd in command.split(";"):
+                interact.send(single_cmd)
+                interact.expect(custom_shell_prompt)
+                cmd_output = cmd_output + interact.current_output_clean
+
+            conn.close()
+            return jsonify({"stdout": cmd_output, "stderr": "", "exit_code": 0})
+
+        # ── Standard exec path ────────────────────────────────────────────────
+        needs_sudo = "sudo " in command
+        with conn:
+            if needs_sudo:
+                pwd = body.get("password", "")
+                result = conn.sudo(command, password=pwd, hide=True, timeout=15)
+            else:
+                result = conn.run(command, hide=True, timeout=15)
+
+        return jsonify({
+            "stdout":    result.stdout,
+            "stderr":    result.stderr,
+            "exit_code": result.return_code,
+        })
+
+    except Exception as exc:
+        return jsonify({"stdout": "", "stderr": str(exc), "exit_code": -1})
 
 
 @app.post("/api/settings/change-password")

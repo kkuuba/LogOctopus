@@ -73,6 +73,7 @@ def _make_snapshot(
     snap.session_id               = session_id
     snap.session_scenario         = session_scenario
     snap.log_type                 = log_type
+    snap.data_unit                = ""
     return snap
 
 
@@ -246,11 +247,12 @@ class TestListSnapshots:
 
         assert resp.status_code == 200
         data = resp.get_json()
-        assert len(data) == 1
-        assert data[0]["id"]        == "snap-001"
-        assert data[0]["deviceName"] == "Router-A"
-        assert data[0]["sizeKb"]    == 42
-        assert data[0]["isChart"]   is False
+        assert data["total"] == 1
+        assert len(data["items"]) == 1
+        assert data["items"][0]["id"]        == "snap-001"
+        assert data["items"][0]["deviceName"] == "Router-A"
+        assert data["items"][0]["sizeKb"]    == 42
+        assert data["items"][0]["isChart"]   is False
 
     def test_uses_filtered_list_when_search_params_provided(self, client):
         snap = _make_snapshot()
@@ -284,7 +286,9 @@ class TestListSnapshots:
             patch("backend.app.ConfigurationHelper.get_log_snapshots_list", return_value=[]),
         ):
             resp = client.get("/api/snapshots")
-        assert resp.get_json() == []
+        data = resp.get_json()
+        assert data["items"] == []
+        assert data["total"] == 0
 
 
 # ── GET /api/snapshots/<snapshot_id>/content ─────────────────────────────────
@@ -331,9 +335,9 @@ class TestStartLogsCollection:
         )
 
     def test_starts_collection_on_matching_devices(self, client):
-        device = _make_device(name="Router-A")
+        device = _make_device(device_id="dev-001", name="Router-A")
         with patch("backend.app.get_current_devices", return_value=[device]):
-            resp = self._post(client, {"selected_devices": ["Router-A"], "session_scenario": "test_1"})
+            resp = self._post(client, {"selected_devices": ["dev-001"], "session_scenario": "test_1"})
 
         assert resp.status_code == 200
         data = resp.get_json()
@@ -371,8 +375,8 @@ class TestStopLogsCollection:
         )
 
     def test_stops_collection_and_returns_urls(self, client):
-        device = _make_device(name="Router-A")
-        body   = {"selected_devices": ["Router-A"], "session_id": "abc123def456"}
+        device = _make_device(device_id="dev-001", name="Router-A")
+        body   = {"selected_devices": ["dev-001"], "session_id": "abc123def456"}
 
         with patch("backend.app.get_current_devices", return_value=[device]):
             resp = self._post(client, body)
@@ -386,7 +390,7 @@ class TestStopLogsCollection:
         assert "log_type=text"    in data["text_logs_url"]
         assert "log_type=chart"   in data["chart_logs_url"]
         device.stop_logs_collection.assert_called_once()
-        device.wait_for_log_collection_teardown.assert_called_once_with(timeout=60)
+        device.wait_for_log_collection_teardown.assert_called_once_with(timeout=300)
 
     def test_returns_400_when_selected_devices_not_list(self, client):
         resp = self._post(client, {"selected_devices": "Router-A", "session_id": "x"})
@@ -443,7 +447,6 @@ class TestSetAutoCollection:
     def test_reflects_enabled_false_in_response(self, client):
         with patch("backend.app.get_current_devices", return_value=[]):
             resp = self._post(client, {"enabled": False, "interval_hours": 1, "device_ids": []})
-        print(resp.get_json())
         assert resp.get_json()["devices"] == []
 
 
