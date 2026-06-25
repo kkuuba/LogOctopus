@@ -25,8 +25,16 @@ class LogSnapshotsLoader():
             k.decode(): v.decode()
             for k, v in raw_meta.items()
         }
-        return LogSnapshot(self.device_config_id, log_metadata["device_name"], log_metadata["log_name"], log_metadata["session_id"], log_metadata["session_scenario"], log_metadata["data_unit"], log_metadata["log_type"], pyarrow_table.to_pandas(), True)
-
+        return LogSnapshot(self.device_config_id, 
+                           log_metadata["device_name"],
+                           log_metadata["log_name"],
+                           log_metadata["log_description"],
+                           log_metadata["session_id"],
+                           log_metadata["session_scenario"],
+                           log_metadata["data_unit"],
+                           log_metadata["log_type"],
+                           pyarrow_table.to_pandas(),
+                           True)
 
     def load_all_log_snapshots(self):
         """

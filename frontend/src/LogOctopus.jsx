@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const API_BASE = (import.meta.env.VITE_API_BASE) || "http://localhost:8050"
@@ -22,41 +22,76 @@ async function apiFetch(path, options = {}) {
 }
 
 // ── AUTH CONTEXT ──────────────────────────────────────────────────────────────
-// Simple client-side auth gate. In production, back this with a real session/JWT.
-// Default credentials come from env vars; admin password can be changed at runtime
-// and is persisted in localStorage so it survives page refreshes.
-const ADMIN_USER_DEFAULT = import.meta?.env?.VITE_ADMIN_USER || "admin";
-const ADMIN_PASS_DEFAULT = import.meta?.env?.VITE_ADMIN_PASS || "logoctopus";
+// Server-side auth: credentials are validated by POST /api/auth/login which
+// compares a SHA-256 hash against the one stored in settings.json.  The server
+// returns a random token that is kept in sessionStorage (tab-scoped, never
+// persisted to disk by the browser).
+//
+// FIX: the previous implementation stored the admin password in plain-text in
+// localStorage and performed all comparison client-side, meaning any XSS or
+// browser extension could trivially extract the password.  Auth is now backed
+// by the backend's /api/auth/login and /api/auth/logout endpoints.
 
 function useAuth() {
-  const [role, setRole] = useState(() => sessionStorage.getItem("lo_role") || "guest");
-  // Password persisted in localStorage so changes survive refreshes.
-  const [adminPass, setAdminPassState] = useState(
-    () => localStorage.getItem("lo_admin_pass") || ADMIN_PASS_DEFAULT
-  );
+  const [role,  setRole]  = useState(() => sessionStorage.getItem("lo_role")  || "guest");
+  const [token, setToken] = useState(() => sessionStorage.getItem("lo_token") || "");
 
-  const login = (user, pass) => {
-    if (user === ADMIN_USER_DEFAULT && pass === adminPass) {
-      sessionStorage.setItem("lo_role", "admin");
-      setRole("admin");
-      return true;
-    }
-    return false;
-  };
-
-  const logout = () => {
-    sessionStorage.removeItem("lo_role");
-    setRole("guest");
-  };
-
-  const changePassword = (currentPass, newPass) => {
-    if (currentPass !== adminPass) return false;
-    localStorage.setItem("lo_admin_pass", newPass);
-    setAdminPassState(newPass);
+  // login: calls the backend; returns true on success, false on bad credentials,
+  // throws on network error so the caller can show a toast.
+  const login = async (user, pass) => {
+    const res = await fetch(`${API_BASE}/api/auth/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: user, password: pass }),
+    });
+    if (res.status === 401) return false;
+    if (!res.ok) throw new Error(`Login failed (${res.status})`);
+    const { token: tok } = await res.json();
+    sessionStorage.setItem("lo_role",  "admin");
+    sessionStorage.setItem("lo_token", tok);
+    setRole("admin");
+    setToken(tok);
     return true;
   };
 
-  return { role, isAdmin: role === "admin", login, logout, changePassword };
+  const logout = () => {
+    const tok = sessionStorage.getItem("lo_token") || "";
+    sessionStorage.removeItem("lo_role");
+    sessionStorage.removeItem("lo_token");
+    setRole("guest");
+    setToken("");
+    // Best-effort server-side token revocation
+    if (tok) {
+      fetch(`${API_BASE}/api/auth/logout`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token: tok }),
+      }).catch(() => {});
+    }
+  };
+
+  // changePassword: validates the current password server-side, then updates
+  // the hash via the existing /api/settings/change-password endpoint.
+  // Returns true on success, false if currentPass is wrong, throws on error.
+  const changePassword = async (currentPass, newPass) => {
+    // Re-authenticate to verify the current password before allowing a change.
+    const adminUser = import.meta?.env?.VITE_ADMIN_USER || "admin";
+    const checkRes = await fetch(`${API_BASE}/api/auth/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: adminUser, password: currentPass }),
+    });
+    if (checkRes.status === 401) return false;
+    if (!checkRes.ok) throw new Error(`Verification failed (${checkRes.status})`);
+
+    await apiFetch("/api/settings/change-password", {
+      method: "POST",
+      body: JSON.stringify({ new_password: newPass }),
+    });
+    return true;
+  };
+
+  return { role, isAdmin: role === "admin", token, login, logout, changePassword };
 }
 
 // ── PLOTLY CHART PANEL ────────────────────────────────────────────────────────
@@ -440,13 +475,21 @@ function MonacoLogViewer({ rows, colorMode }) {
   const [ready, setReady] = useState(false);
   const [loadErr, setLoadErr] = useState(null);
 
-  // Build flat log text from rows
-  const logText = useRef("");
-  logText.current = rows && rows.length > 0
-    ? rows.map((r) =>
-        `[${r.time ?? ""}] [${r.device_name ?? ""}] [${r.log_name ?? ""}]  ${r.content ?? ""}`
-      ).join("\n")
-    : "";
+  // FIX: compute the flat log text with useMemo so it is only rebuilt when
+  // `rows` actually changes, not on every render of the parent component.
+  const logTextValue = useMemo(
+    () =>
+      rows && rows.length > 0
+        ? rows
+            .map((r) => `[${r.time ?? ""}] [${r.device_name ?? ""}] [${r.log_name ?? ""}]  ${r.content ?? ""}`)
+            .join("\n")
+        : "",
+    [rows]
+  );
+  // Keep logText as a ref so Monaco update effect can read the current value
+  // without itself being listed as a dependency.
+  const logText = useRef(logTextValue);
+  logText.current = logTextValue;
 
   // ── Apply / clear line-number decorations ────────────────────────────────
   const applyLineNumberDecorations = useCallback((rowsData, isColor) => {
@@ -900,18 +943,19 @@ function SettingsModal({ open, onClose, isAdmin, onRequestLogin, auth, addToast,
   const [pwError,  setPwError]  = useState("");
   const [pwShake,  setPwShake]  = useState(false);
 
-  const submitPasswordChange = () => {
-    if (newPass.length < 6)      { setPwError("New password must be at least 6 characters."); shake(); return; }
-    if (newPass !== confPass)    { setPwError("Passwords do not match.");                      shake(); return; }
-    const ok = auth.changePassword(curPass, newPass);
-    if (!ok)                     { setPwError("Current password is incorrect.");               shake(); return; }
-    setPwError(""); setCurPass(""); setNewPass(""); setConfPass("");
-    addToast("Admin password updated successfully.", "success");
-    // Also push to backend if available (best-effort)
-    apiFetch("/api/settings/change-password", {
-      method: "POST",
-      body: JSON.stringify({ new_password: newPass }),
-    }).catch(() => {});
+  const submitPasswordChange = async () => {
+    if (newPass.length < 6)   { setPwError("New password must be at least 6 characters."); shake(); return; }
+    if (newPass !== confPass) { setPwError("Passwords do not match.");                      shake(); return; }
+    try {
+      // FIX: auth.changePassword is now async (validates against backend).
+      const ok = await auth.changePassword(curPass, newPass);
+      if (!ok) { setPwError("Current password is incorrect."); shake(); return; }
+      setPwError(""); setCurPass(""); setNewPass(""); setConfPass("");
+      addToast("Admin password updated successfully.", "success");
+    } catch (e) {
+      setPwError(`Error: ${e.message}`);
+      shake();
+    }
   };
 
   const shake = () => { setPwShake(true); setTimeout(() => setPwShake(false), 420); };
@@ -1080,14 +1124,28 @@ function LoginModal({ open, onClose, onLogin }) {
   const [pass, setPass] = useState("");
   const [error, setError] = useState("");
   const [shaking, setShaking] = useState(false);
+  const [loading, setLoading] = useState(false);
 
-  const attempt = () => {
-    if (onLogin(user, pass)) {
-      setUser(""); setPass(""); setError(""); onClose();
-    } else {
-      setError("Invalid credentials");
+  // FIX: onLogin is now async (calls /api/auth/login).  Handle the Promise and
+  // surface network errors rather than silently showing "Invalid credentials".
+  const attempt = async () => {
+    if (loading) return;
+    setLoading(true);
+    try {
+      const ok = await onLogin(user, pass);
+      if (ok) {
+        setUser(""); setPass(""); setError(""); onClose();
+      } else {
+        setError("Invalid credentials");
+        setShaking(true);
+        setTimeout(() => setShaking(false), 500);
+      }
+    } catch (e) {
+      setError(`Login error: ${e.message}`);
       setShaking(true);
       setTimeout(() => setShaking(false), 500);
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -1186,8 +1244,8 @@ function LoginModal({ open, onClose, onLogin }) {
               ⚠ {error}
             </div>
           )}
-          <Btn variant="primary" onClick={attempt} style={{ width: "100%", justifyContent: "center", marginTop: 4 }}>
-            Sign In
+          <Btn variant="primary" onClick={attempt} disabled={loading} style={{ width: "100%", justifyContent: "center", marginTop: 4 }}>
+            {loading ? "Signing in…" : "Sign In"}
           </Btn>
           <Btn variant="ghost" onClick={onClose} style={{ width: "100%", justifyContent: "center" }}>
             Cancel
@@ -2362,6 +2420,7 @@ const EMPTY_LOG_ENTRY = () => ({
   custom_shell_prompt: "",
   log_type: "text",
   data_unit: "",
+  description: "",
 });
 
 const FIELD_LABEL = {
@@ -2761,6 +2820,27 @@ function LogEntryEditor({ entry, conn, index, onChange, onRemove, onDuplicate })
             )}
           </div>
 
+          {/* ── Description ── */}
+          <div style={{ marginBottom: 14 }}>
+            <div style={FIELD_LABEL}>
+              Description *
+            </div>
+            <textarea
+              value={entry.description || ""}
+              onChange={e => set("description", e.target.value)}
+              placeholder="Describe what this log captures and how it is used…"
+              rows={2}
+              style={{
+                ...inputStyle,
+                resize: "vertical",
+                minHeight: 56,
+                fontFamily: "var(--font-mono)",
+                fontSize: 12,
+                lineHeight: 1.5,
+              }}
+            />
+          </div>
+
           {/* ── Custom Shell Prompt (collapsed inline) ── */}
           <div style={{ marginBottom: 14, display: "flex", alignItems: "center", gap: 10 }}>
             <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--muted)", flexShrink: 0 }}>shell prompt</span>
@@ -3060,15 +3140,18 @@ function ConfigBuilderModal({ open, onClose, onSave }) {
     const config = buildConfig();
     const blob = new Blob([JSON.stringify(config, null, 2)], { type: "application/json" });
     const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
+    const cfgBlobUrl = URL.createObjectURL(blob);
+    a.href = cfgBlobUrl;
     a.download = `${conn.device_name || "device"}_config.json`;
     a.click();
+    // FIX: revoke to release blob memory.
+    URL.revokeObjectURL(cfgBlobUrl);
   };
 
   if (!open) return null;
 
   const step1Valid = conn.ip_address && conn.user && conn.port;
-  const step2Valid = entries.length > 0 && entries.every(e => e.log_name && e.log_file_cmd);
+  const step2Valid = entries.length > 0 && entries.every(e => e.log_name && e.log_file_cmd && e.description);
 
   const stepTabStyle = (s) => ({
     display: "flex", alignItems: "center", gap: 9, padding: "12px 24px",
@@ -3989,12 +4072,12 @@ export default function App() {
     return () => clearInterval(id);
   }, [fetchDevices]);
 
-  const prevIsChart = useRef(isChart);
+  // FIX: this effect previously had no dependency array, causing it to run
+  // after every render and rely on a manual ref comparison to detect changes.
+  // Using [isChart] as the dependency array is correct and idiomatic.
   useEffect(() => {
-    if (prevIsChart.current === isChart) return;
-    prevIsChart.current = isChart;
     fetchSnapshots(filterActive ? searchParam : "", filterActive ? searchValue : "", isChart);
-  });
+  }, [isChart]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     const p = new URLSearchParams(window.location.search);
@@ -4349,9 +4432,12 @@ ${chartSections}
 </html>`;
         const blob = new Blob([html], { type: "text/html" });
         const a = document.createElement("a");
-        a.href = URL.createObjectURL(blob);
+        const chartBlobUrl = URL.createObjectURL(blob);
+        a.href = chartBlobUrl;
         a.download = "charts.html";
         a.click();
+        // FIX: revoke to release blob memory.
+        URL.revokeObjectURL(chartBlobUrl);
         addToast(`${chartGroups.length} chart(s) exported as HTML.`, "success");
       }
       return;
@@ -4447,10 +4533,15 @@ ${rows}
       filename = "logs.html";
     }
 
+    const blobUrl = URL.createObjectURL(blob);
     const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
+    a.href = blobUrl;
     a.download = filename;
     a.click();
+    // FIX: revoke the object URL immediately after triggering the download so
+    // the browser can release the underlying memory.  Previously the URL was
+    // never revoked, causing a blob memory leak on every export.
+    URL.revokeObjectURL(blobUrl);
     addToast(`Logs exported as ${format === "html-color" ? "HTML" : format.toUpperCase()}.`, "success");
   };
 
@@ -4551,9 +4642,12 @@ ${chartSections}
 </html>`;
           const blob = new Blob([html], { type: "text/html" });
           const a = document.createElement("a");
-          a.href = URL.createObjectURL(blob);
+          const selChartBlobUrl = URL.createObjectURL(blob);
+          a.href = selChartBlobUrl;
           a.download = "charts.html";
           a.click();
+          // FIX: revoke to release blob memory.
+          URL.revokeObjectURL(selChartBlobUrl);
           addToast(`${results.length} chart(s) exported as HTML.`, "success");
         }
         return;
@@ -4643,10 +4737,13 @@ ${rowsHtml}
         filename = "logs.html";
       }
 
+      const blobUrl2 = URL.createObjectURL(blob);
       const a = document.createElement("a");
-      a.href = URL.createObjectURL(blob);
+      a.href = blobUrl2;
       a.download = filename;
       a.click();
+      // FIX: revoke object URL to release blob memory.
+      URL.revokeObjectURL(blobUrl2);
       addToast(`${merged.length} log rows exported as ${format === "html-color" ? "HTML" : format.toUpperCase()}.`, "success");
     } catch (e) {
       addToast(`Download failed: ${e.message}`);

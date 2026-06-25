@@ -11,10 +11,11 @@ class LogSnapshot:
     """
     A class to perform basic operations on collected logs.
     """
-    def __init__(self, device_id, device_name, log_name, session_id, session_scenario, data_unit, log_type, collected_data, loaded_from_file=False):
+    def __init__(self, device_id, device_name, log_name, log_description, session_id, session_scenario, data_unit, log_type, collected_data, loaded_from_file=False):
         self.device_id = device_id
         self.device_name = device_name
         self.log_name = log_name
+        self.log_description = log_description
         self.id = hashlib.md5(f"{device_id}_{log_name}_{session_id}".encode()).hexdigest()[:16]
         self.collected_data = collected_data
         self.creation_time =datetime.now()
@@ -93,6 +94,7 @@ class LogSnapshot:
             "data_unit": self.data_unit,
             "log_type": self.log_type,
             "device_name": self.device_name,
+            "log_description": self.log_description
         }
         collected_data_table = pa.Table.from_pandas(self.collected_data)
         existing_metadata = collected_data_table.schema.metadata or {}

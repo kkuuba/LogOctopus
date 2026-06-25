@@ -34,15 +34,21 @@ class DeviceWatchdog:
         self.device_config = device_config
         self.device_config_id = device_config_id
 
-        # SSH channels keyed by log_name; guarded by a per-channel lock
+        # SSH channels keyed by log_name; guarded by a single lock that covers
+        # both the channels dict and all per-log collected_data lists.
         self.ssh_channels: dict[str, Connection] = {}
         self._channel_lock = threading.Lock()
 
-        # Log data stored as lists of dicts; converted to DataFrames on demand
+        # Log data stored as lists of dicts; converted to DataFrames on demand.
+        # Each log_name has its own dedicated lock so concurrent pollers don't
+        # block one another while still protecting individual list mutations.
         self.collected_data: dict[str, list[dict]] = {}
+        self._data_locks: dict[str, threading.Lock] = {}
 
-        # Errors collected as a plain list to avoid repeated pd.concat overhead
+        # Errors collected as a plain list to avoid repeated pd.concat overhead.
+        # Protected by _error_lock.
         self._error_list: list[dict] = []
+        self._error_lock = threading.Lock()
 
         self.collection_ongoing = False
         self.thread: threading.Thread | None = None
@@ -62,7 +68,8 @@ class DeviceWatchdog:
             for lc in device_config["log_file_configs"]
         }
 
-        # Persistent thread pool sized to the number of log sources
+        # Persistent thread pool sized to the number of log sources.
+        # shutdown(wait=True) is called in close() / teardown_log_collectors().
         self._executor = ThreadPoolExecutor(
             max_workers=len(device_config["log_file_configs"])
         )
@@ -72,16 +79,21 @@ class DeviceWatchdog:
     # ------------------------------------------------------------------
 
     def _get_or_create_channel(self, ssh_channel_id: str) -> Connection:
-        """Return an existing SSH channel or create one, thread-safely."""
-        if ssh_channel_id in self.ssh_channels:
-            return self.ssh_channels[ssh_channel_id]
+        """Return an existing SSH channel or create one, thread-safely.
+
+        The entire lookup-and-create is performed inside the lock to eliminate
+        the race condition that arose from the previous pattern of checking
+        outside the lock and only locking on creation (TOCTOU).
+        """
+        # FIX: always enter the lock; eliminates the TOCTOU race where two
+        # threads both passed the early-return check and each opened a new
+        # connection for the same channel id.
         with self._channel_lock:
-            # Double-checked locking
             if ssh_channel_id not in self.ssh_channels:
                 conn = self.create_device_connection()
                 conn.open()
                 self.ssh_channels[ssh_channel_id] = conn
-        return self.ssh_channels[ssh_channel_id]
+            return self.ssh_channels[ssh_channel_id]
 
     def execute_cmd(self, cmd: str | None, ssh_channel_id: str, custom_shell_prompt: str | None = None) -> str | None:
         """
@@ -128,13 +140,18 @@ class DeviceWatchdog:
         return None
 
     def _record_error(self, error_info: str) -> None:
-        """Append an error entry cheaply (list-based, no pd.concat)."""
-        self._error_list.append({"time": datetime.now(), "error_info": error_info})
+        """Append an error entry thread-safely (list-based, no pd.concat)."""
+        # FIX: protect _error_list with its own lock — _record_error is called
+        # from worker threads running concurrently in the executor.
+        with self._error_lock:
+            self._error_list.append({"time": datetime.now(), "error_info": error_info})
 
     @property
     def errors(self) -> pd.DataFrame:
-        """Return errors as a DataFrame (built lazily on access)."""
-        return pd.DataFrame(self._error_list) if self._error_list else pd.DataFrame({"time": [], "error_info": []})
+        """Return errors as a DataFrame (built lazily on access, thread-safe snapshot)."""
+        with self._error_lock:
+            snapshot = list(self._error_list)
+        return pd.DataFrame(snapshot) if snapshot else pd.DataFrame({"time": [], "error_info": []})
 
     # ------------------------------------------------------------------
     # Log collector lifecycle
@@ -143,21 +160,52 @@ class DeviceWatchdog:
     def initialize_log_collectors(self) -> None:
         """Initialize log collectors for all defined log file configs."""
         for log_config in self.device_config["log_file_configs"]:
+            log_name = log_config["log_name"]
             self.execute_cmd(
                 log_config.get("log_activation_cmd"),
-                log_config["log_name"],
+                log_name,
                 log_config.get("custom_shell_prompt"),
             )
-            self.collected_data[log_config["log_name"]] = []
+            # FIX: initialise per-log data lock alongside the data list so
+            # concurrent get_log_file_content calls always have a lock to
+            # acquire before touching the list.
+            self.collected_data[log_name] = []
+            self._data_locks[log_name] = threading.Lock()
 
     def teardown_log_collectors(self) -> None:
-        """Teardown log collectors for all defined log file configs."""
+        """Teardown log collectors and close all open SSH channels.
+
+        Sends any configured deactivation command on each channel before
+        closing it, then clears the channel registry so that future calls to
+        _get_or_create_channel open fresh connections.
+        """
         for log_config in self.device_config["log_file_configs"]:
             self.execute_cmd(
                 log_config.get("log_deactivation_cmd"),
                 log_config["log_name"],
                 log_config.get("custom_shell_prompt"),
             )
+
+        # FIX: close every open SSH connection and clear the dict so channels
+        # don't accumulate across start/stop cycles.
+        with self._channel_lock:
+            for conn in self.ssh_channels.values():
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+            self.ssh_channels.clear()
+
+    def close(self) -> None:
+        """Shut down the thread-pool executor.
+
+        Call this when the DeviceWatchdog is no longer needed (e.g. when
+        a device is removed) to release the underlying worker threads.
+
+        FIX: the executor was previously never shut down, leaving threads
+        running until interpreter exit when a watchdog was replaced.
+        """
+        self._executor.shutdown(wait=False)
 
     # ------------------------------------------------------------------
     # Log collection
@@ -169,6 +217,8 @@ class DeviceWatchdog:
 
         Uses a pre-compiled regex and tracks the last-seen timestamp per log
         to avoid scanning the full history for duplicates on every poll.
+        Each log's list is protected by its own lock so concurrent pollers
+        do not race on reads or appends.
 
         Args:
             log_config: Log collector configuration dict.
@@ -184,25 +234,34 @@ class DeviceWatchdog:
         if not raw:
             return
 
-        existing: list[dict] = self.collected_data[log_name]
+        # FIX: acquire the per-log data lock before reading or writing the
+        # list.  Using per-log locks (rather than a single global lock) means
+        # concurrent pollers for different logs still run in parallel.
+        lock = self._data_locks.get(log_name)
+        if lock is None:
+            # Guard against execute_cmd being called before initialize_log_collectors.
+            return
 
-        # Track the latest timestamp we already have so we can skip old lines
-        last_ts: datetime | None = existing[-1]["time"] if existing else None
+        with lock:
+            existing: list[dict] = self.collected_data[log_name]
 
-        new_entries: list[dict] = []
-        for line in raw.splitlines():
-            m = pattern.search(line)
-            if not m:
-                continue
-            ts = parser.parse(m.group("TIME"))
-            if last_ts is None or ts > last_ts:
-                new_entries.append({"time": ts, "content": m.group("ENTRY")})
+            # Track the latest timestamp we already have so we can skip old lines.
+            last_ts: datetime | None = existing[-1]["time"] if existing else None
 
-        if new_entries:
-            existing.extend(new_entries)
-            # Memory guard: trim to the most recent MAX_LOG_ROWS rows
-            if len(existing) > self.MAX_LOG_ROWS:
-                self.collected_data[log_name] = existing[-self.MAX_LOG_ROWS:]
+            new_entries: list[dict] = []
+            for line in raw.splitlines():
+                m = pattern.search(line)
+                if not m:
+                    continue
+                ts = parser.parse(m.group("TIME"))
+                if last_ts is None or ts > last_ts:
+                    new_entries.append({"time": ts, "content": m.group("ENTRY")})
+
+            if new_entries:
+                existing.extend(new_entries)
+                # Memory guard: trim to the most recent MAX_LOG_ROWS rows
+                if len(existing) > self.MAX_LOG_ROWS:
+                    self.collected_data[log_name] = existing[-self.MAX_LOG_ROWS:]
 
     def get_all_log_files_content(self) -> None:
         """Fetch all logs concurrently using the persistent thread pool."""
@@ -225,10 +284,19 @@ class DeviceWatchdog:
         self.thread.start()
 
     def stop_logs_collection(self) -> None:
-        """Signal the collection thread to stop and wait for it to finish."""
+        """Signal the collection thread to stop and wait for it to finish.
+
+        Safe to call even if collection was never started (no-op in that case).
+        FIX: previously crashed with AttributeError when called before
+        start_logs_collection because collection_stop_event and thread were None.
+        """
+        # FIX: guard against stop being called before start.
+        if not self.collection_ongoing or self.collection_stop_event is None:
+            return
         self.collection_stop_event.set()
         self.collection_ongoing = False
-        self.thread.join()
+        if self.thread is not None:
+            self.thread.join()
         self.remove_all_outdated_entries()
         self.teardown_log_collectors()
 
@@ -254,13 +322,20 @@ class DeviceWatchdog:
     def remove_all_outdated_entries(self) -> None:
         """Drop log entries older than the collection start time and sort by time."""
         cutoff = self.cutoff_time
-        for log_name, entries in self.collected_data.items():
-            filtered = [e for e in entries if pd.Timestamp(e["time"]) >= cutoff]
-            self.collected_data[log_name] = sorted(filtered, key=lambda e: e["time"])
+        for log_name, lock in self._data_locks.items():
+            with lock:
+                entries = self.collected_data.get(log_name, [])
+                filtered = [e for e in entries if e["time"] >= cutoff.to_pydatetime()]
+                self.collected_data[log_name] = sorted(filtered, key=lambda e: e["time"])
 
     def _entries_to_dataframe(self, log_name: str) -> pd.DataFrame:
         """Convert the internal list-of-dicts for a log into a DataFrame."""
-        entries = self.collected_data.get(log_name, [])
+        lock = self._data_locks.get(log_name)
+        if lock is not None:
+            with lock:
+                entries = list(self.collected_data.get(log_name, []))
+        else:
+            entries = self.collected_data.get(log_name, [])
         return pd.DataFrame(entries) if entries else pd.DataFrame({"time": [], "content": []})
 
     def save_log_snapshots(self, session_id: str, session_scenario: str) -> None:
@@ -277,12 +352,14 @@ class DeviceWatchdog:
             log_config = self._log_config_map[log_name]          # O(1) lookup
             log_type = log_config.get("log_type", "")
             data_unit = log_config.get("data_unit", "")
+            log_description = log_config.get("log_description", "")
             log_content = self._entries_to_dataframe(log_name)
             self.log_snapshots.append(
                 LogSnapshot(
                     self.device_config_id,
                     self.device_config["device_name"],
                     log_name,
+                    log_description,
                     session_id,
                     session_scenario,
                     data_unit,
@@ -309,10 +386,23 @@ class DeviceWatchdog:
     # ------------------------------------------------------------------
 
     def get_connection_status(self) -> None:
-        """Update connection_status based on the first SSH channel."""
-        first_log_name = self.device_config["log_file_configs"][0]["log_name"]
-        channel = self.ssh_channels.get(first_log_name)
-        self.connection_status = bool(channel and channel.is_connected)
+        """Update connection_status based on all SSH channels.
+
+        FIX: previously only checked the first channel, which could report
+        'connected' even when other channels were dead.  Now reports True only
+        if *all* open channels are still connected.  Falls back to False when
+        no channels exist yet.
+        """
+        with self._channel_lock:
+            channels = dict(self.ssh_channels)
+
+        if not channels:
+            self.connection_status = False
+            return
+
+        self.connection_status = all(
+            bool(ch and ch.is_connected) for ch in channels.values()
+        )
 
     def test_log_files_access(self) -> None:
         """Check whether the first configured log file is accessible via SSH."""
@@ -398,7 +488,16 @@ if __name__ == "__main__":
 
     init_device_config = get_current_device_config(args.device_config_file_path)
     device_watchdog = DeviceWatchdog(init_device_config, args.device_config_file_path.split("/")[1])
+
     auto_collection_timer = 0.0
+    # FIX: track whether auto-collection has already been armed in the current
+    # idle window so the timer is only reset on the transition from idle → armed,
+    # not on every loop iteration while collection is ongoing.
+    auto_collection_armed = False
+
+    # FIX: track the errors list length so the feather file is only written
+    # when new errors have been appended, avoiding constant disk I/O.
+    last_errors_len = 0
 
     while True:
         current_device_config = get_current_device_config(args.device_config_file_path)
@@ -419,11 +518,23 @@ if __name__ == "__main__":
                 args.device_config_file_path,
                 {"current_session_id": "no_active_session"},
             )
+            # Reset arm flag so auto-collection can trigger a fresh cycle
+            # after the configured interval has elapsed from the last arm time.
+            auto_collection_armed = False
             sleep(2)
 
-        # --- Auto-collection: arm ---
-        if current_device_config["auto_collection_enabled"] and not device_watchdog.collection_ongoing:
+        # --- Auto-collection: arm (only once per idle window) ---
+        # FIX: previously reset auto_collection_timer on every loop iteration
+        # while auto_collection_enabled was True and collection_ongoing was
+        # False — meaning the disarm condition (timer elapsed) was never met
+        # and collection restarted immediately after stopping.
+        if (
+            current_device_config["auto_collection_enabled"]
+            and not device_watchdog.collection_ongoing
+            and not auto_collection_armed
+        ):
             auto_collection_timer = time.time()
+            auto_collection_armed = True
             update_device_config_parameters(
                 args.device_config_file_path,
                 {
@@ -435,6 +546,7 @@ if __name__ == "__main__":
         # --- Auto-collection: disarm after interval ---
         if (
             current_device_config["auto_collection_enabled"]
+            and auto_collection_armed
             and time.time() - auto_collection_timer
             > current_device_config["auto_collection_interval"] * 3600
         ):
@@ -455,8 +567,13 @@ if __name__ == "__main__":
             },
         )
 
-        # --- Persist errors ---
-        errors_file_path = f"data/{device_watchdog.device_config_id}/errors.feather"
-        device_watchdog.errors.to_feather(errors_file_path)
+        # --- Persist errors only when the list has grown ---
+        # FIX: previously wrote the feather file unconditionally every 5 s,
+        # causing constant disk I/O even when no new errors occurred.
+        current_errors_len = len(device_watchdog._error_list)
+        if current_errors_len != last_errors_len:
+            errors_file_path = f"data/{device_watchdog.device_config_id}/errors.feather"
+            device_watchdog.errors.to_feather(errors_file_path)
+            last_errors_len = current_errors_len
 
         sleep(5)

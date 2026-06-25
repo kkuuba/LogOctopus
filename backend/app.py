@@ -41,6 +41,9 @@ def get_current_devices() -> list[Device]:
 def get_target_device(device_id: str) -> Device | None:
     """Return the 'Device' whose config ID matches device_id.
 
+    Calls get_current_devices() once and searches the result, avoiding a
+    second filesystem scan inside a single request.
+
     Args:
         device_id (str): The device config ID to look up.
 
@@ -503,7 +506,7 @@ def start_logs_collection():
 
         400 Bad Request:
             '{ "error": "selected_devices must be a list" }'
-            or '{ "error": "session_scenario must be a string" }'
+            or '{ "error": "session_scenario is required and must be a non-empty string" }'
     """
     body             = request.get_json(force=True)
     selected_devices = body.get("selected_devices", [])
@@ -511,7 +514,8 @@ def start_logs_collection():
 
     if not isinstance(selected_devices, list):
         return _bad("selected_devices must be a list")
-    if not isinstance(session_scenario, str):
+    # FIX: also reject empty strings, not just non-str types
+    if not isinstance(session_scenario, str) or not session_scenario.strip():
         return _bad("session_scenario is required and must be a non-empty string")
 
     session_id = uuid.uuid1().hex[:12]
@@ -812,17 +816,20 @@ def exec_device_command():
     try:
         conn = _build_nested_connection(body)
         if custom_shell_prompt:
+            # FIX: use try/finally so the connection is always closed even if
+            # SSHClientInteraction raises mid-way through command execution.
             conn.open()
-            client = conn.client
-            interact = SSHClientInteraction(client, timeout=20, display=False)
-            interact.expect(custom_shell_prompt)
-            cmd_output = ""
-            for single_cmd in command.split(";"):
-                interact.send(single_cmd)
+            try:
+                client = conn.client
+                interact = SSHClientInteraction(client, timeout=20, display=False)
                 interact.expect(custom_shell_prompt)
-                cmd_output = cmd_output + interact.current_output_clean
-
-            conn.close()
+                cmd_output = ""
+                for single_cmd in command.split(";"):
+                    interact.send(single_cmd)
+                    interact.expect(custom_shell_prompt)
+                    cmd_output = cmd_output + interact.current_output_clean
+            finally:
+                conn.close()
             return jsonify({"stdout": cmd_output, "stderr": "", "exit_code": 0})
 
         # ── Standard exec path ────────────────────────────────────────────────
@@ -875,5 +882,80 @@ def change_password():
     settings = _load_settings()
     settings["admin_password_hash"] = pw_hash
     _save_settings(settings)
+
+    return jsonify({"status": "ok"})
+
+
+# ── login ─────────────────────────────────────────────────────────────────────
+
+@app.post("/api/auth/login")
+def login():
+    """Verify credentials and return an auth token for the session.
+
+    Compares the SHA-256 hash of the submitted password against the hash
+    stored in 'settings.json'.  Falls back to the default password
+    ('logoctopus') if no hash has been persisted yet.
+
+    POST '/api/auth/login'
+
+    Request body (JSON):
+        - username (str) - Must match the configured admin username.
+        - password (str) - Plain-text password; compared via SHA-256 hash.
+
+    Returns:
+        200 OK:
+            '{ "status": "ok", "token": "<32-char hex>" }'
+
+        401 Unauthorized:
+            '{ "error": "invalid credentials" }'
+    """
+    body     = request.get_json(force=True)
+    username = body.get("username", "").strip()
+    password = body.get("password", "")
+
+    admin_user = os.getenv("ADMIN_USER", "admin")
+    if username != admin_user:
+        return _bad("invalid credentials", 401)
+
+    settings         = _load_settings()
+    default_pw_hash  = hashlib.sha256(b"logoctopus").hexdigest()
+    stored_hash      = settings.get("admin_password_hash", default_pw_hash)
+    submitted_hash   = hashlib.sha256(password.encode()).hexdigest()
+
+    if submitted_hash != stored_hash:
+        return _bad("invalid credentials", 401)
+
+    # Issue a simple random token stored server-side in settings.
+    # For production use, replace with a proper session/JWT library.
+    token = uuid.uuid4().hex
+    settings.setdefault("auth_tokens", [])
+    # Keep at most 10 active tokens to bound memory use.
+    settings["auth_tokens"] = (settings["auth_tokens"] + [token])[-10:]
+    _save_settings(settings)
+
+    return jsonify({"status": "ok", "token": token})
+
+
+@app.post("/api/auth/logout")
+def logout():
+    """Invalidate the current auth token.
+
+    POST '/api/auth/logout'
+
+    Request body (JSON):
+        - token (str) - The token to revoke.
+
+    Returns:
+        200 OK: '{ "status": "ok" }'
+    """
+    body  = request.get_json(force=True)
+    token = body.get("token", "")
+
+    settings = _load_settings()
+    tokens   = settings.get("auth_tokens", [])
+    if token in tokens:
+        tokens.remove(token)
+        settings["auth_tokens"] = tokens
+        _save_settings(settings)
 
     return jsonify({"status": "ok"})
