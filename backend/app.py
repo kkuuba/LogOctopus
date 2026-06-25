@@ -297,6 +297,64 @@ def get_device(device_id: str):
     return jsonify(device_to_dict(device))
 
 
+@app.get("/api/devices/<device_id>/errors")
+def get_device_errors(device_id: str):
+    """Return the error log for a single device.
+
+    Reads the ``errors.feather`` file written by the device watchdog whenever
+    a command execution fails or an SSH exception is recorded.
+
+    GET '/api/devices/<device_id>/errors'
+
+    Path parameters:
+        - device_id (str) - The config ID of the device.
+
+    Returns:
+        200 OK:
+            JSON object with an ``errors`` list.  Each entry contains:
+
+            - time (str) - ISO-formatted timestamp of the error.
+            - error_info (str) - Human-readable error description.
+
+            Example::
+
+                {
+                    "errors": [
+                        {
+                            "time": "2024-01-01 10:03:12.456789",
+                            "error_info": "cmd 'journalctl -b -n 200 --no-pager' failed with -> timed out"
+                        }
+                    ]
+                }
+
+        404 Not Found:
+            '{ "error": "not_found" }' - No device with the given ID exists.
+    """
+    device = get_target_device(device_id)
+    if not device:
+        return _bad("not_found", 404)
+
+    errors_path = Path("data") / device_id / "errors.feather"
+    if not errors_path.exists():
+        return jsonify({"errors": []})
+
+    try:
+        import pandas as pd  # lazy import — pandas is a heavy dep; keep it out of module scope
+        df = pd.read_feather(str(errors_path))
+        # Ensure consistent column presence even if the file is empty
+        if df.empty or "time" not in df.columns:
+            return jsonify({"errors": []})
+        rows = df[["time", "error_info"]].copy()
+        rows["time"] = rows["time"].astype(str)
+        # Most-recent errors first
+        errors = rows.iloc[::-1].to_dict(orient="records")
+        return jsonify({"errors": errors})
+    except ImportError:
+        return _bad("pandas is not installed on the server", 500)
+    except Exception as exc:
+        return _bad(f"failed to read error log: {exc}", 500)
+
+
 # ── log snapshots ─────────────────────────────────────────────────────────────
 
 @app.get("/api/snapshots")

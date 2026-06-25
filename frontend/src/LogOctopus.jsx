@@ -2311,11 +2311,40 @@ requests.post(f"{BASE}/api/stop-logs-collection",
 // ── DEVICE DETAILS ────────────────────────────────────────────────────────────
 function DeviceDetails({ device, isAdmin, onRequestLogin }) {
   const [configVisible, setConfigVisible] = useState(false);
+  const [errors, setErrors] = useState(null);
+  const [errorsLoading, setErrorsLoading] = useState(false);
+  const [errorsLoadError, setErrorsLoadError] = useState(null);
+  const [errorsVisible, setErrorsVisible] = useState(false);
 
   const handleShowConfig = () => {
     if (!isAdmin) { onRequestLogin(); return; }
     setConfigVisible((v) => !v);
   };
+
+  const fetchErrors = async () => {
+    setErrorsLoading(true);
+    setErrorsLoadError(null);
+    try {
+      const url = `/api/devices/${encodeURIComponent(device.id)}/errors`;
+      const data = await apiFetch(url);
+      setErrors(data.errors || []);
+    } catch (e) {
+      // e.message is "Failed to fetch" for network errors, or the server's error string
+      setErrorsLoadError(e.message || "Failed to load error log");
+    } finally {
+      setErrorsLoading(false);
+    }
+  };
+
+  const handleToggleErrors = () => {
+    if (!errorsVisible) {
+      setErrorsVisible(true);
+      if (errors === null) fetchErrors();
+    } else {
+      setErrorsVisible(false);
+    }
+  };
+
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
@@ -2401,6 +2430,87 @@ function DeviceDetails({ device, isAdmin, onRequestLogin }) {
 
         {isAdmin && configVisible && !device.config && (
           <p style={{ color: "var(--muted)", fontFamily: "var(--font-mono)", fontSize: 12 }}>No configuration data available.</p>
+        )}
+      </div>
+
+      {/* Error Logs section */}
+      <div>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 10 }}>
+          <h4 style={{ fontFamily: "var(--font-display)", fontSize: 13, color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.08em", margin: 0 }}>
+            Error Logs
+          </h4>
+          {errors !== null && errors.length > 0 && (
+            <span style={{
+              background: "rgba(248,113,113,0.15)", color: "#f87171",
+              border: "1px solid rgba(248,113,113,0.3)", borderRadius: 10,
+              fontFamily: "var(--font-mono)", fontSize: 10, padding: "1px 8px", fontWeight: 700,
+            }}>
+              {errors.length}
+            </span>
+          )}
+          <Btn size="sm" variant="subtle" onClick={handleToggleErrors}>
+            {errorsVisible ? "Hide" : "Show"}
+          </Btn>
+          {errorsVisible && (
+            <Btn size="sm" variant="ghost" onClick={fetchErrors} disabled={errorsLoading}>
+              {errorsLoading ? "..." : "Refresh"}
+            </Btn>
+          )}
+        </div>
+
+        {errorsVisible && (
+          <div>
+            {errorsLoading && <Spinner />}
+
+            {!errorsLoading && errorsLoadError && (
+              <div style={{
+                background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.25)",
+                borderRadius: 8, padding: "14px 18px", fontFamily: "var(--font-mono)",
+                fontSize: 12, color: "#f87171",
+              }}>
+                Failed to load: {errorsLoadError}
+              </div>
+            )}
+
+            {!errorsLoading && !errorsLoadError && errors !== null && errors.length === 0 && (
+              <div style={{
+                background: "rgba(74,222,128,0.06)", border: "1px solid rgba(74,222,128,0.2)",
+                borderRadius: 8, padding: "14px 18px", fontFamily: "var(--font-mono)",
+                fontSize: 12, color: "#4ade80", display: "flex", alignItems: "center", gap: 10,
+              }}>
+                No errors recorded for this device.
+              </div>
+            )}
+
+            {!errorsLoading && !errorsLoadError && errors !== null && errors.length > 0 && (
+              <div style={{ overflowX: "auto", borderRadius: 8, border: "1px solid var(--border)", maxHeight: 380, overflowY: "auto" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: "var(--font-mono)", fontSize: 12 }}>
+                  <thead style={{ position: "sticky", top: 0, zIndex: 1 }}>
+                    <tr style={{ background: "rgba(248,113,113,0.10)", borderBottom: "1px solid var(--border)" }}>
+                      <th style={{ padding: "9px 14px", textAlign: "left", color: "var(--muted)", fontWeight: 600, fontSize: 10, textTransform: "uppercase", letterSpacing: "0.07em", whiteSpace: "nowrap", width: 210 }}>
+                        Time
+                      </th>
+                      <th style={{ padding: "9px 14px", textAlign: "left", color: "var(--muted)", fontWeight: 600, fontSize: 10, textTransform: "uppercase", letterSpacing: "0.07em" }}>
+                        Error
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {errors.map((err, i) => (
+                      <tr key={i} style={{ borderBottom: i < errors.length - 1 ? "1px solid rgba(255,255,255,0.04)" : "none", background: i % 2 === 0 ? "transparent" : "rgba(255,255,255,0.015)" }}>
+                        <td style={{ padding: "8px 14px", color: "#6b7280", whiteSpace: "nowrap", verticalAlign: "top" }}>
+                          {err.time}
+                        </td>
+                        <td style={{ padding: "8px 14px", color: "#fca5a5", wordBreak: "break-all" }}>
+                          {err.error_info}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
         )}
       </div>
     </div>
@@ -3151,7 +3261,7 @@ function ConfigBuilderModal({ open, onClose, onSave }) {
   if (!open) return null;
 
   const step1Valid = conn.ip_address && conn.user && conn.port;
-  const step2Valid = entries.length > 0 && entries.every(e => e.log_name && e.log_file_cmd && e.description);
+  const step2Valid = entries.length > 0 && entries.every(e => e.log_name && e.log_file_cmd);
 
   const stepTabStyle = (s) => ({
     display: "flex", alignItems: "center", gap: 9, padding: "12px 24px",
