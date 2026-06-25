@@ -3986,6 +3986,135 @@ function SessionInfo({ sessionId, textUrl, chartUrl, partial = false }) {
   );
 }
 
+// ── LOG LOAD PROGRESS BAR ─────────────────────────────────────────────────────
+const LOG_LOAD_MESSAGES = [
+  "Fetching log snapshots…",
+  "Reading log files…",
+  "Assembling rows…",
+  "Sorting by timestamp…",
+  "Almost ready…",
+];
+
+/**
+ * Shown inside the log modal while snapshot content is being fetched.
+ * Mirrors the CollectionLoadingOverlay style exactly: concentric spinning rings,
+ * determinate/indeterminate progress bar, cycling status messages, bouncing dots.
+ */
+function LogLoadProgressBar({ done, total }) {
+  const [msgIdx, setMsgIdx] = useState(0);
+
+  useEffect(() => {
+    const id = setInterval(() => setMsgIdx((i) => (i + 1) % LOG_LOAD_MESSAGES.length), 2200);
+    return () => clearInterval(id);
+  }, []);
+
+  const pct = total > 0 ? Math.min(100, Math.round((done / total) * 100)) : null;
+
+  return (
+    <div style={{
+      display: "flex",
+      flexDirection: "column",
+      alignItems: "center",
+      justifyContent: "center",
+      gap: 24,
+      flex: 1,
+      padding: "48px 32px",
+    }}>
+      <style>{`
+        @keyframes lo-spin   { from{transform:rotate(0deg)}   to{transform:rotate(360deg)} }
+        @keyframes lo-rspin  { from{transform:rotate(0deg)}   to{transform:rotate(-360deg)} }
+        @keyframes lo-pulse  { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:0.55;transform:scale(1.18)} }
+        @keyframes lo-fadein { from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:translateY(0)} }
+        @keyframes lo-dot    { 0%,80%,100%{opacity:0.15;transform:scale(0.8)} 40%{opacity:1;transform:scale(1)} }
+        @keyframes lo-shimmer { 0%{transform:translateX(-100%)} 100%{transform:translateX(200%)} }
+        .lo-dot:nth-child(1){animation-delay:0s}
+        .lo-dot:nth-child(2){animation-delay:0.2s}
+        .lo-dot:nth-child(3){animation-delay:0.4s}
+      `}</style>
+
+      {/* Concentric rings + logo */}
+      <div style={{ position: "relative", width: 96, height: 96 }}>
+        <svg width="96" height="96" style={{ position: "absolute", inset: 0, animation: "lo-spin 3s linear infinite" }}>
+          <circle cx="48" cy="48" r="44" fill="none" stroke="rgba(129,140,248,0.18)" strokeWidth="2" strokeDasharray="40 8 20 8" />
+        </svg>
+        <svg width="96" height="96" style={{ position: "absolute", inset: 0, animation: "lo-rspin 2s linear infinite" }}>
+          <circle cx="48" cy="48" r="34" fill="none" stroke="rgba(129,140,248,0.3)" strokeWidth="2.5" strokeDasharray="30 6" />
+        </svg>
+        <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", animation: "lo-pulse 1.6s ease-in-out infinite", filter: "drop-shadow(0 0 12px rgba(129,140,248,0.45))" }}>
+          <svg width="36" height="36" viewBox="0 0 36 36">
+            <circle cx="18" cy="18" r="17" fill="none" stroke="#818cf8" strokeWidth="1.5" />
+            <circle cx="18" cy="18" r="6" fill="#818cf8" />
+            {[0, 45, 90, 135, 180, 225, 270, 315].map((a, i) => {
+              const rad = (a * Math.PI) / 180;
+              return <line key={i} x1={18 + 7 * Math.cos(rad)} y1={18 + 7 * Math.sin(rad)} x2={18 + 15 * Math.cos(rad)} y2={18 + 15 * Math.sin(rad)} stroke="#818cf8" strokeWidth="1.8" strokeLinecap="round" />;
+            })}
+          </svg>
+        </div>
+      </div>
+
+      {/* Title */}
+      <div style={{ fontFamily: "var(--font-display)", fontWeight: 800, fontSize: 17, color: "var(--text)", letterSpacing: "-0.01em" }}>
+        Loading Logs
+      </div>
+
+      {/* Progress bar */}
+      <div style={{ width: 320, display: "flex", flexDirection: "column", gap: 8 }}>
+        <div style={{ width: "100%", height: 6, borderRadius: 99, background: "rgba(255,255,255,0.07)", overflow: "hidden", position: "relative" }}>
+          {pct !== null ? (
+            <div style={{
+              height: "100%",
+              width: `${pct}%`,
+              borderRadius: 99,
+              background: pct === 100
+                ? "linear-gradient(90deg, #4ade80, #34d399)"
+                : "linear-gradient(90deg, #818cf8, #a78bfa)",
+              transition: "width 0.6s cubic-bezier(0.4,0,0.2,1)",
+              boxShadow: pct === 100
+                ? "0 0 8px rgba(74,222,128,0.5)"
+                : "0 0 8px rgba(129,140,248,0.45)",
+            }} />
+          ) : (
+            <div style={{
+              position: "absolute", inset: 0,
+              background: "linear-gradient(90deg, transparent 0%, rgba(129,140,248,0.5) 50%, transparent 100%)",
+              animation: "lo-shimmer 1.6s ease-in-out infinite",
+            }} />
+          )}
+        </div>
+
+        {/* Counts row */}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--muted)" }}>
+            {done > 0 ? (
+              <><span style={{ color: pct === 100 ? "#4ade80" : "var(--accent)", fontWeight: 600 }}>{done}</span>
+              {total > 0 ? ` / ${total} snapshot${total !== 1 ? "s" : ""} loaded` : ` snapshot${done !== 1 ? "s" : ""} loaded`}</>
+            ) : (
+              "Waiting for response…"
+            )}
+          </span>
+          {pct !== null && (
+            <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: pct === 100 ? "#4ade80" : "var(--accent)", fontWeight: 600 }}>
+              {pct}%
+            </span>
+          )}
+        </div>
+      </div>
+
+      {/* Cycling status message */}
+      <div key={msgIdx} style={{ fontFamily: "var(--font-mono)", fontSize: 12, color: "var(--accent)", animation: "lo-fadein 0.35s ease", minHeight: 18, textAlign: "center" }}>
+        {LOG_LOAD_MESSAGES[msgIdx]}
+      </div>
+
+      {/* Bouncing dots */}
+      <div style={{ display: "flex", gap: 7 }}>
+        {[0, 1, 2].map(i => (
+          <div key={i} className="lo-dot" style={{ width: 7, height: 7, borderRadius: "50%", background: "var(--accent)", animation: "lo-dot 1.2s ease-in-out infinite" }} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // ── MAIN APP ──────────────────────────────────────────────────────────────────
 const PULSE_KF = `
   @keyframes pulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:0.4;transform:scale(1.6)} }
@@ -4031,6 +4160,7 @@ export default function App() {
   const [logRows,         setLogRows]         = useState([]);
   const [chartGroups,     setChartGroups]     = useState([]); // [{ snapInfo, rows }]
   const [logRowsLoading,  setLogRowsLoading]  = useState(false);
+  const [logLoadProgress, setLogLoadProgress] = useState({ done: 0, total: 0 });
   const [colorMode,       setColorMode]       = useState(false);
   const [deviceModal,     setDeviceModal]     = useState(null);
   const [sessionModal,    setSessionModal]    = useState(null);
@@ -4404,14 +4534,17 @@ export default function App() {
     setLogRowsLoading(true);
     setLogRows([]);
     setChartGroups([]);
+    setLogLoadProgress({ done: 0, total: snapsToView.length });
 
     try {
+      let done = 0;
       const results = await Promise.all(
         snapsToView.map((s) =>
-          apiFetch(`/api/snapshots/${s.id}/content?log_type=${isChart ? "chart" : "text"}`).then((r) => ({
-            snapInfo: s,
-            rows: r.rows,
-          }))
+          apiFetch(`/api/snapshots/${s.id}/content?log_type=${isChart ? "chart" : "text"}`).then((r) => {
+            done += 1;
+            setLogLoadProgress({ done, total: snapsToView.length });
+            return { snapInfo: s, rows: r.rows };
+          })
         )
       );
 
@@ -5293,7 +5426,7 @@ ${rowsHtml}
         }
       >
         {logRowsLoading ? (
-          <Spinner />
+          <LogLoadProgressBar done={logLoadProgress.done} total={logLoadProgress.total} />
         ) : (
           <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
             <LogContentView
