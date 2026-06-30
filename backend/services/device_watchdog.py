@@ -2,6 +2,7 @@ from fabric import Connection
 from concurrent.futures import ThreadPoolExecutor
 from backend.models.log_snapshot import LogSnapshot
 from backend.utils.fabric_connection import build_fabric_connection
+from backend.utils.ssh_network_capture import SshNetworkCapture
 import pandas as pd
 from paramiko_expect import SSHClientInteraction
 from datetime import datetime
@@ -73,6 +74,7 @@ class DeviceWatchdog:
         self._executor = ThreadPoolExecutor(
             max_workers=len(device_config["log_file_configs"])
         )
+        self.network_capture = None
 
     # ------------------------------------------------------------------
     # SSH / command execution
@@ -171,6 +173,12 @@ class DeviceWatchdog:
             # acquire before touching the list.
             self.collected_data[log_name] = []
             self._data_locks[log_name] = threading.Lock()
+        if self.device_config["packets_capture_config"]:
+            packets_capture_channel = self._get_or_create_channel("packet_capture")
+            packets_capture_interface = self.device_config["packets_capture_config"]["interface"]
+            packets_capture_file = "capture.pcap"
+            self.network_capture = SshNetworkCapture(connection=packets_capture_channel, interface=packets_capture_interface, local_file=packets_capture_file)
+            self.network_capture.start()
 
     def teardown_log_collectors(self) -> None:
         """Teardown log collectors and close all open SSH channels.
@@ -185,7 +193,8 @@ class DeviceWatchdog:
                 log_config["log_name"],
                 log_config.get("custom_shell_prompt"),
             )
-
+        if self.device_config["packets_capture_config"]:
+            self.network_capture.stop()
         # FIX: close every open SSH connection and clear the dict so channels
         # don't accumulate across start/stop cycles.
         with self._channel_lock:
