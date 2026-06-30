@@ -74,8 +74,8 @@ class SshNetworkCapture:
                 stop command).
     """
 
-    DEFAULT_CAPTURE_START_CMD = "sudo tcpdump -i {iface} -w -"
-    DEFAULT_CAPTURE_STOP_CMD = "sudo pkill -INT -f 'tcpdump -i {iface} -w -'"
+    DEFAULT_CAPTURE_START_CMD = "sudo tcpdump"
+    DEFAULT_CAPTURE_STOP_CMD = "sudo pkill -INT -f 'tcpdump -i'"
 
     def __init__(self, connection, interface="eth0", local_file="capture.pcap",
                  capture_start_cmd=None, capture_stop_cmd=None,
@@ -144,7 +144,7 @@ class SshNetworkCapture:
             self._stopped_event.clear()
 
             self._open_segment(self.local_file_base)
-            self._open_session(self.interface)
+            self._open_session()
 
             self.thread = threading.Thread(target=self._reader_loop, daemon=True)
             self.thread.start()
@@ -218,8 +218,8 @@ class SshNetworkCapture:
             return template.format(iface=iface)
         return template
 
-    def _open_session(self, iface):
-        cmd = self._format_cmd(self.capture_start_cmd, iface)
+    def _open_session(self):
+        cmd = f"{self.capture_start_cmd} -i {self.interface} -w -"
         transport = self._get_transport()
         channel = transport.open_session()
         # Intentionally NOT calling get_pty(): a "-w -"-style command
@@ -246,7 +246,7 @@ class SshNetworkCapture:
             transport = self.conn.client.get_transport()
             if transport is None or not transport.is_active():
                 return
-            kill_cmd = self._format_cmd(self.capture_stop_cmd, self.interface)
+            kill_cmd = self.capture_stop_cmd
             channel = transport.open_session()
             channel.exec_command(kill_cmd)
             channel.settimeout(5)
@@ -343,7 +343,7 @@ class SshNetworkCapture:
 
             new_path = self._next_segment_path()
             self._open_segment(new_path)
-            self._open_session(self.interface)
+            self._open_session()
             logger.info("capture resumed -> new segment %s", new_path)
             return True
         except Exception:
