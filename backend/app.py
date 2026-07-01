@@ -17,6 +17,7 @@ from backend.models.device import Device
 from backend.models.device_config import DeviceConfig
 from backend.utils.config_helper import ConfigurationHelper
 from backend.utils.device_config_loader import DeviceConfigLoader
+from backend.utils.pcap_decoder import PcapDecoder
 
 
 SETTINGS_FILE = Path("settings.json")
@@ -486,6 +487,59 @@ def get_snapshot_content(snapshot_id: str):
 
     rows = ConfigurationHelper.get_log_content_for_selected_snapshots([target]).to_dict(orient="records")
     return jsonify({"rows": rows})
+
+
+@app.get("/api/snapshots/<snapshot_id>/packets/<int:packet_number>")
+def get_packet_details(snapshot_id: str, packet_number: int):
+    """Return the full decoded tshark field detail for a single packet.
+
+    Only valid for "packet_capture" snapshots (produced by
+    PcapDecoder.to_log_snapshot / DeviceWatchdog.save_log_snapshots).
+    Locates the snapshot's saved '<session_id>.pcap' file via the
+    snapshot's device_config_id/session_id and decodes the requested frame
+    with PcapDecoder.get_session_packet_details.
+
+    GET '/api/snapshots/<snapshot_id>/packets/<packet_number>'
+
+    Path parameters:
+        - snapshot_id (str) - ID of the packet_capture snapshot.
+        - packet_number (int) - 1-based tshark frame number, i.e. the
+          leading field of PacketInfo.to_content_str() shown at the start
+          of each packet line's "content".
+
+    Returns:
+        200 OK:
+            '{ "packet_number": N, "details": { "<layer>": { "<field>": "<value>", … }, … } }'
+
+        404 Not Found:
+            '{ "error": "not_found" }' - No snapshot with the given ID
+            exists, it isn't a "packet_capture" snapshot, or no packet
+            with that frame number exists in the capture.
+
+        500 Internal Server Error:
+            '{ "error": "tshark not available: …" }' - tshark is not
+            installed on the server, or the session's pcap file is
+            missing on disk.
+    """
+    devices   = get_current_devices()
+    snapshots = ConfigurationHelper.get_log_snapshots_list(devices, log_type_chart=False)
+
+    target = next((s for s in snapshots if s.id == snapshot_id), None)
+    if not target or getattr(target, "log_name", "") != "packet_capture":
+        return _bad("not_found", 404)
+
+    device_data_dir = os.path.join("data", target.device_id)
+    try:
+        details = PcapDecoder.get_session_packet_details(
+            device_data_dir, target.session_id, packet_number
+        )
+    except FileNotFoundError as exc:
+        return _bad(f"tshark not available: {exc}", 500)
+
+    if not details:
+        return _bad("not_found", 404)
+
+    return jsonify({"packet_number": packet_number, "details": details})
 
 
 @app.delete("/api/snapshots")

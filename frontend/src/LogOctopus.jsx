@@ -453,6 +453,46 @@ function buildPairColorMap(rows) {
   return map;
 }
 
+// ── PACKET-CAPTURE GLYPH BUTTON ───────────────────────────────────────────────
+// Singleton <style> element for the "view packet details" glyph-margin icon.
+// Only rows whose log_name === "packet_capture" ever get this decoration, so
+// every other log line in the editor is completely untouched.
+let _packetGlyphStyleEl = null;
+function ensurePacketGlyphStyleEl() {
+  if (_packetGlyphStyleEl) return _packetGlyphStyleEl;
+  _packetGlyphStyleEl = document.createElement("style");
+  _packetGlyphStyleEl.id = "lo-packet-glyph-style";
+  document.head.appendChild(_packetGlyphStyleEl);
+  _packetGlyphStyleEl.textContent = `
+    .lo-packet-glyph {
+      cursor: pointer;
+      position: relative;
+    }
+    .lo-packet-glyph::before {
+      content: "\\1F50E";
+      font-size: 11px;
+      line-height: 20px;
+      position: absolute;
+      left: 3px;
+      top: 0;
+      opacity: 0.75;
+    }
+    .lo-packet-glyph:hover::before {
+      opacity: 1;
+    }
+  `;
+  return _packetGlyphStyleEl;
+}
+
+// Extracts the leading packet number from a packet_capture row's content,
+// e.g. "12 | eth:ip:tcp | 10.0.0.1:443 -> 10.0.0.2:51000 | len=1500 | …" → 12.
+// Mirrors the field order produced by PacketInfo.to_content_str().
+function parsePacketNumber(content) {
+  const head = String(content ?? "").split("|")[0].trim();
+  const n = parseInt(head, 10);
+  return Number.isNaN(n) ? null : n;
+}
+
 // ── MONACO LOG VIEWER ─────────────────────────────────────────────────────────
 /**
  * Renders log rows inside a Monaco Editor instance (read-only).
@@ -464,16 +504,29 @@ function buildPairColorMap(rows) {
  * (isWholeLine:true + className) and injected CSS classes.
  *
  * Props:
- *   rows      – array of { time, device_name, log_name, content }
- *   colorMode – bool; switches between logoctopus-dark and logoctopus-color themes
+ *   rows          – array of { time, device_name, log_name, content, snapshotId }
+ *   colorMode     – bool; switches between logoctopus-dark and logoctopus-color themes
+ *   onPacketClick – optional (row) => void, called when the user clicks the
+ *                   glyph-margin button next to a "packet_capture" row.
+ *                   Every other log line is untouched — the glyph margin
+ *                   only ever gets a decoration for packet_capture rows.
  */
-function MonacoLogViewer({ rows, colorMode }) {
+function MonacoLogViewer({ rows, colorMode, onPacketClick }) {
   const containerRef      = useRef(null);
   const editorRef         = useRef(null);
   const modelRef          = useRef(null);
-  const decorationsRef    = useRef([]); // current decoration IDs
+  const decorationsRef    = useRef([]); // current line-color decoration IDs
+  const glyphDecorationsRef = useRef([]); // current packet-glyph decoration IDs
   const [ready, setReady] = useState(false);
   const [loadErr, setLoadErr] = useState(null);
+
+  // Kept as refs so the mousedown handler (registered once, at editor
+  // creation time) always sees the latest rows / callback without needing
+  // to recreate the editor whenever they change.
+  const rowsRef = useRef(rows);
+  rowsRef.current = rows;
+  const onPacketClickRef = useRef(onPacketClick);
+  onPacketClickRef.current = onPacketClick;
 
   // FIX: compute the flat log text with useMemo so it is only rebuilt when
   // `rows` actually changes, not on every render of the parent component.
@@ -534,6 +587,37 @@ function MonacoLogViewer({ rows, colorMode }) {
     );
   }, []);
 
+  // ── Apply glyph-margin "view packet details" buttons ─────────────────────
+  // Only rows with log_name === "packet_capture" get a decoration here, so
+  // this never touches the appearance of any other log line.
+  const applyPacketGlyphDecorations = useCallback((rowsData) => {
+    const editor = editorRef.current;
+    if (!editor) return;
+
+    ensurePacketGlyphStyleEl();
+
+    const newDecorations = (rowsData ?? [])
+      .map((r, lineIndex) => ({ r, lineIndex }))
+      .filter(({ r }) => r.log_name === "packet_capture")
+      .map(({ lineIndex }) => ({
+        range: {
+          startLineNumber: lineIndex + 1,
+          startColumn: 1,
+          endLineNumber: lineIndex + 1,
+          endColumn: 1,
+        },
+        options: {
+          glyphMarginClassName: "lo-packet-glyph",
+          glyphMarginHoverMessage: { value: "Click to view packet details" },
+        },
+      }));
+
+    glyphDecorationsRef.current = editor.deltaDecorations(
+      glyphDecorationsRef.current,
+      newDecorations
+    );
+  }, []);
+
   // Load Monaco once, then create the editor
   useEffect(() => {
     let cancelled = false;
@@ -552,6 +636,10 @@ function MonacoLogViewer({ rows, colorMode }) {
           scrollBeyondLastLine: false,
           wordWrap:          "off",
           lineNumbers:       "on",
+          // Adds a slim gutter column used only by packet_capture rows'
+          // "view packet details" glyph — empty/unchanged for every other
+          // line, so it doesn't alter the appearance of other log types.
+          glyphMargin:       true,
           renderLineHighlight: "line",
           fontFamily:        "'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace",
           fontSize:          12,
@@ -577,6 +665,19 @@ function MonacoLogViewer({ rows, colorMode }) {
           },
         });
         editorRef.current = editor;
+
+        // Handle clicks on the glyph margin — only packet_capture rows ever
+        // carry a glyph decoration, so this is a no-op for every other line.
+        editor.onMouseDown((e) => {
+          if (e.target?.type !== monaco.editor.MouseTargetType.GUTTER_GLYPH_MARGIN) return;
+          const lineNumber = e.target.position?.lineNumber;
+          if (!lineNumber) return;
+          const row = rowsRef.current?.[lineNumber - 1];
+          if (row && row.log_name === "packet_capture" && onPacketClickRef.current) {
+            onPacketClickRef.current(row);
+          }
+        });
+
         setReady(true);
       })
       .catch((e) => {
@@ -590,6 +691,7 @@ function MonacoLogViewer({ rows, colorMode }) {
       editorRef.current = null;
       modelRef.current  = null;
       decorationsRef.current = [];
+      glyphDecorationsRef.current = [];
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -610,6 +712,13 @@ function MonacoLogViewer({ rows, colorMode }) {
     if (!ready) return;
     applyLineNumberDecorations(rows, colorMode);
   }, [rows, colorMode, ready, applyLineNumberDecorations]);
+
+  // Apply packet_capture glyph buttons whenever rows change (and editor is
+  // ready). Independent of colorMode — the button shows in both themes.
+  useEffect(() => {
+    if (!ready) return;
+    applyPacketGlyphDecorations(rows);
+  }, [rows, ready, applyPacketGlyphDecorations]);
 
   // Swap theme when colorMode toggles
   useEffect(() => {
@@ -664,7 +773,7 @@ function MonacoLogViewer({ rows, colorMode }) {
 }
 
 // ── LOG CONTENT VIEW ──────────────────────────────────────────────────────────
-function LogContentView({ rows, isChart, colorMode, chartGroups }) {
+function LogContentView({ rows, isChart, colorMode, chartGroups, onPacketClick }) {
   if (isChart) return <ChartContentView chartGroups={chartGroups} />;
 
   if (!rows || rows.length === 0)
@@ -672,9 +781,83 @@ function LogContentView({ rows, isChart, colorMode, chartGroups }) {
 
   return (
     <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
-      <MonacoLogViewer rows={rows} colorMode={colorMode} />
+      <MonacoLogViewer rows={rows} colorMode={colorMode} onPacketClick={onPacketClick} />
     </div>
   );
+}
+
+// ── PACKET DETAILS TREE ───────────────────────────────────────────────────────
+/**
+ * Recursively renders the nested "layer → field → value" dict returned by
+ * PcapDecoder.get_packet_details() (tshark's -T json output). Objects render
+ * as collapsible <details> sections, primitives as key/value rows, and
+ * arrays as a stacked list of their (recursively rendered) items.
+ */
+function PacketFieldTree({ data, depth = 0 }) {
+  if (data === null || data === undefined || data === "") {
+    return <span style={{ color: "var(--muted)" }}>—</span>;
+  }
+
+  if (Array.isArray(data)) {
+    return (
+      <div style={{ marginLeft: depth ? 14 : 0 }}>
+        {data.map((item, i) => (
+          <div key={i} style={{ marginBottom: 4 }}>
+            <PacketFieldTree data={item} depth={depth + 1} />
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  if (typeof data === "object") {
+    return (
+      <div style={{ marginLeft: depth ? 14 : 0 }}>
+        {Object.entries(data).map(([key, value]) => {
+          const isBranch = value !== null && typeof value === "object";
+          if (isBranch) {
+            return (
+              <details key={key} open={depth < 1} style={{ marginBottom: 2 }}>
+                <summary
+                  style={{
+                    cursor: "pointer",
+                    fontFamily: "var(--font-mono)",
+                    fontSize: 12,
+                    fontWeight: 600,
+                    color: "var(--accent)",
+                    padding: "4px 0",
+                  }}
+                >
+                  {key}
+                </summary>
+                <PacketFieldTree data={value} depth={depth + 1} />
+              </details>
+            );
+          }
+          return (
+            <div
+              key={key}
+              style={{
+                display: "flex",
+                gap: 10,
+                fontFamily: "var(--font-mono)",
+                fontSize: 12,
+                padding: "3px 0",
+                borderBottom: "1px solid rgba(255,255,255,0.05)",
+              }}
+            >
+              <span style={{ color: "var(--muted)", minWidth: 220, flexShrink: 0, wordBreak: "break-word" }}>
+                {key}
+              </span>
+              <span style={{ color: "var(--text)", wordBreak: "break-all" }}>{String(value)}</span>
+            </div>
+          );
+        })}
+      </div>
+    );
+  }
+
+  return <span style={{ color: "var(--text)" }}>{String(data)}</span>;
 }
 
 // ── DOWNLOAD FORMATS ──────────────────────────────────────────────────────────
@@ -4162,6 +4345,12 @@ export default function App() {
   const [logRowsLoading,  setLogRowsLoading]  = useState(false);
   const [logLoadProgress, setLogLoadProgress] = useState({ done: 0, total: 0 });
   const [colorMode,       setColorMode]       = useState(false);
+
+  // packet_capture "view packet details" modal
+  const [packetModal,        setPacketModal]        = useState(false);
+  const [packetModalData,    setPacketModalData]    = useState(null); // { packet_number, details }
+  const [packetModalLoading, setPacketModalLoading] = useState(false);
+  const [packetModalError,   setPacketModalError]   = useState("");
   const [deviceModal,     setDeviceModal]     = useState(null);
   const [sessionModal,    setSessionModal]    = useState(null);
   const [apiModal,        setApiModal]        = useState(false);
@@ -4552,7 +4741,14 @@ export default function App() {
         setChartGroups(results);
       } else {
         const merged = results.flatMap((r) =>
-          r.rows.map((row) => ({ ...row, device_name: r.snapInfo.deviceName ?? r.snapInfo.device_name ?? "" }))
+          r.rows.map((row) => ({
+            ...row,
+            device_name: r.snapInfo.deviceName ?? r.snapInfo.device_name ?? "",
+            // Needed so packet_capture rows can call back to
+            // /api/snapshots/<snapshotId>/packets/<n> for that specific
+            // snapshot's pcap file.
+            snapshotId: r.snapInfo.id,
+          }))
         );
         // Sort all text entries by timestamp ascending
         merged.sort((a, b) => {
@@ -4567,6 +4763,34 @@ export default function App() {
       setLogModal(false);
     } finally {
       setLogRowsLoading(false);
+    }
+  };
+
+  /**
+   * Opens the "packet details" modal for a single packet_capture row.
+   * row.content's leading field (before the first " | ") is the tshark
+   * frame number produced by PacketInfo.to_content_str(); row.snapshotId
+   * identifies which snapshot's pcap file to decode it from.
+   */
+  const openPacketDetails = async (row) => {
+    const packetNumber = parsePacketNumber(row?.content);
+    if (!row?.snapshotId || packetNumber === null) {
+      addToast("Couldn't determine which packet to look up.", "error");
+      return;
+    }
+
+    setPacketModal(true);
+    setPacketModalLoading(true);
+    setPacketModalError("");
+    setPacketModalData(null);
+
+    try {
+      const res = await apiFetch(`/api/snapshots/${row.snapshotId}/packets/${packetNumber}`);
+      setPacketModalData(res);
+    } catch (e) {
+      setPacketModalError(e.message || "Failed to load packet details.");
+    } finally {
+      setPacketModalLoading(false);
     }
   };
 
@@ -5434,8 +5658,30 @@ ${rowsHtml}
               isChart={isChart}
               colorMode={colorMode}
               chartGroups={chartGroups}
+              onPacketClick={openPacketDetails}
             />
           </div>
+        )}
+      </Modal>
+
+      {/* Packet details modal — opened from the 🔎 glyph next to packet_capture rows */}
+      <Modal
+        open={packetModal}
+        onClose={() => setPacketModal(false)}
+        title={packetModalData ? `Packet #${packetModalData.packet_number}` : "Packet Details"}
+        size="lg"
+        footer={<Btn variant="ghost" onClick={() => setPacketModal(false)}>Close</Btn>}
+      >
+        {packetModalLoading ? (
+          <Spinner />
+        ) : packetModalError ? (
+          <p style={{ color: "#f87171", fontFamily: "var(--font-mono)", fontSize: 13 }}>
+            ⚠ {packetModalError}
+          </p>
+        ) : packetModalData?.details && Object.keys(packetModalData.details).length > 0 ? (
+          <PacketFieldTree data={packetModalData.details} />
+        ) : (
+          <p style={{ color: "var(--muted)" }}>No packet detail available.</p>
         )}
       </Modal>
 

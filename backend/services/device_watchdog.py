@@ -182,7 +182,7 @@ class DeviceWatchdog:
             # acquire before touching the list.
             self.collected_data[log_name] = []
             self._data_locks[log_name] = threading.Lock()
-        if self.device_config["packets_capture_config"]:
+        if self.device_config.get("packets_capture_config", None):
             packets_capture_channel = self._get_or_create_channel("packet_capture")
             packets_capture_interface = self.device_config["packets_capture_config"]["interface"]
             # Store under the per-device data directory rather than a bare
@@ -206,7 +206,7 @@ class DeviceWatchdog:
                 log_config["log_name"],
                 log_config.get("custom_shell_prompt"),
             )
-        if self.device_config["packets_capture_config"]:
+        if self.device_config.get("packets_capture_config", None):
             self.network_capture.stop()
         # FIX: close every open SSH connection and clear the dict so channels
         # don't accumulate across start/stop cycles.
