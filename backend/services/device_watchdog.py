@@ -3,6 +3,7 @@ from concurrent.futures import ThreadPoolExecutor
 from backend.models.log_snapshot import LogSnapshot
 from backend.utils.fabric_connection import build_fabric_connection
 from backend.utils.ssh_network_capture import SshNetworkCapture
+from backend.utils.pcap_decoder import PcapDecoder
 import pandas as pd
 from paramiko_expect import SSHClientInteraction
 from datetime import datetime
@@ -11,6 +12,7 @@ import re
 import uuid
 import time
 import threading
+import os
 from time import sleep
 import argparse
 import json
@@ -34,6 +36,12 @@ class DeviceWatchdog:
         """
         self.device_config = device_config
         self.device_config_id = device_config_id
+
+        # Per-device directory for anything persisted to disk (pcap capture,
+        # errors.feather, etc.) so file paths never depend on the process's
+        # current working directory.
+        self.device_data_dir = os.path.join("data", str(device_config_id))
+        os.makedirs(self.device_data_dir, exist_ok=True)
 
         # SSH channels keyed by log_name; guarded by a single lock that covers
         # both the channels dict and all per-log collected_data lists.
@@ -75,6 +83,7 @@ class DeviceWatchdog:
             max_workers=len(device_config["log_file_configs"])
         )
         self.network_capture = None
+        self.packets_capture_file: str | None = None
 
     # ------------------------------------------------------------------
     # SSH / command execution
@@ -173,10 +182,14 @@ class DeviceWatchdog:
             # acquire before touching the list.
             self.collected_data[log_name] = []
             self._data_locks[log_name] = threading.Lock()
-        if self.device_config["packets_capture_config"]:
+        if self.device_config.get("packets_capture_config", None):
             packets_capture_channel = self._get_or_create_channel("packet_capture")
             packets_capture_interface = self.device_config["packets_capture_config"]["interface"]
-            packets_capture_file = "capture.pcap"
+            # Store under the per-device data directory rather than a bare
+            # relative filename, so the capture doesn't depend on CWD and
+            # doesn't collide across devices.
+            packets_capture_file = os.path.join(self.device_data_dir, "capture.pcap")
+            self.packets_capture_file = packets_capture_file
             self.network_capture = SshNetworkCapture(connection=packets_capture_channel, interface=packets_capture_interface, local_file=packets_capture_file)
             self.network_capture.start()
 
@@ -193,7 +206,7 @@ class DeviceWatchdog:
                 log_config["log_name"],
                 log_config.get("custom_shell_prompt"),
             )
-        if self.device_config["packets_capture_config"]:
+        if self.device_config.get("packets_capture_config", None):
             self.network_capture.stop()
         # FIX: close every open SSH connection and clear the dict so channels
         # don't accumulate across start/stop cycles.
@@ -376,6 +389,28 @@ class DeviceWatchdog:
                     log_content,
                 )
             )
+
+        # Only build a pcap LogSnapshot when a capture was actually collected:
+        # packets_capture_config being set just means the feature is enabled,
+        # it doesn't guarantee network_capture ever wrote a non-empty file
+        # (e.g. capture never started, or the session produced zero packets).
+        if (
+            self.packets_capture_file
+            and os.path.exists(self.packets_capture_file)
+            and os.path.getsize(self.packets_capture_file) > 0
+        ):
+            try:
+                decoder = PcapDecoder(self.packets_capture_file)
+                self.log_snapshots.append(
+                    decoder.to_log_snapshot(
+                        self.device_config_id,
+                        self.device_config["device_name"],
+                        session_id,
+                        session_scenario,
+                    )
+                )
+            except FileNotFoundError as exc:
+                self._record_error(f"pcap decode failed -> {exc}")
 
     def get_target_log_param_based_on_log_name(self, log_name: str, log_param: str) -> str:
         """
@@ -581,7 +616,7 @@ if __name__ == "__main__":
         # causing constant disk I/O even when no new errors occurred.
         current_errors_len = len(device_watchdog._error_list)
         if current_errors_len != last_errors_len:
-            errors_file_path = f"data/{device_watchdog.device_config_id}/errors.feather"
+            errors_file_path = os.path.join(device_watchdog.device_data_dir, "errors.feather")
             device_watchdog.errors.to_feather(errors_file_path)
             last_errors_len = current_errors_len
 
