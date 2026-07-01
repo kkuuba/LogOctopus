@@ -182,7 +182,7 @@ class DeviceWatchdog:
             # acquire before touching the list.
             self.collected_data[log_name] = []
             self._data_locks[log_name] = threading.Lock()
-        if self.device_config.get("packets_capture_config", None):
+        if self.device_config["packets_capture_config"]:
             packets_capture_channel = self._get_or_create_channel("packet_capture")
             packets_capture_interface = self.device_config["packets_capture_config"]["interface"]
             # Store under the per-device data directory rather than a bare
@@ -206,7 +206,7 @@ class DeviceWatchdog:
                 log_config["log_name"],
                 log_config.get("custom_shell_prompt"),
             )
-        if self.device_config.get("packets_capture_config", None):
+        if self.device_config["packets_capture_config"]:
             self.network_capture.stop()
         # FIX: close every open SSH connection and clear the dict so channels
         # don't accumulate across start/stop cycles.
@@ -399,6 +399,15 @@ class DeviceWatchdog:
             and os.path.exists(self.packets_capture_file)
             and os.path.getsize(self.packets_capture_file) > 0
         ):
+            # Rename the raw capture to <session_id>.pcap so it's directly
+            # addressable later via PcapDecoder.get_session_packet_details().
+            session_pcap_path = os.path.join(self.device_data_dir, f"{session_id}.pcap")
+            try:
+                os.replace(self.packets_capture_file, session_pcap_path)
+                self.packets_capture_file = session_pcap_path
+            except OSError as exc:
+                self._record_error(f"failed to rename pcap file -> {exc}")
+
             try:
                 decoder = PcapDecoder(self.packets_capture_file)
                 self.log_snapshots.append(

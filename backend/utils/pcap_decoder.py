@@ -85,6 +85,37 @@ class PcapDecoder:
         self.pcap_file = pcap_file
         self.packets: list[PacketInfo] = []
 
+    @classmethod
+    def for_session(cls, device_data_dir: str, session_id: str) -> "PcapDecoder":
+        """
+        Build a PcapDecoder for a session's saved pcap file, i.e.
+        <device_data_dir>/<session_id>.pcap -- the naming convention used by
+        DeviceWatchdog.save_log_snapshots once it renames the raw capture.
+
+        Args:
+            device_data_dir: Per-device data directory (DeviceWatchdog.device_data_dir).
+            session_id: Session whose pcap should be decoded.
+        """
+        return cls(os.path.join(device_data_dir, f"{session_id}.pcap"))
+
+    @classmethod
+    def get_session_packet_details(cls, device_data_dir: str, session_id: str, packet_number: int) -> dict:
+        """
+        Convenience one-shot: resolve a session's pcap path and decode a
+        single packet's full field detail from it.
+
+        Returns {} if the session's pcap file doesn't exist (rather than
+        raising), since a missing session is an expected, non-exceptional
+        case for callers -- e.g. an invalid/expired session_id.
+
+        Raises:
+            FileNotFoundError: tshark is not installed / not on PATH.
+        """
+        decoder = cls.for_session(device_data_dir, session_id)
+        if not os.path.exists(decoder.pcap_file):
+            return {}
+        return decoder.get_packet_details(packet_number)
+
     # ------------------------------------------------------------------
     # Decoding
     # ------------------------------------------------------------------
