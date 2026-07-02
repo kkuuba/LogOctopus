@@ -74,13 +74,15 @@ class SshNetworkCapture:
                 stop command).
     """
 
-    DEFAULT_CAPTURE_START_CMD = "sudo tcpdump"
-    DEFAULT_CAPTURE_STOP_CMD = "sudo pkill -INT -f 'tcpdump -i'"
-
-    def __init__(self, connection, interface="eth0", local_file="capture.pcap",
-                 capture_start_cmd=None, capture_stop_cmd=None,
-                 max_reconnect_attempts=5, reconnect_backoff_base=1.0,
-                 reconnect_backoff_max=30.0, recv_size=65536):
+    def __init__(self,
+                 connection,
+                 capture_start_cmd,
+                 capture_stop_cmd,
+                 local_file="capture.pcap",
+                 max_reconnect_attempts=5,
+                 reconnect_backoff_base=1.0,
+                 reconnect_backoff_max=30.0,
+                 recv_size=65536):
         """
         connection:         a fabric.Connection (or similar) for the
                              target host.
@@ -102,20 +104,9 @@ class SshNetworkCapture:
                              will fall back to just closing the channel.
         """
         self.conn = connection
-        self.interface = interface
+        self.capture_start_cmd = capture_start_cmd
+        self.capture_stop_cmd = capture_stop_cmd
         self.local_file_base = local_file
-        self.capture_start_cmd = capture_start_cmd or self.DEFAULT_CAPTURE_START_CMD
-        if capture_start_cmd is not None:
-            # A custom capture command invalidates the default stop
-            # command (which targets tcpdump specifically) unless the
-            # caller also gives us a matching one.
-            self.capture_stop_cmd = capture_stop_cmd
-        else:
-            self.capture_stop_cmd = (
-                capture_stop_cmd if capture_stop_cmd is not None
-                else self.DEFAULT_CAPTURE_STOP_CMD
-            )
-
         self.session = None
         self.thread = None
         self.running = False
@@ -149,8 +140,7 @@ class SshNetworkCapture:
             self.thread = threading.Thread(target=self._reader_loop, daemon=True)
             self.thread.start()
 
-        logger.info("capture started on %s -> %s (cmd=%r)", self.interface,
-                     self.local_file_base, self.capture_start_cmd)
+        logger.info("Network capture started -> %s (cmd=%r)", self.local_file_base, self.capture_start_cmd)
 
     def stop(self, timeout=10):
         with self._lock:
@@ -219,7 +209,7 @@ class SshNetworkCapture:
         return template
 
     def _open_session(self):
-        cmd = f"{self.capture_start_cmd} -i {self.interface} -w -"
+        cmd = f"{self.capture_start_cmd} -w -"
         transport = self._get_transport()
         channel = transport.open_session()
         # Intentionally NOT calling get_pty(): a "-w -"-style command

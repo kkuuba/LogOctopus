@@ -525,7 +525,7 @@ def get_packet_details(snapshot_id: str, packet_number: int):
     snapshots = ConfigurationHelper.get_log_snapshots_list(devices, log_type_chart=False)
 
     target = next((s for s in snapshots if s.id == snapshot_id), None)
-    if not target or getattr(target, "log_name", "") != "packet_capture":
+    if not target or getattr(target, "log_name", "") != "network capture":
         return _bad("not_found", 404)
 
     device_data_dir = os.path.join("data", target.device_id)

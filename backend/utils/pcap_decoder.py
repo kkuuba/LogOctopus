@@ -274,7 +274,7 @@ class PcapDecoder:
         device_name: str,
         session_id: str,
         session_scenario: str,
-        log_name: str = "packet_capture",
+        log_name: str = "network_capture",
         log_description: str = "Decoded network packet capture",
         data_unit: str = "",
         log_type: str = "text",

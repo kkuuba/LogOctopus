@@ -598,7 +598,7 @@ function MonacoLogViewer({ rows, colorMode, onPacketClick }) {
 
     const newDecorations = (rowsData ?? [])
       .map((r, lineIndex) => ({ r, lineIndex }))
-      .filter(({ r }) => r.log_name === "packet_capture")
+      .filter(({ r }) => r.log_name === "network capture")
       .map(({ lineIndex }) => ({
         range: {
           startLineNumber: lineIndex + 1,
@@ -673,7 +673,7 @@ function MonacoLogViewer({ rows, colorMode, onPacketClick }) {
           const lineNumber = e.target.position?.lineNumber;
           if (!lineNumber) return;
           const row = rowsRef.current?.[lineNumber - 1];
-          if (row && row.log_name === "packet_capture" && onPacketClickRef.current) {
+          if (row && row.log_name === "network capture" && onPacketClickRef.current) {
             onPacketClickRef.current(row);
           }
         });

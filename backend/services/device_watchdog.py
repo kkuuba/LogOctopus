@@ -184,13 +184,11 @@ class DeviceWatchdog:
             self._data_locks[log_name] = threading.Lock()
         if self.device_config.get("packets_capture_config", None):
             packets_capture_channel = self._get_or_create_channel("packet_capture")
-            packets_capture_interface = self.device_config["packets_capture_config"]["interface"]
-            # Store under the per-device data directory rather than a bare
-            # relative filename, so the capture doesn't depend on CWD and
-            # doesn't collide across devices.
+            capture_start_cmd = self.device_config["packets_capture_config"]["capture_start_cmd"]
+            capture_stop_cmd = self.device_config["packets_capture_config"]["capture_stop_cmd"]
             packets_capture_file = os.path.join(self.device_data_dir, "capture.pcap")
             self.packets_capture_file = packets_capture_file
-            self.network_capture = SshNetworkCapture(connection=packets_capture_channel, interface=packets_capture_interface, local_file=packets_capture_file)
+            self.network_capture = SshNetworkCapture(connection=packets_capture_channel, capture_start_cmd=capture_start_cmd, capture_stop_cmd=capture_stop_cmd, local_file=packets_capture_file)
             self.network_capture.start()
 
     def teardown_log_collectors(self) -> None:
@@ -412,10 +410,11 @@ class DeviceWatchdog:
                 decoder = PcapDecoder(self.packets_capture_file)
                 self.log_snapshots.append(
                     decoder.to_log_snapshot(
-                        self.device_config_id,
-                        self.device_config["device_name"],
-                        session_id,
-                        session_scenario,
+                        device_config_id=self.device_config_id,
+                        device_name=self.device_config["device_name"],
+                        session_id=session_id,
+                        session_scenario=session_scenario,
+                        log_description=self.device_config["packets_capture_config"]["capture_description"]
                     )
                 )
             except FileNotFoundError as exc:
