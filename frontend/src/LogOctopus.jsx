@@ -2166,6 +2166,14 @@ function SnapshotsPagination({ page, totalPages, total, pageSize, onPage }) {
   );
 }
 
+// Strips a trailing ".123456"-style fractional-seconds suffix from a
+// "YYYY-MM-DD HH:MM:SS.ffffff"-style timestamp string so it displays
+// without decimal places. Non-string / already-plain values pass through.
+function trimFractionalSeconds(ts) {
+  if (typeof ts !== "string") return ts;
+  return ts.split(".")[0];
+}
+
 function SnapshotsTable({ snapshots, selected, onSelect, onView }) {
   if (snapshots.length === 0) {
     return (
@@ -2218,9 +2226,9 @@ function SnapshotsTable({ snapshots, selected, onSelect, onView }) {
               </td>
               <td style={{ padding: "10px 14px", color: "var(--text)" }}>{s.deviceName}</td>
               <td style={{ padding: "10px 14px" }}><Badge color="cyan">{s.logName}</Badge></td>
-              <td style={{ padding: "10px 14px", color: "var(--muted)" }}>{s.startTime}</td>
-              <td style={{ padding: "10px 14px", color: "var(--muted)" }}>{s.finishTime}</td>
-              <td style={{ padding: "10px 14px", color: "var(--text)" }}>{s.duration}s</td>
+              <td style={{ padding: "10px 14px", color: "var(--muted)" }}>{trimFractionalSeconds(s.startTime)}</td>
+              <td style={{ padding: "10px 14px", color: "var(--muted)" }}>{trimFractionalSeconds(s.finishTime)}</td>
+              <td style={{ padding: "10px 14px", color: "var(--text)" }}>{Math.round(Number(s.duration) || 0)}s</td>
               <td style={{ padding: "10px 14px", color: "var(--text)" }}>{s.sizeKb} kB</td>
               <td style={{ padding: "10px 14px" }}>
                 <code style={{ fontSize: 10, color: "var(--muted)", background: "rgba(255,255,255,0.05)", padding: "2px 6px", borderRadius: 4 }}>
@@ -3331,6 +3339,16 @@ function ConfigBuilderModal({ open, onClose, onSave }) {
   const [connStatus, setConnStatus] = useState(null); // null | "testing" | {success, message}
   const [saving, setSaving] = useState(false);
 
+  const EMPTY_PACKET_CAPTURE = () => ({
+    enabled: false,
+    capture_start_cmd: "tcpdump -i any",
+    capture_stop_cmd: "pkill -INT -f 'tcpdump -i any'",
+    capture_description: "Network packet capture",
+    max_pcap_size_mb: "",
+  });
+  const [packetCapture, setPacketCapture] = useState(EMPTY_PACKET_CAPTURE);
+  const setPC = (k, v) => setPacketCapture(prev => ({ ...prev, [k]: v }));
+
   const setC = (k, v) => setConn(prev => ({ ...prev, [k]: v }));
 
   const testConnection = async () => {
@@ -3409,6 +3427,20 @@ function ConfigBuilderModal({ open, onClose, onSave }) {
       config.gateway = nested;
     }
 
+    if (packetCapture.enabled) {
+      const pcc = {
+        capture_start_cmd: packetCapture.capture_start_cmd,
+        capture_stop_cmd: packetCapture.capture_stop_cmd,
+        capture_description: packetCapture.capture_description || "Network packet capture",
+      };
+      // Omit when blank so the watchdog treats it as "unlimited" rather
+      // than a literal 0 MB cap.
+      if (packetCapture.max_pcap_size_mb !== "" && packetCapture.max_pcap_size_mb != null) {
+        pcc.max_pcap_size_mb = Number(packetCapture.max_pcap_size_mb);
+      }
+      config.packets_capture_config = pcc;
+    }
+
     return config;
   };
 
@@ -3423,6 +3455,7 @@ function ConfigBuilderModal({ open, onClose, onSave }) {
       setStep(1);
       setConn(EMPTY_CONN());
       setEntries([EMPTY_LOG_ENTRY()]);
+      setPacketCapture(EMPTY_PACKET_CAPTURE());
       setConnStatus(null);
     } finally {
       setSaving(false);
@@ -3444,7 +3477,9 @@ function ConfigBuilderModal({ open, onClose, onSave }) {
   if (!open) return null;
 
   const step1Valid = conn.ip_address && conn.user && conn.port;
-  const step2Valid = entries.length > 0 && entries.every(e => e.log_name && e.log_file_cmd);
+  const packetCaptureValid = !packetCapture.enabled ||
+    (packetCapture.capture_start_cmd.trim() && packetCapture.capture_stop_cmd.trim());
+  const step2Valid = entries.length > 0 && entries.every(e => e.log_name && e.log_file_cmd) && packetCaptureValid;
 
   const stepTabStyle = (s) => ({
     display: "flex", alignItems: "center", gap: 9, padding: "12px 24px",
@@ -3791,6 +3826,83 @@ function ConfigBuilderModal({ open, onClose, onSave }) {
                   No entries yet. Click "+ Add Entry" to get started.
                 </div>
               )}
+
+              {/* ── Network Packet Capture (optional) ── */}
+              <div style={CARD}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: packetCapture.enabled ? 14 : 0 }}>
+                  <div>
+                    <div style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 13, color: "var(--text)" }}>Network Packet Capture</div>
+                    <div style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--muted)", marginTop: 3 }}>
+                      Optional. Captures raw traffic via tcpdump/tshark over SSH alongside the log entries above.
+                    </div>
+                  </div>
+                  <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", flexShrink: 0 }}>
+                    <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--muted)" }}>Enabled</span>
+                    <input
+                      type="checkbox"
+                      checked={packetCapture.enabled}
+                      onChange={e => setPC("enabled", e.target.checked)}
+                      style={{ accentColor: "var(--accent)", width: 15, height: 15 }}
+                    />
+                  </label>
+                </div>
+
+                {packetCapture.enabled && (
+                  <>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
+                      <div>
+                        <div style={FIELD_LABEL}>Capture Start Command</div>
+                        <input
+                          value={packetCapture.capture_start_cmd}
+                          onChange={e => setPC("capture_start_cmd", e.target.value)}
+                          placeholder="tcpdump -i any"
+                          style={{ ...inputStyle, fontFamily: "var(--font-mono)" }}
+                        />
+                        <div style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--muted)", marginTop: 4 }}>
+                          Remote command that writes pcap data to stdout. The capture pipeline appends the output redirection itself — don't add it here.
+                        </div>
+                      </div>
+                      <div>
+                        <div style={FIELD_LABEL}>Capture Stop Command</div>
+                        <input
+                          value={packetCapture.capture_stop_cmd}
+                          onChange={e => setPC("capture_stop_cmd", e.target.value)}
+                          placeholder="pkill -INT -f 'tcpdump -i any'"
+                          style={{ ...inputStyle, fontFamily: "var(--font-mono)" }}
+                        />
+                        <div style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--muted)", marginTop: 4 }}>
+                          Remote command that signals the capture process to stop and flush cleanly.
+                        </div>
+                      </div>
+                    </div>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 220px", gap: 12 }}>
+                      <div>
+                        <div style={FIELD_LABEL}>Description</div>
+                        <input
+                          value={packetCapture.capture_description}
+                          onChange={e => setPC("capture_description", e.target.value)}
+                          placeholder="Network packet capture"
+                          style={inputStyle}
+                        />
+                      </div>
+                      <div>
+                        <div style={FIELD_LABEL}>Max PCAP Size (MB)</div>
+                        <input
+                          type="number"
+                          min="1"
+                          value={packetCapture.max_pcap_size_mb}
+                          onChange={e => setPC("max_pcap_size_mb", e.target.value)}
+                          placeholder="Unlimited"
+                          style={inputStyle}
+                        />
+                        <div style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--muted)", marginTop: 4 }}>
+                          Capture stops automatically once reached. Blank = unlimited.
+                        </div>
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
             </div>
           )}
         </div>
@@ -4343,6 +4455,7 @@ export default function App() {
   const [logRows,         setLogRows]         = useState([]);
   const [chartGroups,     setChartGroups]     = useState([]); // [{ snapInfo, rows }]
   const [logRowsLoading,  setLogRowsLoading]  = useState(false);
+  const [viewingSnaps,    setViewingSnaps]    = useState([]); // snapshots currently open in the log modal
   const [logLoadProgress, setLogLoadProgress] = useState({ done: 0, total: 0 });
   const [colorMode,       setColorMode]       = useState(false);
 
@@ -4723,6 +4836,7 @@ export default function App() {
     setLogRowsLoading(true);
     setLogRows([]);
     setChartGroups([]);
+    setViewingSnaps(snapsToView);
     setLogLoadProgress({ done: 0, total: snapsToView.length });
 
     try {
@@ -5219,10 +5333,37 @@ ${rowsHtml}
     }
   };
 
+  // Downloads the untouched raw .pcap file for a "network capture" snapshot
+  // (as opposed to downloadLogs, which exports the *decoded* packet rows
+  // shown in the log content view).
+  const downloadRawPcap = async (snap) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/snapshots/${snap.id}/pcap`);
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || res.statusText);
+      }
+      const blob = await res.blob();
+      const a = document.createElement("a");
+      const blobUrl = URL.createObjectURL(blob);
+      a.href = blobUrl;
+      a.download = `${snap.deviceName}_${snap.sessionId}.pcap`.replace(/\s+/g, "_");
+      a.click();
+      URL.revokeObjectURL(blobUrl);
+      addToast("Raw pcap downloaded.", "success");
+    } catch (e) {
+      addToast(`PCAP download failed: ${e.message}`);
+    }
+  };
+
   // Modal title with chart count info
   const logModalTitle = isChart && chartGroups.length > 0
     ? `Chart Data — ${chartGroups.length} snapshot${chartGroups.length > 1 ? "s" : ""}`
     : "Logs Content";
+
+  // Snapshots open in the log modal that are network captures — used to
+  // show a "Download Raw PCAP" button per capture in the footer.
+  const networkCaptureSnaps = viewingSnaps.filter((s) => s.logName === "network capture");
 
   // ── Inject SVG favicon matching the header logo color ──────────────────────
   useEffect(() => {
@@ -5644,6 +5785,11 @@ ${rowsHtml}
         footer={
           <>
             {!isChart && <Toggle checked={colorMode} onChange={setColorMode} labelLeft="Raw" labelRight="Color mode" />}
+            {networkCaptureSnaps.map((s) => (
+              <Btn key={s.id} size="sm" variant="subtle" onClick={() => downloadRawPcap(s)}>
+                ⬇ Raw PCAP{networkCaptureSnaps.length > 1 ? `: ${s.deviceName}` : ""}
+              </Btn>
+            ))}
             <DownloadMenu onDownload={downloadLogs} isChart={isChart} />
             <Btn variant="ghost" onClick={() => setLogModal(false)}>Close</Btn>
           </>

@@ -184,11 +184,34 @@ class DeviceWatchdog:
             self._data_locks[log_name] = threading.Lock()
         if self.device_config.get("packets_capture_config", None):
             packets_capture_channel = self._get_or_create_channel("packet_capture")
-            capture_start_cmd = self.device_config["packets_capture_config"]["capture_start_cmd"]
-            capture_stop_cmd = self.device_config["packets_capture_config"]["capture_stop_cmd"]
+            capture_config = self.device_config["packets_capture_config"]
+            capture_start_cmd = capture_config["capture_start_cmd"]
+            capture_stop_cmd = capture_config["capture_stop_cmd"]
             packets_capture_file = os.path.join(self.device_data_dir, "capture.pcap")
             self.packets_capture_file = packets_capture_file
-            self.network_capture = SshNetworkCapture(connection=packets_capture_channel, capture_start_cmd=capture_start_cmd, capture_stop_cmd=capture_stop_cmd, local_file=packets_capture_file)
+
+            # Optional cap on total pcap size, in MB (config-builder-facing
+            # unit), converted to bytes for SshNetworkCapture. Absent/0/None
+            # all mean "unlimited".
+            max_pcap_size_mb = capture_config.get("max_pcap_size_mb")
+            max_file_size_bytes = (
+                int(max_pcap_size_mb * 1024 * 1024) if max_pcap_size_mb else None
+            )
+
+            self.network_capture = SshNetworkCapture(
+                connection=packets_capture_channel,
+                capture_start_cmd=capture_start_cmd,
+                capture_stop_cmd=capture_stop_cmd,
+                local_file=packets_capture_file,
+                max_file_size_bytes=max_file_size_bytes,
+                # Surface the auto-stop in the device's error/event log so
+                # it's visible in the UI (GET /api/devices/<id>/errors)
+                # rather than silently truncating the capture.
+                on_limit_reached=lambda: self._record_error(
+                    f"network capture stopped automatically: reached max "
+                    f"pcap size of {max_pcap_size_mb} MB"
+                ),
+            )
             self.network_capture.start()
 
     def teardown_log_collectors(self) -> None:

@@ -38,6 +38,16 @@ class SshNetworkCapture:
         e.g. tshark on a Windows host reachable via SSH (OpenSSH Server
         for Windows). Defaults still target Linux tcpdump for backward
         compatibility.
+      * An optional `max_file_size_bytes` cap can be set. It's tracked
+        against the *cumulative* bytes written across the whole capture
+        (i.e. across any reconnect segments), since from the caller's
+        perspective it's one logical capture even if it's split into
+        capture.pcap / capture.pcap.part2 / ... on disk. Once the
+        cumulative total reaches the cap, the capture is stopped
+        gracefully (same remote-signal-then-close sequence as stop()) from
+        inside the reader thread itself -- so unlike stop(), it never
+        joins self.thread (that would deadlock, since the reader thread
+        would be joining itself).
 
     Command templates:
         `capture_start_cmd` and `capture_stop_cmd` may contain a literal
@@ -82,7 +92,9 @@ class SshNetworkCapture:
                  max_reconnect_attempts=5,
                  reconnect_backoff_base=1.0,
                  reconnect_backoff_max=30.0,
-                 recv_size=65536):
+                 recv_size=65536,
+                 max_file_size_bytes=None,
+                 on_limit_reached=None):
         """
         connection:         a fabric.Connection (or similar) for the
                              target host.
@@ -102,6 +114,14 @@ class SshNetworkCapture:
                              command is assumed (it can't safely guess how
                              to find/stop an arbitrary command) -- stop()
                              will fall back to just closing the channel.
+        max_file_size_bytes: optional cap on total captured bytes (summed
+                             across all segments). Once reached, capture
+                             is stopped automatically -- see class
+                             docstring. None (default) means unlimited.
+        on_limit_reached:    optional zero-arg callback invoked (from the
+                             reader thread) once max_file_size_bytes is
+                             hit and the capture has been stopped. Any
+                             exception it raises is caught and logged.
         """
         self.conn = connection
         self.capture_start_cmd = capture_start_cmd
@@ -119,6 +139,14 @@ class SshNetworkCapture:
         self.reconnect_backoff_max = reconnect_backoff_max
         self.recv_size = recv_size
 
+        # Cumulative-size cap (summed across reconnect segments) and the
+        # running total used to check it. limit_reached lets callers tell
+        # "stopped because the cap was hit" apart from a normal stop().
+        self.max_file_size_bytes = max_file_size_bytes
+        self.on_limit_reached = on_limit_reached
+        self._total_bytes_written = 0
+        self.limit_reached = False
+
         self._stopped_event = threading.Event()
 
     # ------------------------------------------------------------------
@@ -132,6 +160,8 @@ class SshNetworkCapture:
 
             self._segment_index = 1
             self.running = True
+            self._total_bytes_written = 0
+            self.limit_reached = False
             self._stopped_event.clear()
 
             self._open_segment(self.local_file_base)
@@ -248,6 +278,46 @@ class SshNetworkCapture:
         except Exception:
             logger.exception("failed to signal remote capture process to stop")
 
+    def _stop_due_to_limit(self):
+        """Internal: gracefully stop the capture because max_file_size_bytes
+        was reached. This always runs *from* the reader thread itself, so
+        unlike stop() it must never call self.thread.join() -- that would
+        deadlock the reader thread waiting on itself. Otherwise mirrors
+        stop()'s teardown sequence: signal the remote process to flush and
+        exit, close the session, close the local file."""
+        with self._lock:
+            if not self.running:
+                return
+            self.running = False
+
+        logger.warning(
+            "pcap size limit reached (%s bytes >= %s byte limit); stopping capture",
+            self._total_bytes_written, self.max_file_size_bytes,
+        )
+
+        self._signal_remote_tcpdump()
+
+        if self.session is not None:
+            try:
+                self.session.close()
+            except Exception:
+                logger.exception("error closing capture session")
+
+        if self.local_file is not None:
+            try:
+                self.local_file.flush()
+                self.local_file.close()
+            except Exception:
+                logger.exception("error closing local capture file")
+            self.local_file = None
+
+        self.limit_reached = True
+        if self.on_limit_reached is not None:
+            try:
+                self.on_limit_reached()
+            except Exception:
+                logger.exception("on_limit_reached callback failed")
+
     def _reader_loop(self):
         consecutive_errors = 0
 
@@ -280,6 +350,12 @@ class SshNetworkCapture:
                     # as if it were.
                     with self._lock:
                         self.running = False
+                    break
+
+                self._total_bytes_written += len(data)
+                if (self.max_file_size_bytes is not None
+                        and self._total_bytes_written >= self.max_file_size_bytes):
+                    self._stop_due_to_limit()
                     break
                 continue
 

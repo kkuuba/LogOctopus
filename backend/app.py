@@ -9,7 +9,7 @@ import signal
 import uuid
 from pathlib import Path
 
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, send_file
 from flask_cors import CORS
 from paramiko_expect import SSHClientInteraction
 
@@ -22,7 +22,7 @@ from backend.utils.pcap_decoder import PcapDecoder
 
 SETTINGS_FILE = Path("settings.json")
 FRONTEND_BASE = os.getenv("FRONTEND_BASE", "http://localhost:8100")
-
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 app = Flask(__name__)
 CORS(app)  # allow the React dev-server / built bundle to call the API
@@ -540,6 +540,55 @@ def get_packet_details(snapshot_id: str, packet_number: int):
         return _bad("not_found", 404)
 
     return jsonify({"packet_number": packet_number, "details": details})
+
+
+@app.get("/api/snapshots/<snapshot_id>/pcap")
+def download_snapshot_pcap(snapshot_id: str):
+    """Download the full raw pcap file backing a "network capture" snapshot.
+
+    Only valid for "packet_capture" snapshots (see get_packet_details for
+    how the underlying '<session_id>.pcap' file is produced/located).
+    Unlike the decoded/paginated view used by the log content and packet
+    detail endpoints, this streams the untouched pcap file as-is so it can
+    be opened directly in Wireshark or any other pcap tool.
+
+    GET '/api/snapshots/<snapshot_id>/pcap'
+
+    Path parameters:
+        - snapshot_id (str) - ID of the "network capture" snapshot.
+
+    Returns:
+        200 OK:
+            The raw pcap file, streamed as an attachment
+            ('application/vnd.tcpdump.pcap').
+
+        404 Not Found:
+            '{ "error": "not_found" }' - No snapshot with the given ID
+            exists, it isn't a "network capture" snapshot, or its pcap
+            file is missing on disk.
+    """
+    devices   = get_current_devices()
+    snapshots = ConfigurationHelper.get_log_snapshots_list(devices, log_type_chart=False)
+
+    target = next((s for s in snapshots if s.id == snapshot_id), None)
+    if not target or getattr(target, "log_name", "") != "network capture":
+        return _bad("not_found", 404)
+
+    pcap_path = os.path.join(PROJECT_ROOT, "data", target.device_id, f"{target.session_id}.pcap")
+    print(pcap_path)
+    if not os.path.exists(pcap_path):
+        return _bad("not_found", 404)
+
+    device_name = getattr(target, "device_name", "device")
+    safe_name = "_".join(device_name.split())
+    download_name = f"{safe_name}_{target.session_id}.pcap"
+
+    return send_file(
+        pcap_path,
+        mimetype="application/vnd.tcpdump.pcap",
+        as_attachment=True,
+        download_name=download_name,
+    )
 
 
 @app.delete("/api/snapshots")
