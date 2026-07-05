@@ -17,15 +17,21 @@ from backend.models.device import Device
 from backend.models.device_config import DeviceConfig
 from backend.utils.config_helper import ConfigurationHelper
 from backend.utils.device_config_loader import DeviceConfigLoader
-from backend.utils.pcap_decoder import PcapDecoder
+from backend.utils.pcap_decoder import DissectorRegistry, PcapDecoder
 
 
-SETTINGS_FILE = Path("settings.json")
-FRONTEND_BASE = os.getenv("FRONTEND_BASE", "http://localhost:8100")
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+SETTINGS_FILE   = Path("settings.json")
+FRONTEND_BASE   = os.getenv("FRONTEND_BASE", "http://localhost:8100")
+PROJECT_ROOT    = Path(__file__).resolve().parent.parent
+DISSECTORS_DIR  = PROJECT_ROOT / "data" / "dissectors"
 
 app = Flask(__name__)
 CORS(app)  # allow the React dev-server / built bundle to call the API
+
+# Shared dissector registry — created once at startup so every request that
+# decodes packets automatically picks up whatever Lua / native plugins the
+# user has uploaded via the settings UI.
+dissector_registry = DissectorRegistry(DISSECTORS_DIR)
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -531,7 +537,8 @@ def get_packet_details(snapshot_id: str, packet_number: int):
     device_data_dir = os.path.join("data", target.device_id)
     try:
         details = PcapDecoder.get_session_packet_details(
-            device_data_dir, target.session_id, packet_number
+            device_data_dir, target.session_id, packet_number,
+            dissectors_dir=dissector_registry,
         )
     except FileNotFoundError as exc:
         return _bad(f"tshark not available: {exc}", 500)
@@ -1045,6 +1052,108 @@ def change_password():
     _save_settings(settings)
 
     return jsonify({"status": "ok"})
+
+
+
+# ── dissectors ────────────────────────────────────────────────────────────────
+
+@app.get("/api/settings/dissectors")
+def list_dissectors():
+    """Return the list of custom dissector files installed on the server.
+
+    GET '/api/settings/dissectors'
+
+    Returns:
+        200 OK:
+            JSON array of dissector objects. Each element contains:
+
+            - name (str) - Bare filename (e.g. ``"my_proto.lua"``).
+            - size_bytes (int) - File size in bytes.
+            - extension (str) - File extension, e.g. ``".lua"``.
+
+            Example::
+
+                [
+                    {"name": "my_proto.lua", "size_bytes": 1024, "extension": ".lua"}
+                ]
+    """
+    return jsonify(dissector_registry.list_dissectors())
+
+
+@app.post("/api/settings/dissectors")
+def upload_dissector():
+    """Upload a custom tshark dissector file (Lua script or native plugin).
+
+    The file is saved to the server's dissectors directory and automatically
+    loaded by tshark on every subsequent packet-detail request.
+
+    POST '/api/settings/dissectors'
+
+    Request body (multipart/form-data):
+        - file (file) - The dissector file to upload.
+          Accepted extensions: ``.lua``, ``.so``, ``.dll``.
+
+    Returns:
+        201 Created:
+            JSON object describing the saved file:
+
+            - name (str) - Saved filename.
+            - size_bytes (int) - File size in bytes.
+            - extension (str) - File extension.
+
+            Example::
+
+                {"name": "my_proto.lua", "size_bytes": 1024, "extension": ".lua"}
+
+        400 Bad Request:
+            ``{"error": "no file provided"}`` — request contained no file part.
+
+            ``{"error": "filename is required"}`` — file part had an empty name.
+
+            ``{"error": "unsupported dissector extension …"}`` — the extension is
+            not in the allowed set (``.lua``, ``.so``, ``.dll``).
+    """
+    if "file" not in request.files:
+        return _bad("no file provided")
+
+    f = request.files["file"]
+    if not f.filename:
+        return _bad("filename is required")
+
+    try:
+        data = f.read()
+        saved = dissector_registry.save(f.filename, data)
+    except ValueError as exc:
+        return _bad(str(exc))
+
+    return jsonify({
+        "name":       saved.name,
+        "size_bytes": saved.stat().st_size,
+        "extension":  saved.suffix.lower(),
+    }), 201
+
+
+@app.delete("/api/settings/dissectors/<filename>")
+def delete_dissector(filename: str):
+    """Remove a custom dissector file from the server.
+
+    DELETE '/api/settings/dissectors/<filename>'
+
+    Path parameters:
+        - filename (str) - Bare filename of the dissector to remove
+          (e.g. ``"my_proto.lua"``).  Path separators are stripped server-side
+          to prevent directory-traversal attacks.
+
+    Returns:
+        200 OK:
+            ``{"deleted": true}`` — file existed and was removed.
+
+            ``{"deleted": false}`` — no file with that name was found
+            (treated as a no-op rather than a 404 so repeated DELETE calls
+            are idempotent).
+    """
+    deleted = dissector_registry.delete(filename)
+    return jsonify({"deleted": deleted})
 
 
 # ── login ─────────────────────────────────────────────────────────────────────

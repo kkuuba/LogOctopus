@@ -1126,6 +1126,67 @@ function SettingsModal({ open, onClose, isAdmin, onRequestLogin, auth, addToast,
   const [pwError,  setPwError]  = useState("");
   const [pwShake,  setPwShake]  = useState(false);
 
+  // ── Dissector management state ──
+  const [dissectors,       setDissectors]       = useState([]);
+  const [dissectorsLoading, setDissectorsLoading] = useState(false);
+  const [dissectorUploading, setDissectorUploading] = useState(false);
+  const [dissectorError,   setDissectorError]   = useState("");
+  const dissectorFileRef = useRef(null);
+
+  const fetchDissectors = useCallback(async () => {
+    setDissectorsLoading(true);
+    try {
+      const data = await apiFetch("/api/settings/dissectors");
+      setDissectors(data || []);
+    } catch (e) {
+      setDissectorError(`Failed to load dissectors: ${e.message}`);
+    } finally {
+      setDissectorsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (open && tab === "dissectors") fetchDissectors();
+  }, [open, tab, fetchDissectors]);
+
+  const handleDissectorUpload = async (e) => {
+    const files = Array.from(e.target.files || []);
+    if (!files.length) return;
+    setDissectorUploading(true);
+    setDissectorError("");
+    try {
+      for (const file of files) {
+        const formData = new FormData();
+        formData.append("file", file);
+        const res = await fetch(`${API_BASE}/api/settings/dissectors`, {
+          method: "POST",
+          body: formData,
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err.error || res.statusText);
+        }
+      }
+      addToast(`${files.length} dissector${files.length !== 1 ? "s" : ""} uploaded.`, "success");
+      await fetchDissectors();
+    } catch (err) {
+      setDissectorError(`Upload failed: ${err.message}`);
+    } finally {
+      setDissectorUploading(false);
+      if (dissectorFileRef.current) dissectorFileRef.current.value = "";
+    }
+  };
+
+  const deleteDissector = async (name) => {
+    try {
+      await apiFetch(`/api/settings/dissectors/${encodeURIComponent(name)}`, { method: "DELETE" });
+      setDissectors(prev => prev.filter(d => d.name !== name));
+      addToast(`Dissector "${name}" removed.`, "success");
+    } catch (e) {
+      setDissectorError(`Delete failed: ${e.message}`);
+    }
+  };
+
   const submitPasswordChange = async () => {
     if (newPass.length < 6)   { setPwError("New password must be at least 6 characters."); shake(); return; }
     if (newPass !== confPass) { setPwError("Passwords do not match.");                      shake(); return; }
@@ -1186,6 +1247,7 @@ function SettingsModal({ open, onClose, isAdmin, onRequestLogin, auth, addToast,
         <div style={{ display: "flex", gap: 4, padding: "12px 20px 0", borderBottom: "1px solid var(--border)", flexShrink: 0 }}>
           <button style={tabStyle(tab === "display")} onClick={() => setTab("display")}>🖥 Display</button>
           <button style={tabStyle(tab === "security")} onClick={() => setTab("security")}>🔐 Security</button>
+          <button style={tabStyle(tab === "dissectors")} onClick={() => setTab("dissectors")}>🦈 Network Capture</button>
         </div>
 
         {/* Body */}
@@ -1293,6 +1355,147 @@ function SettingsModal({ open, onClose, isAdmin, onRequestLogin, auth, addToast,
                   </div>
                 </div>
               )}
+            </div>
+          )}
+
+          {/* ── NETWORK CAPTURE / DISSECTORS TAB ── */}
+          {tab === "dissectors" && (
+            <div>
+              {/* Info card */}
+              <div style={card}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+                  <span style={{ fontSize: 22 }}>🦈</span>
+                  <div style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 14, color: "var(--text)" }}>Custom Dissectors</div>
+                </div>
+                <div style={{ fontFamily: "var(--font-mono)", fontSize: 12, color: "var(--muted)", lineHeight: 1.7, marginBottom: 0 }}>
+                  Upload Lua scripts (<code style={{ color: "var(--accent)" }}>.lua</code>) or compiled plugin libraries (<code style={{ color: "var(--accent)" }}>.so</code> / <code style={{ color: "var(--accent)" }}>.dll</code>).
+                  tshark loads them automatically when decoding packet details, enriching the protocol tree with your custom fields.
+                </div>
+              </div>
+
+              {/* Upload area */}
+              <div style={card}>
+                <div style={sectionLabel}>Upload dissector files</div>
+                <input
+                  ref={dissectorFileRef}
+                  type="file"
+                  accept=".lua,.so,.dll"
+                  multiple
+                  style={{ display: "none" }}
+                  onChange={handleDissectorUpload}
+                />
+                <div
+                  onClick={() => !dissectorUploading && dissectorFileRef.current?.click()}
+                  style={{
+                    border: `2px dashed ${dissectorUploading ? "rgba(34,211,238,0.5)" : "var(--border)"}`,
+                    borderRadius: 10,
+                    padding: "24px 20px",
+                    textAlign: "center",
+                    cursor: dissectorUploading ? "wait" : "pointer",
+                    background: dissectorUploading ? "rgba(34,211,238,0.04)" : "rgba(255,255,255,0.02)",
+                    transition: "all 0.18s",
+                  }}
+                  onMouseEnter={e => { if (!dissectorUploading) e.currentTarget.style.borderColor = "rgba(34,211,238,0.45)"; e.currentTarget.style.background = "rgba(34,211,238,0.04)"; }}
+                  onMouseLeave={e => { if (!dissectorUploading) e.currentTarget.style.borderColor = "var(--border)"; e.currentTarget.style.background = "rgba(255,255,255,0.02)"; }}
+                >
+                  {dissectorUploading ? (
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8, color: "#22d3ee", fontFamily: "var(--font-mono)", fontSize: 12 }}>
+                      <svg width="14" height="14" viewBox="0 0 14 14" style={{ animation: "spin 1s linear infinite" }}>
+                        <circle cx="7" cy="7" r="5.5" fill="none" stroke="#22d3ee" strokeWidth="2" strokeDasharray="17" strokeDashoffset="8" />
+                      </svg>
+                      Uploading…
+                    </div>
+                  ) : (
+                    <>
+                      <div style={{ fontSize: 24, marginBottom: 6 }}>📂</div>
+                      <div style={{ fontFamily: "var(--font-mono)", fontSize: 12, color: "var(--muted)" }}>
+                        Click to upload <span style={{ color: "#22d3ee" }}>.lua</span>, <span style={{ color: "#22d3ee" }}>.so</span>, or <span style={{ color: "#22d3ee" }}>.dll</span> files
+                      </div>
+                      <div style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--muted)", marginTop: 4, opacity: 0.6 }}>
+                        Multiple files supported
+                      </div>
+                    </>
+                  )}
+                </div>
+                {dissectorError && (
+                  <div style={{ marginTop: 10, fontFamily: "var(--font-mono)", fontSize: 11, color: "#f87171", background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.2)", borderRadius: 6, padding: "7px 12px" }}>
+                    ⚠ {dissectorError}
+                  </div>
+                )}
+              </div>
+
+              {/* Installed dissectors list */}
+              <div style={{ ...card, marginBottom: 0 }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+                  <div style={sectionLabel}>Installed dissectors ({dissectors.length})</div>
+                  <button
+                    onClick={fetchDissectors}
+                    disabled={dissectorsLoading}
+                    style={{ background: "none", border: "none", cursor: "pointer", color: "var(--muted)", fontSize: 13, padding: "2px 6px", opacity: dissectorsLoading ? 0.4 : 1 }}
+                    title="Refresh list"
+                  >↻</button>
+                </div>
+
+                {dissectorsLoading ? (
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, color: "var(--muted)", fontFamily: "var(--font-mono)", fontSize: 12, padding: "10px 0" }}>
+                    <svg width="12" height="12" viewBox="0 0 12 12" style={{ animation: "spin 1s linear infinite" }}>
+                      <circle cx="6" cy="6" r="4.5" fill="none" stroke="var(--accent)" strokeWidth="1.8" strokeDasharray="14" strokeDashoffset="7" />
+                    </svg>
+                    Loading…
+                  </div>
+                ) : dissectors.length === 0 ? (
+                  <div style={{
+                    padding: "18px",
+                    border: "1px dashed var(--border)",
+                    borderRadius: 8,
+                    textAlign: "center",
+                    color: "var(--muted)",
+                    fontFamily: "var(--font-mono)",
+                    fontSize: 11,
+                    opacity: 0.7,
+                  }}>
+                    No dissectors installed — upload a Lua script above.
+                  </div>
+                ) : (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                    {dissectors.map(d => (
+                      <div key={d.name} style={{
+                        display: "flex", alignItems: "center", gap: 10,
+                        padding: "8px 12px", borderRadius: 8,
+                        background: "rgba(255,255,255,0.03)", border: "1px solid var(--border)",
+                      }}>
+                        {/* Extension chip */}
+                        <span style={{
+                          flexShrink: 0,
+                          fontFamily: "var(--font-mono)", fontSize: 9, fontWeight: 700,
+                          background: d.extension === ".lua" ? "rgba(34,211,238,0.12)" : "rgba(167,139,250,0.12)",
+                          color: d.extension === ".lua" ? "#22d3ee" : "#a78bfa",
+                          border: `1px solid ${d.extension === ".lua" ? "rgba(34,211,238,0.3)" : "rgba(167,139,250,0.3)"}`,
+                          borderRadius: 4, padding: "1px 6px", textTransform: "uppercase",
+                        }}>
+                          {d.extension.replace(".", "")}
+                        </span>
+                        {/* Name */}
+                        <span style={{ flex: 1, fontFamily: "var(--font-mono)", fontSize: 12, color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          {d.name}
+                        </span>
+                        {/* Size */}
+                        <span style={{ flexShrink: 0, fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--muted)" }}>
+                          {d.size_bytes < 1024 ? `${d.size_bytes} B` : `${(d.size_bytes / 1024).toFixed(1)} kB`}
+                        </span>
+                        {/* Delete */}
+                        <button
+                          onClick={() => deleteDissector(d.name)}
+                          title={`Remove ${d.name}`}
+                          style={{ flexShrink: 0, background: "none", border: "none", color: "#f87171", cursor: "pointer", fontSize: 15, padding: "2px 4px", opacity: 0.7, lineHeight: 1 }}
+                          onMouseEnter={e => e.currentTarget.style.opacity = "1"}
+                          onMouseLeave={e => e.currentTarget.style.opacity = "0.7"}
+                        >×</button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
           )}
         </div>
@@ -2030,6 +2233,30 @@ function DeviceCard({ device, selected, onSelect, onInfo, onAutoCollectionSave, 
             }}>
               <span style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--accent)", boxShadow: "0 0 5px var(--accent)", display: "inline-block" }} />
               Auto collection - {intervalHours}h
+            </span>
+          </div>
+        )}
+
+        {/* Network capture active badge — shown when device is collecting AND has a packets_capture_config */}
+        {device.collecting && device.config?.packets_capture_config && (
+          <div style={{ marginTop: autoEnabled ? 6 : 10 }}>
+            <span style={{
+              display: "inline-flex", alignItems: "center", gap: 6,
+              background: "rgba(34,211,238,0.10)", border: "1px solid rgba(34,211,238,0.32)",
+              borderRadius: 20, padding: "3px 9px",
+              fontFamily: "var(--font-mono)", fontSize: 10, fontWeight: 600, color: "#22d3ee",
+            }}>
+              {/* Wireshark-inspired shark-fin SVG icon */}
+              <svg width="13" height="13" viewBox="0 0 13 13" fill="none" xmlns="http://www.w3.org/2000/svg" style={{ flexShrink: 0 }}>
+                {/* Body */}
+                <ellipse cx="6" cy="8" rx="5" ry="3" fill="rgba(34,211,238,0.18)" stroke="#22d3ee" strokeWidth="1"/>
+                {/* Dorsal fin */}
+                <path d="M6 8 L8.5 2 L10 6" stroke="#22d3ee" strokeWidth="1.1" strokeLinejoin="round" fill="rgba(34,211,238,0.15)"/>
+                {/* Tail */}
+                <path d="M1 7 L0 5 M1 9 L0 11" stroke="#22d3ee" strokeWidth="1" strokeLinecap="round"/>
+              </svg>
+              <span style={{ animation: "pcap-pulse 2s ease-in-out infinite" }}>PCAP</span>
+              <style>{`@keyframes pcap-pulse { 0%,100%{opacity:1} 50%{opacity:0.5} }`}</style>
             </span>
           </div>
         )}
