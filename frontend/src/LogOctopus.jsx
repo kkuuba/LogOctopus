@@ -2189,7 +2189,38 @@ function DeviceCard({ device, selected, onSelect, onInfo, onAutoCollectionSave, 
         />
 
         {/* Info + Settings toggle buttons */}
-        <div style={{ position: "absolute", top: 10, right: 10, display: "flex", gap: 4 }}>
+        <div style={{ position: "absolute", top: 10, right: 10, display: "flex", alignItems: "center", gap: 4 }}>
+          {/* Pcap collection ongoing indicator — shown left of the info button
+              whenever this device is collecting AND has a packets_capture_config.
+              Rendered as an animated triangular dorsal fin (as seen breaking
+              the water's surface) evoking Wireshark. */}
+          {device.collecting && device.config?.packets_capture_config && (
+            <span
+              title="Packet capture in progress"
+              style={{
+                display: "inline-flex", alignItems: "center", justifyContent: "center",
+                width: 22, height: 20,
+                background: "rgba(34,211,238,0.10)", border: "1px solid rgba(34,211,238,0.32)",
+                borderRadius: 6,
+              }}
+            >
+              <svg width="14" height="16" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" style={{ flexShrink: 0 }}>
+                <g style={{ transformBox: "view-box", transformOrigin: "12px 21px", animation: "fin-sway 1.6s ease-in-out infinite" }}>
+                  {/* Simple triangular dorsal fin, leaning back slightly like a fin cutting the surface */}
+                  <path
+                    d="M10,2 L7,21 L19,21 Z"
+                    fill="#22d3ee" stroke="#083344" strokeWidth="0.6" strokeLinejoin="round"
+                  />
+                </g>
+              </svg>
+              <style>{`
+                @keyframes fin-sway {
+                  0%, 100% { transform: rotate(-10deg); }
+                  50%      { transform: rotate(10deg); }
+                }
+              `}</style>
+            </span>
+          )}
           <button
             onClick={onInfo}
             title="Device details"
@@ -2237,29 +2268,7 @@ function DeviceCard({ device, selected, onSelect, onInfo, onAutoCollectionSave, 
           </div>
         )}
 
-        {/* Network capture active badge — shown when device is collecting AND has a packets_capture_config */}
-        {device.collecting && device.config?.packets_capture_config && (
-          <div style={{ marginTop: autoEnabled ? 6 : 10 }}>
-            <span style={{
-              display: "inline-flex", alignItems: "center", gap: 6,
-              background: "rgba(34,211,238,0.10)", border: "1px solid rgba(34,211,238,0.32)",
-              borderRadius: 20, padding: "3px 9px",
-              fontFamily: "var(--font-mono)", fontSize: 10, fontWeight: 600, color: "#22d3ee",
-            }}>
-              {/* Wireshark-inspired shark-fin SVG icon */}
-              <svg width="13" height="13" viewBox="0 0 13 13" fill="none" xmlns="http://www.w3.org/2000/svg" style={{ flexShrink: 0 }}>
-                {/* Body */}
-                <ellipse cx="6" cy="8" rx="5" ry="3" fill="rgba(34,211,238,0.18)" stroke="#22d3ee" strokeWidth="1"/>
-                {/* Dorsal fin */}
-                <path d="M6 8 L8.5 2 L10 6" stroke="#22d3ee" strokeWidth="1.1" strokeLinejoin="round" fill="rgba(34,211,238,0.15)"/>
-                {/* Tail */}
-                <path d="M1 7 L0 5 M1 9 L0 11" stroke="#22d3ee" strokeWidth="1" strokeLinecap="round"/>
-              </svg>
-              <span style={{ animation: "pcap-pulse 2s ease-in-out infinite" }}>PCAP</span>
-              <style>{`@keyframes pcap-pulse { 0%,100%{opacity:1} 50%{opacity:0.5} }`}</style>
-            </span>
-          </div>
-        )}
+        {/* Network capture indicator now lives solely next to the info button above. */}
       </div>
 
       {/* ── Auto-collection settings panel ── */}
