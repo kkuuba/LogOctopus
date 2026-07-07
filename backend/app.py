@@ -9,6 +9,7 @@ import signal
 import uuid
 from pathlib import Path
 
+import psutil
 from flask import Flask, jsonify, request, send_file
 from flask_cors import CORS
 from paramiko_expect import SSHClientInteraction
@@ -161,6 +162,57 @@ def _save_settings(settings: dict) -> None:
     """
     SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
     SETTINGS_FILE.write_text(json.dumps(settings, indent=2))
+
+
+# ── system ────────────────────────────────────────────────────────────────────
+
+@app.get("/api/system/stats")
+def system_stats():
+    """Return current CPU, RAM and storage usage for the backend host.
+
+    GET '/api/system/stats'
+
+    Returns:
+        200 OK:
+            JSON object containing:
+
+            - cpuPercent (float) - Current CPU utilisation, 0-100.
+            - ramPercent (float) - Current RAM utilisation, 0-100.
+            - ramUsedGb (float) - RAM currently in use, in GB.
+            - ramTotalGb (float) - Total installed RAM, in GB.
+            - diskPercent (float) - Utilisation of the filesystem hosting the
+              app, 0-100.
+            - diskUsedGb (float) - Disk space currently in use, in GB.
+            - diskTotalGb (float) - Total disk capacity, in GB.
+
+            Example::
+
+                {
+                    "cpuPercent": 12.5,
+                    "ramPercent": 43.2,
+                    "ramUsedGb": 6.9,
+                    "ramTotalGb": 16.0,
+                    "diskPercent": 58.1,
+                    "diskUsedGb": 232.4,
+                    "diskTotalGb": 400.0
+                }
+    """
+    # interval=0.1 blocks briefly to get a real (non-zero) reading instead of
+    # the meaningless 0.0 psutil returns on the very first call in a process.
+    cpu_percent = psutil.cpu_percent(interval=0.1)
+    mem = psutil.virtual_memory()
+    disk = psutil.disk_usage(str(PROJECT_ROOT))
+
+    gb = 1024 ** 3
+    return jsonify({
+        "cpuPercent":  cpu_percent,
+        "ramPercent":  mem.percent,
+        "ramUsedGb":   round(mem.used / gb, 1),
+        "ramTotalGb":  round(mem.total / gb, 1),
+        "diskPercent": disk.percent,
+        "diskUsedGb":  round(disk.used / gb, 1),
+        "diskTotalGb": round(disk.total / gb, 1),
+    })
 
 
 # ── devices ───────────────────────────────────────────────────────────────────

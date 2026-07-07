@@ -1247,7 +1247,7 @@ function SettingsModal({ open, onClose, isAdmin, onRequestLogin, auth, addToast,
         <div style={{ display: "flex", gap: 4, padding: "12px 20px 0", borderBottom: "1px solid var(--border)", flexShrink: 0 }}>
           <button style={tabStyle(tab === "display")} onClick={() => setTab("display")}>🖥 Display</button>
           <button style={tabStyle(tab === "security")} onClick={() => setTab("security")}>🔐 Security</button>
-          <button style={tabStyle(tab === "dissectors")} onClick={() => setTab("dissectors")}>🦈 Network Capture</button>
+          <button style={tabStyle(tab === "dissectors")} onClick={() => setTab("dissectors")}> 🌐 Network Capture</button>
         </div>
 
         {/* Body */}
@@ -1364,7 +1364,7 @@ function SettingsModal({ open, onClose, isAdmin, onRequestLogin, auth, addToast,
               {/* Info card */}
               <div style={card}>
                 <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
-                  <span style={{ fontSize: 22 }}>🦈</span>
+                  <span style={{ fontSize: 22 }}>🌐</span>
                   <div style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 14, color: "var(--text)" }}>Custom Dissectors</div>
                 </div>
                 <div style={{ fontFamily: "var(--font-mono)", fontSize: 12, color: "var(--muted)", lineHeight: 1.7, marginBottom: 0 }}>
@@ -2194,33 +2194,31 @@ function DeviceCard({ device, selected, onSelect, onInfo, onAutoCollectionSave, 
               whenever this device is collecting AND has a packets_capture_config.
               Rendered as an animated triangular dorsal fin (as seen breaking
               the water's surface) evoking Wireshark. */}
-          {device.collecting && device.config?.packets_capture_config && (
-            <span
-              title="Packet capture in progress"
-              style={{
-                display: "inline-flex", alignItems: "center", justifyContent: "center",
-                width: 22, height: 20,
-                background: "rgba(34,211,238,0.10)", border: "1px solid rgba(34,211,238,0.32)",
-                borderRadius: 6,
-              }}
-            >
-              <svg width="14" height="16" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" style={{ flexShrink: 0 }}>
-                <g style={{ transformBox: "view-box", transformOrigin: "12px 21px", animation: "fin-sway 1.6s ease-in-out infinite" }}>
-                  {/* Simple triangular dorsal fin, leaning back slightly like a fin cutting the surface */}
-                  <path
-                    d="M10,2 L7,21 L19,21 Z"
-                    fill="#22d3ee" stroke="#083344" strokeWidth="0.6" strokeLinejoin="round"
-                  />
-                </g>
-              </svg>
-              <style>{`
-                @keyframes fin-sway {
-                  0%, 100% { transform: rotate(-10deg); }
-                  50%      { transform: rotate(10deg); }
-                }
-              `}</style>
-            </span>
-          )}
+      {device.collecting && device.config?.packets_capture_config && (
+        <span
+          title="Packet capture in progress"
+          style={{
+            display: "inline-flex", alignItems: "center", justifyContent: "center",
+            width: 22, height: 20,
+            background: "rgba(34,211,238,0.10)", border: "1px solid rgba(34,211,238,0.32)",
+            borderRadius: 6,
+          }}
+        >
+      <svg width="16" height="16" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" style={{ flexShrink: 0 }}>
+        <defs>
+          <clipPath id="cable-clip"><rect x="0" y="0" width="24" height="24" /></clipPath>
+        </defs>
+        <g clipPath="url(#cable-clip)">
+          <path id="cable-path" d="M2,18 Q8,10 12,12 Q16,14 22,6" fill="none" stroke="#22d3ee" strokeWidth="1.4" opacity="0.5" />
+          <rect x="1" y="16" width="4" height="4" rx="0.6" fill="none" stroke="#22d3ee" strokeWidth="1.2" />
+          <rect x="19" y="4" width="4" height="4" rx="0.6" fill="none" stroke="#22d3ee" strokeWidth="1.2" />
+          <circle r="1.8" fill="#22d3ee">
+            <animateMotion dur="1.4s" repeatCount="indefinite" path="M2,18 Q8,10 12,12 Q16,14 22,6" />
+          </circle>
+        </g>
+      </svg>
+        </span>
+      )}
           <button
             onClick={onInfo}
             title="Device details"
@@ -4657,6 +4655,7 @@ export default function App() {
 
   const [devices,         setDevices]         = useState([]);
   const [devicesLoading,  setDevicesLoading]  = useState(true);
+  const [systemStats,     setSystemStats]     = useState(null);
   const [selectedDevices, setSelectedDevices] = useState([]);
   // Device groups: { id, name, deviceIds[] }
   const [groups, setGroups] = useState(() => {
@@ -4732,6 +4731,15 @@ export default function App() {
       setDevicesLoading(false);
     }
   }, [addToast]);
+
+  const fetchSystemStats = useCallback(async () => {
+    try {
+      setSystemStats(await apiFetch("/api/system/stats"));
+    } catch {
+      // Non-critical: leave the last known stats (or null) in place rather
+      // than spamming a toast every poll interval.
+    }
+  }, []);
 
   const fetchSnapshots = useCallback(async (param, value, chart, page = 1, pSize) => {
     setSnapsLoading(true);
@@ -4844,11 +4852,17 @@ export default function App() {
 
   useEffect(() => { fetchDevices(); }, [fetchDevices]);
   useEffect(() => { fetchSnapshots("", "", false); }, [fetchSnapshots]);
+  useEffect(() => { fetchSystemStats(); }, [fetchSystemStats]);
 
   useEffect(() => {
     const id = setInterval(fetchDevices, 10000);
     return () => clearInterval(id);
   }, [fetchDevices]);
+
+  useEffect(() => {
+    const id = setInterval(fetchSystemStats, 5000);
+    return () => clearInterval(id);
+  }, [fetchSystemStats]);
 
   // FIX: this effect previously had no dependency array, causing it to run
   // after every render and rely on a manual ref comparison to detect changes.
@@ -5693,9 +5707,21 @@ ${rowsHtml}
           <div style={{ flex: 1 }} />
 
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 8, marginRight: 12 }}>
-              <span style={{ width: 8, height: 8, borderRadius: "50%", background: "#4ade80", boxShadow: "0 0 8px #4ade80", animation: "pulse 2s infinite" }} />
-              <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--muted)" }}>LIVE</span>
+            <div
+              title={systemStats ? `Backend host — RAM: ${systemStats.ramUsedGb} / ${systemStats.ramTotalGb} GB · Disk: ${systemStats.diskUsedGb} / ${systemStats.diskTotalGb} GB` : "Loading host stats…"}
+              style={{ display: "flex", alignItems: "center", gap: 10, marginRight: 12, fontFamily: "var(--font-mono)", fontSize: 15, color: "var(--muted)" }}
+            >
+              {systemStats ? (
+                <>
+                  <span>CPU {systemStats.cpuPercent.toFixed(0)}%</span>
+                  <span style={{ opacity: 0.4 }}>·</span>
+                  <span>RAM {systemStats.ramPercent.toFixed(0)}%</span>
+                  <span style={{ opacity: 0.4 }}>·</span>
+                  <span>DISK {systemStats.diskPercent.toFixed(0)}%</span>
+                </>
+              ) : (
+                <span>…</span>
+              )}
             </div>
             {/* Auth controls */}
             {auth.isAdmin ? (
