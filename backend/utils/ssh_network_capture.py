@@ -8,82 +8,8 @@ logger = logging.getLogger(__name__)
 
 class SshNetworkCapture:
     """
-    Captures network traffic from a remote host via `tcpdump` over an
-    existing SSH connection, writing the raw pcap stream to a local file.
-
-    Fixes vs. the original implementation:
-      * No PTY is allocated for the capture session. `tcpdump -w -` writes
-        *binary* pcap data to stdout; a PTY rewrites bytes (e.g. \n -> \r\n
-        and other terminal-mode translation), which silently corrupts the
-        capture. The command now runs "headless".
-      * Because there's no PTY, Ctrl-C (\x03) sent on the channel never
-        reached the remote process anyway. Stopping is now done by opening
-        a *second*, short-lived session that signals the specific tcpdump
-        process directly (SIGINT) so it exits cleanly and flushes, then
-        closing the capture channel from our end.
-      * The reader thread no longer dies silently on a network blip.
-        recv() errors / EOF are treated as a dropped connection and
-        trigger a bounded, backoff retry loop rather than just stopping.
-      * On reconnect, capture resumes into a *new* file segment
-        (capture.pcap, capture.pcap.part2, ...) instead of appending.
-        A pcap file's global header is only valid once at the very start
-        of the stream, so splicing two tcpdump sessions into one file
-        would silently corrupt it.
-      * A lock guards shared state (`running`, session, file handle) so
-        start()/stop() are safe to call from another thread.
-      * stop() closes the session *before* joining the reader thread, so
-        it can't hang waiting on a blocked recv().
-      * The capture command and the command used to stop it are both
-        configurable, so this works with tools other than Linux tcpdump --
-        e.g. tshark on a Windows host reachable via SSH (OpenSSH Server
-        for Windows). Defaults still target Linux tcpdump for backward
-        compatibility.
-      * An optional `max_file_size_bytes` cap can be set. It's tracked
-        against the *cumulative* bytes written across the whole capture
-        (i.e. across any reconnect segments), since from the caller's
-        perspective it's one logical capture even if it's split into
-        capture.pcap / capture.pcap.part2 / ... on disk. Once the
-        cumulative total reaches the cap, the capture is stopped
-        gracefully (same remote-signal-then-close sequence as stop()) from
-        inside the reader thread itself -- so unlike stop(), it never
-        joins self.thread (that would deadlock, since the reader thread
-        would be joining itself).
-
-    Command templates:
-        `capture_start_cmd` and `capture_stop_cmd` may contain a literal
-        "{iface}" placeholder, which gets substituted with `interface`.
-        If "{iface}" isn't present, the string is used as-is (useful when
-        the interface is already baked in, e.g. a Windows tshark
-        interface index/GUID you don't want re-derived each time).
-
-        Examples:
-          Linux tcpdump, no sudo:
-            capture_start_cmd="tcpdump -i {iface} -w -"
-            capture_stop_cmd="pkill -INT -f 'tcpdump -i {iface} -w -'"
-
-          Windows tshark over SSH (OpenSSH Server for Windows):
-            capture_start_cmd="tshark -i {iface} -w -"
-            capture_stop_cmd="taskkill /IM tshark.exe /F"
-            Notes:
-              * Windows interfaces are usually referenced by index or GUID
-                (run `tshark -D` on the host to list them) rather than a
-                name like "eth0".
-              * `taskkill /IM` matches by image name, so it will kill
-                *every* tshark.exe on the box, not just this capture's --
-                fine for a single-capture-at-a-time host, risky otherwise.
-                There's no SIGINT-style graceful signal available remotely
-                on Windows the way there is on Linux, so this is forceful;
-                tshark still flushes reasonably well on termination but a
-                clean `-w -` Linux capture is more guaranteed not to lose
-                the last buffered packets.
-              * If `capture_stop_cmd` is left as None, no stop command is
-                run at all -- stop() will just close the SSH channel and
-                rely on the remote process exiting when its stdout pipe
-                goes away (which OpenSSH for Windows generally does on
-                channel close, but it's less reliable than an explicit
-                stop command).
+    A class used to start and stop network capture on targe remote device.
     """
-
     def __init__(self,
                  connection,
                  capture_start_cmd,
@@ -96,32 +22,19 @@ class SshNetworkCapture:
                  max_file_size_bytes=None,
                  on_limit_reached=None):
         """
-        connection:         a fabric.Connection (or similar) for the
-                             target host.
-        interface:           interface name/index/GUID, substituted into
-                             any "{iface}" placeholder in
-                             capture_start_cmd/capture_stop_cmd.
-        local_file:          path to write the captured pcap stream to.
-        capture_start_cmd:   full remote command to run for the capture.
-                             Defaults to Linux tcpdump. Must write pcap
-                             data to stdout (e.g. tcpdump's/tshark's
-                             "-w -").
-        capture_stop_cmd:    full remote command used to stop a *running*
-                             capture started with capture_start_cmd,
-                             gracefully. Defaults to a matching tcpdump
-                             pkill. If you override capture_start_cmd but
-                             leave capture_stop_cmd as None, no stop
-                             command is assumed (it can't safely guess how
-                             to find/stop an arbitrary command) -- stop()
-                             will fall back to just closing the channel.
-        max_file_size_bytes: optional cap on total captured bytes (summed
-                             across all segments). Once reached, capture
-                             is stopped automatically -- see class
-                             docstring. None (default) means unlimited.
-        on_limit_reached:    optional zero-arg callback invoked (from the
-                             reader thread) once max_file_size_bytes is
-                             hit and the capture has been stopped. Any
-                             exception it raises is caught and logged.
+        Initializes a SshNetworkCapture instance.
+
+        Args:
+            connection (Connection): Connection to trigger SSH network capture on remote device.
+            capture_start_cmd (str): Command to start network capture on remote device.
+            capture_stop_cmd (str): Command to stop network capture on remote device.
+            local_file (str): Name for local file where pcap will be collected.
+            max_reconnect_attempts (int): Max number of reconnect attempts.
+            reconnect_backoff_base (float): Initial time for device to wait before next attempt to reconnect.
+            reconnect_backoff_max (float): Max time for device to wait before next attempt to reconnect.
+            recv_size (int): Size of buffer during network capture collection.
+            max_file_size_bytes (int): Max size of network capture file.
+            on_limit_reached (function): Function to trigger when max capture file limit is reached.
         """
         self.conn = connection
         self.capture_start_cmd = capture_start_cmd
@@ -133,26 +46,20 @@ class SshNetworkCapture:
         self.local_file = None
         self._segment_index = 1
         self._lock = threading.RLock()
-
         self.max_reconnect_attempts = max_reconnect_attempts
         self.reconnect_backoff_base = reconnect_backoff_base
         self.reconnect_backoff_max = reconnect_backoff_max
         self.recv_size = recv_size
-
-        # Cumulative-size cap (summed across reconnect segments) and the
-        # running total used to check it. limit_reached lets callers tell
-        # "stopped because the cap was hit" apart from a normal stop().
         self.max_file_size_bytes = max_file_size_bytes
         self.on_limit_reached = on_limit_reached
         self._total_bytes_written = 0
         self.limit_reached = False
-
         self._stopped_event = threading.Event()
 
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
     def start(self):
+        """
+        Start network capture on remote device.
+        """
         with self._lock:
             if self.running:
                 logger.warning("capture already running")
@@ -173,13 +80,17 @@ class SshNetworkCapture:
         logger.info("Network capture started -> %s (cmd=%r)", self.local_file_base, self.capture_start_cmd)
 
     def stop(self, timeout=10):
+        """
+        Stop network capture on remote device.
+
+        Args:
+            timeout (int): Number of seconds to wait for gracfull network capture stop.
+        """
         with self._lock:
             if not self.running:
                 return
             self.running = False
 
-        # Ask the remote tcpdump to exit gracefully (flush its output)
-        # before we close the channel from our end.
         self._signal_remote_tcpdump()
 
         if self.session is not None:
@@ -203,11 +114,13 @@ class SshNetworkCapture:
 
         logger.info("capture stopped")
 
-    # ------------------------------------------------------------------
-    # Internals
-    # ------------------------------------------------------------------
     def _open_segment(self, path):
-        """(Re)open the local file that capture bytes are written to."""
+        """
+        (Re)open the local file that capture bytes are written to.
+
+        Args:
+            path (str): Path of segment local file.
+        """
         if self.local_file is not None:
             try:
                 self.local_file.flush()
@@ -217,14 +130,22 @@ class SshNetworkCapture:
         self.local_file = open(path, "wb")
 
     def _next_segment_path(self):
+        """
+        Get next segment file path.
+
+        Returns:
+            str: Path of next segment file.
+        """
         self._segment_index += 1
         return f"{self.local_file_base}.part{self._segment_index}"
 
     def _get_transport(self):
-        """conn is a fabric.Connection. Fabric doesn't expose open_session()
-        itself -- the real paramiko transport lives at conn.client. This
-        opens the underlying SSH connection (if needed) and returns an
-        active paramiko Transport, or raises if it can't get one."""
+        """
+        Get paramiko transport object if connection is active.
+
+        Returns:
+            object: Paramiko SSH transport object.
+        """
         if not getattr(self.conn, "is_connected", False):
             self.conn.open()
 
@@ -233,33 +154,23 @@ class SshNetworkCapture:
             raise ConnectionError("SSH transport is not active")
         return transport
 
-    def _format_cmd(self, template, iface):
-        if "{iface}" in template:
-            return template.format(iface=iface)
-        return template
-
     def _open_session(self):
+        """
+        Open SSH capturing session.
+        """
         cmd = f"{self.capture_start_cmd} -w -"
         transport = self._get_transport()
         channel = transport.open_session()
-        # Intentionally NOT calling get_pty(): a "-w -"-style command
-        # emits binary pcap data to stdout, and a pty would mangle it.
         channel.exec_command(cmd)
-        # Bounded timeout so recv() periodically returns control to the
-        # reader loop instead of blocking forever -- this is what lets us
-        # notice both a dead connection and a stop() request promptly.
         channel.settimeout(1.0)
         self.session = channel
 
     def _signal_remote_tcpdump(self):
-        """Best-effort: ask the remote capture process started for this
-        session to terminate cleanly so it flushes any buffered packets.
-        No-op if no stop command is configured for the current capture
-        command (see start()'s docstring)."""
+        """
+        Send target cmd to stop ongoing network capture.
+        """
         if not self.capture_stop_cmd:
-            logger.info("no stop command configured for this capture "
-                        "command; relying on channel close to terminate "
-                        "the remote process")
+            logger.info("No stop command configured for this capture command; relying on channel close to terminate the remote process")
             return
 
         try:
@@ -279,12 +190,9 @@ class SshNetworkCapture:
             logger.exception("failed to signal remote capture process to stop")
 
     def _stop_due_to_limit(self):
-        """Internal: gracefully stop the capture because max_file_size_bytes
-        was reached. This always runs *from* the reader thread itself, so
-        unlike stop() it must never call self.thread.join() -- that would
-        deadlock the reader thread waiting on itself. Otherwise mirrors
-        stop()'s teardown sequence: signal the remote process to flush and
-        exit, close the session, close the local file."""
+        """
+        Stop ongoing network capture when capture file size limit is reached.
+        """
         with self._lock:
             if not self.running:
                 return
@@ -319,6 +227,9 @@ class SshNetworkCapture:
                 logger.exception("on_limit_reached callback failed")
 
     def _reader_loop(self):
+        """
+        Main loop for SSH network capture colllector.
+        """
         consecutive_errors = 0
 
         while True:
@@ -329,8 +240,6 @@ class SshNetworkCapture:
             try:
                 data = self.session.recv(self.recv_size)
             except socket.timeout:
-                # Just a polling interval lapsing -- not an error. Loop
-                # back around to re-check self.running.
                 continue
             except Exception:
                 logger.exception("recv() failed on capture session")
@@ -346,21 +255,16 @@ class SshNetworkCapture:
                     self.local_file.write(data)
                 except Exception:
                     logger.exception("failed writing capture data to disk")
-                    # A disk error isn't a network error - don't retry it
-                    # as if it were.
                     with self._lock:
                         self.running = False
                     break
 
                 self._total_bytes_written += len(data)
-                if (self.max_file_size_bytes is not None
-                        and self._total_bytes_written >= self.max_file_size_bytes):
+                if (self.max_file_size_bytes is not None and self._total_bytes_written >= self.max_file_size_bytes):
                     self._stop_due_to_limit()
                     break
                 continue
 
-            # data is None (error) or b"" (remote closed) -> dropped
-            # connection, try to recover.
             consecutive_errors += 1
             if not self._attempt_reconnect(consecutive_errors):
                 logger.error("giving up after %s failed reconnect attempts",
@@ -372,10 +276,12 @@ class SshNetworkCapture:
         self._stopped_event.set()
 
     def _attempt_reconnect(self, attempt_number):
-        """Try to re-establish the SSH session and a fresh capture using
-        the configured capture command, rotating to a new local file
-        segment so two pcap streams never get spliced into one file.
-        Returns True if a new session is ready to read from."""
+        """
+        Try to re-establish network capture collection with split new session to seperate file.
+
+        Args:
+            attempt_number (int): Number of re-establish network capture collection attempt.
+        """
         if attempt_number > self.max_reconnect_attempts:
             return False
 
@@ -399,8 +305,6 @@ class SshNetworkCapture:
             try:
                 self._get_transport()
             except Exception:
-                # Transport is dead -- force Fabric to tear down and
-                # re-establish the underlying SSH connection.
                 try:
                     self.conn.close()
                 except Exception:

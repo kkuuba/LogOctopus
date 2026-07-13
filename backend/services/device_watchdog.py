@@ -23,7 +23,6 @@ class DeviceWatchdog:
     A class used to collect logs for a target device using a defined configuration.
     """
 
-    # Maximum rows kept per log before old entries are trimmed (memory guard)
     MAX_LOG_ROWS = 50_000
 
     def __init__(self, device_config, device_config_id):
@@ -36,29 +35,14 @@ class DeviceWatchdog:
         """
         self.device_config = device_config
         self.device_config_id = device_config_id
-
-        # Per-device directory for anything persisted to disk (pcap capture,
-        # errors.feather, etc.) so file paths never depend on the process's
-        # current working directory.
         self.device_data_dir = os.path.join("data", str(device_config_id))
         os.makedirs(self.device_data_dir, exist_ok=True)
-
-        # SSH channels keyed by log_name; guarded by a single lock that covers
-        # both the channels dict and all per-log collected_data lists.
         self.ssh_channels: dict[str, Connection] = {}
         self._channel_lock = threading.Lock()
-
-        # Log data stored as lists of dicts; converted to DataFrames on demand.
-        # Each log_name has its own dedicated lock so concurrent pollers don't
-        # block one another while still protecting individual list mutations.
         self.collected_data: dict[str, list[dict]] = {}
         self._data_locks: dict[str, threading.Lock] = {}
-
-        # Errors collected as a plain list to avoid repeated pd.concat overhead.
-        # Protected by _error_lock.
         self._error_list: list[dict] = []
         self._error_lock = threading.Lock()
-
         self.collection_ongoing = False
         self.thread: threading.Thread | None = None
         self.collection_stop_event: threading.Event | None = None
@@ -66,28 +50,18 @@ class DeviceWatchdog:
         self.log_snapshots: list[LogSnapshot] = []
         self.connection_status = False
         self.log_access = False
-
-        # Pre-build lookup structures from config for O(1) access
         self._log_config_map: dict[str, dict] = {
             lc["log_name"]: lc for lc in device_config["log_file_configs"]
         }
-        # Pre-compile per-log regexes once
         self._log_regex_map: dict[str, re.Pattern] = {
             lc["log_name"]: re.compile(lc["data_extraction_regex"])
             for lc in device_config["log_file_configs"]
         }
-
-        # Persistent thread pool sized to the number of log sources.
-        # shutdown(wait=True) is called in close() / teardown_log_collectors().
         self._executor = ThreadPoolExecutor(
             max_workers=len(device_config["log_file_configs"])
         )
         self.network_capture = None
         self.packets_capture_file: str | None = None
-
-    # ------------------------------------------------------------------
-    # SSH / command execution
-    # ------------------------------------------------------------------
 
     def _get_or_create_channel(self, ssh_channel_id: str) -> Connection:
         """Return an existing SSH channel or create one, thread-safely.
@@ -96,11 +70,8 @@ class DeviceWatchdog:
         the race condition that arose from the previous pattern of checking
         outside the lock and only locking on creation (TOCTOU).
         """
-        # FIX: always enter the lock; eliminates the TOCTOU race where two
-        # threads both passed the early-return check and each opened a new
-        # connection for the same channel id.
         with self._channel_lock:
-            if ssh_channel_id not in self.ssh_channels:
+            if ssh_channel_id not in self.ssh_channels or not self.ssh_channels[ssh_channel_id].is_connected:
                 conn = self.create_device_connection()
                 conn.open()
                 self.ssh_channels[ssh_channel_id] = conn
@@ -152,8 +123,6 @@ class DeviceWatchdog:
 
     def _record_error(self, error_info: str) -> None:
         """Append an error entry thread-safely (list-based, no pd.concat)."""
-        # FIX: protect _error_list with its own lock — _record_error is called
-        # from worker threads running concurrently in the executor.
         with self._error_lock:
             self._error_list.append({"time": datetime.now(), "error_info": error_info})
 
@@ -164,10 +133,6 @@ class DeviceWatchdog:
             snapshot = list(self._error_list)
         return pd.DataFrame(snapshot) if snapshot else pd.DataFrame({"time": [], "error_info": []})
 
-    # ------------------------------------------------------------------
-    # Log collector lifecycle
-    # ------------------------------------------------------------------
-
     def initialize_log_collectors(self) -> None:
         """Initialize log collectors for all defined log file configs."""
         for log_config in self.device_config["log_file_configs"]:
@@ -177,9 +142,6 @@ class DeviceWatchdog:
                 log_name,
                 log_config.get("custom_shell_prompt"),
             )
-            # FIX: initialise per-log data lock alongside the data list so
-            # concurrent get_log_file_content calls always have a lock to
-            # acquire before touching the list.
             self.collected_data[log_name] = []
             self._data_locks[log_name] = threading.Lock()
         if self.device_config.get("packets_capture_config", None):
@@ -189,24 +151,16 @@ class DeviceWatchdog:
             capture_stop_cmd = capture_config["capture_stop_cmd"]
             packets_capture_file = os.path.join(self.device_data_dir, "capture.pcap")
             self.packets_capture_file = packets_capture_file
-
-            # Optional cap on total pcap size, in MB (config-builder-facing
-            # unit), converted to bytes for SshNetworkCapture. Absent/0/None
-            # all mean "unlimited".
             max_pcap_size_mb = capture_config.get("max_pcap_size_mb")
             max_file_size_bytes = (
                 int(max_pcap_size_mb * 1024 * 1024) if max_pcap_size_mb else None
             )
-
             self.network_capture = SshNetworkCapture(
                 connection=packets_capture_channel,
                 capture_start_cmd=capture_start_cmd,
                 capture_stop_cmd=capture_stop_cmd,
                 local_file=packets_capture_file,
                 max_file_size_bytes=max_file_size_bytes,
-                # Surface the auto-stop in the device's error/event log so
-                # it's visible in the UI (GET /api/devices/<id>/errors)
-                # rather than silently truncating the capture.
                 on_limit_reached=lambda: self._record_error(
                     f"network capture stopped automatically: reached max "
                     f"pcap size of {max_pcap_size_mb} MB"
@@ -229,8 +183,6 @@ class DeviceWatchdog:
             )
         if self.device_config.get("packets_capture_config", None):
             self.network_capture.stop()
-        # FIX: close every open SSH connection and clear the dict so channels
-        # don't accumulate across start/stop cycles.
         with self._channel_lock:
             for conn in self.ssh_channels.values():
                 try:
@@ -249,10 +201,6 @@ class DeviceWatchdog:
         running until interpreter exit when a watchdog was replaced.
         """
         self._executor.shutdown(wait=False)
-
-    # ------------------------------------------------------------------
-    # Log collection
-    # ------------------------------------------------------------------
 
     def get_log_file_content(self, log_config: dict) -> None:
         """
@@ -277,20 +225,13 @@ class DeviceWatchdog:
         if not raw:
             return
 
-        # FIX: acquire the per-log data lock before reading or writing the
-        # list.  Using per-log locks (rather than a single global lock) means
-        # concurrent pollers for different logs still run in parallel.
         lock = self._data_locks.get(log_name)
         if lock is None:
-            # Guard against execute_cmd being called before initialize_log_collectors.
             return
 
         with lock:
             existing: list[dict] = self.collected_data[log_name]
-
-            # Track the latest timestamp we already have so we can skip old lines.
             last_ts: datetime | None = existing[-1]["time"] if existing else None
-
             new_entries: list[dict] = []
             for line in raw.splitlines():
                 m = pattern.search(line)
@@ -302,17 +243,12 @@ class DeviceWatchdog:
 
             if new_entries:
                 existing.extend(new_entries)
-                # Memory guard: trim to the most recent MAX_LOG_ROWS rows
                 if len(existing) > self.MAX_LOG_ROWS:
                     self.collected_data[log_name] = existing[-self.MAX_LOG_ROWS:]
 
     def get_all_log_files_content(self) -> None:
         """Fetch all logs concurrently using the persistent thread pool."""
         list(self._executor.map(self.get_log_file_content, self.device_config["log_file_configs"]))
-
-    # ------------------------------------------------------------------
-    # Collection loop
-    # ------------------------------------------------------------------
 
     def start_logs_collection(self) -> None:
         """Start the background log-collection thread."""
@@ -333,7 +269,6 @@ class DeviceWatchdog:
         FIX: previously crashed with AttributeError when called before
         start_logs_collection because collection_stop_event and thread were None.
         """
-        # FIX: guard against stop being called before start.
         if not self.collection_ongoing or self.collection_stop_event is None:
             return
         self.collection_stop_event.set()
@@ -355,12 +290,7 @@ class DeviceWatchdog:
         """
         while not self.collection_stop_event.is_set():
             self.get_all_log_files_content()
-            # Wait for interval or until stop is requested
             self.collection_stop_event.wait(timeout=interval)
-
-    # ------------------------------------------------------------------
-    # Post-collection processing
-    # ------------------------------------------------------------------
 
     def remove_all_outdated_entries(self) -> None:
         """Drop log entries older than the collection start time and sort by time."""
@@ -392,7 +322,7 @@ class DeviceWatchdog:
         for log_name, entries in self.collected_data.items():
             if not entries:
                 continue
-            log_config = self._log_config_map[log_name]          # O(1) lookup
+            log_config = self._log_config_map[log_name]
             log_type = log_config.get("log_type", "")
             data_unit = log_config.get("data_unit", "")
             log_description = log_config.get("log_description", "")
@@ -410,25 +340,13 @@ class DeviceWatchdog:
                     log_content,
                 )
             )
-
-        # Only build a pcap LogSnapshot when a capture was actually collected:
-        # packets_capture_config being set just means the feature is enabled,
-        # it doesn't guarantee network_capture ever wrote a non-empty file
-        # (e.g. capture never started, or the session produced zero packets).
-        if (
-            self.packets_capture_file
-            and os.path.exists(self.packets_capture_file)
-            and os.path.getsize(self.packets_capture_file) > 0
-        ):
-            # Rename the raw capture to <session_id>.pcap so it's directly
-            # addressable later via PcapDecoder.get_session_packet_details().
+        if (self.packets_capture_file and os.path.exists(self.packets_capture_file) and os.path.getsize(self.packets_capture_file) > 0):
             session_pcap_path = os.path.join(self.device_data_dir, f"{session_id}.pcap")
             try:
                 os.replace(self.packets_capture_file, session_pcap_path)
                 self.packets_capture_file = session_pcap_path
             except OSError as exc:
                 self._record_error(f"failed to rename pcap file -> {exc}")
-
             try:
                 decoder = PcapDecoder(self.packets_capture_file)
                 self.log_snapshots.append(
@@ -456,10 +374,6 @@ class DeviceWatchdog:
         """
         return self._log_config_map.get(log_name, {}).get(log_param, "")
 
-    # ------------------------------------------------------------------
-    # Status checks
-    # ------------------------------------------------------------------
-
     def get_connection_status(self) -> None:
         """Update connection_status based on all SSH channels.
 
@@ -475,9 +389,7 @@ class DeviceWatchdog:
             self.connection_status = False
             return
 
-        self.connection_status = all(
-            bool(ch and ch.is_connected) for ch in channels.values()
-        )
+        self.connection_status = all(bool(ch and ch.is_connected) for ch in channels.values())
 
     def test_log_files_access(self) -> None:
         """Check whether the first configured log file is accessible via SSH."""
@@ -488,10 +400,6 @@ class DeviceWatchdog:
             log_file_config.get("custom_shell_prompt"),
         )
         self.log_access = bool(result)
-
-    # ------------------------------------------------------------------
-    # Connection factories
-    # ------------------------------------------------------------------
 
     def create_device_connection(self) -> Connection:
         """
@@ -512,11 +420,6 @@ class DeviceWatchdog:
         return build_fabric_connection(self.device_config)
 
 
-
-# ---------------------------------------------------------------------------
-# Config file helpers
-# ---------------------------------------------------------------------------
-
 def get_current_device_config(path_to_config_file: str) -> dict:
     """
     Load the device JSON configuration file.
@@ -534,7 +437,7 @@ def get_current_device_config(path_to_config_file: str) -> dict:
 def update_device_config_parameters(path_to_config_file: str, updates: dict) -> None:
     """
     Apply multiple key/value updates to the device config file in a single
-    read–write cycle (reduces disk I/O compared to one write per parameter).
+    read-write cycle (reduces disk I/O compared to one write per parameter).
 
     Args:
         path_to_config_file: Path to the JSON config file.
@@ -547,15 +450,6 @@ def update_device_config_parameters(path_to_config_file: str, updates: dict) -> 
         json.dump(data, f, indent=2)
 
 
-# Keep the single-key variant for backward compatibility
-def update_device_config_parameter(path_to_config_file: str, key: str, value) -> None:
-    update_device_config_parameters(path_to_config_file, {key: value})
-
-
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
-
 if __name__ == "__main__":
     arg_parser = argparse.ArgumentParser(description="Device watchdog")
     arg_parser.add_argument("device_config_file_path", help="Path to target device config file")
@@ -565,24 +459,16 @@ if __name__ == "__main__":
     device_watchdog = DeviceWatchdog(init_device_config, args.device_config_file_path.split("/")[1])
 
     auto_collection_timer = 0.0
-    # FIX: track whether auto-collection has already been armed in the current
-    # idle window so the timer is only reset on the transition from idle → armed,
-    # not on every loop iteration while collection is ongoing.
     auto_collection_armed = False
-
-    # FIX: track the errors list length so the feather file is only written
-    # when new errors have been appended, avoiding constant disk I/O.
     last_errors_len = 0
 
     while True:
         current_device_config = get_current_device_config(args.device_config_file_path)
 
-        # --- Start collection when requested ---
         if current_device_config["logs_collection"] and not device_watchdog.collection_ongoing:
             device_watchdog.initialize_log_collectors()
             device_watchdog.start_logs_collection()
 
-        # --- Stop collection when requested ---
         if not current_device_config["logs_collection"] and device_watchdog.collection_ongoing:
             device_watchdog.stop_logs_collection()
             device_watchdog.save_log_snapshots(
@@ -593,21 +479,10 @@ if __name__ == "__main__":
                 args.device_config_file_path,
                 {"current_session_id": "no_active_session"},
             )
-            # Reset arm flag so auto-collection can trigger a fresh cycle
-            # after the configured interval has elapsed from the last arm time.
             auto_collection_armed = False
             sleep(2)
 
-        # --- Auto-collection: arm (only once per idle window) ---
-        # FIX: previously reset auto_collection_timer on every loop iteration
-        # while auto_collection_enabled was True and collection_ongoing was
-        # False — meaning the disarm condition (timer elapsed) was never met
-        # and collection restarted immediately after stopping.
-        if (
-            current_device_config["auto_collection_enabled"]
-            and not device_watchdog.collection_ongoing
-            and not auto_collection_armed
-        ):
+        if (current_device_config["auto_collection_enabled"] and not device_watchdog.collection_ongoing and not auto_collection_armed):
             auto_collection_timer = time.time()
             auto_collection_armed = True
             update_device_config_parameters(
@@ -618,19 +493,12 @@ if __name__ == "__main__":
                 },
             )
 
-        # --- Auto-collection: disarm after interval ---
-        if (
-            current_device_config["auto_collection_enabled"]
-            and auto_collection_armed
-            and time.time() - auto_collection_timer
-            > current_device_config["auto_collection_interval"] * 3600
-        ):
+        if (current_device_config["auto_collection_enabled"] and auto_collection_armed and time.time() - auto_collection_timer > current_device_config["auto_collection_interval"] * 3600):
             update_device_config_parameters(
                 args.device_config_file_path,
                 {"logs_collection": False},
             )
 
-        # --- Status probe & single-write config update ---
         device_watchdog.test_log_files_access()
         device_watchdog.get_connection_status()
 
@@ -642,9 +510,6 @@ if __name__ == "__main__":
             },
         )
 
-        # --- Persist errors only when the list has grown ---
-        # FIX: previously wrote the feather file unconditionally every 5 s,
-        # causing constant disk I/O even when no new errors occurred.
         current_errors_len = len(device_watchdog._error_list)
         if current_errors_len != last_errors_len:
             errors_file_path = os.path.join(device_watchdog.device_data_dir, "errors.feather")
