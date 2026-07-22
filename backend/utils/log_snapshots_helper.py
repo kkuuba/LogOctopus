@@ -1,6 +1,9 @@
 import pandas as pd
 
-class ConfigurationHelper:
+class LogSnapshotsHelper:
+    """
+    A class to perform basic operations on device confiu.
+    """
 
     @staticmethod
     def get_log_content_for_selected_snapshots(selected_log_snapshots):

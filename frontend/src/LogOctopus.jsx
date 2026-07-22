@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const API_BASE = (import.meta.env.VITE_API_BASE) || "http://localhost:8050"
@@ -22,41 +22,76 @@ async function apiFetch(path, options = {}) {
 }
 
 // ── AUTH CONTEXT ──────────────────────────────────────────────────────────────
-// Simple client-side auth gate. In production, back this with a real session/JWT.
-// Default credentials come from env vars; admin password can be changed at runtime
-// and is persisted in localStorage so it survives page refreshes.
-const ADMIN_USER_DEFAULT = import.meta?.env?.VITE_ADMIN_USER || "admin";
-const ADMIN_PASS_DEFAULT = import.meta?.env?.VITE_ADMIN_PASS || "logoctopus";
+// Server-side auth: credentials are validated by POST /api/auth/login which
+// compares a SHA-256 hash against the one stored in settings.json.  The server
+// returns a random token that is kept in sessionStorage (tab-scoped, never
+// persisted to disk by the browser).
+//
+// FIX: the previous implementation stored the admin password in plain-text in
+// localStorage and performed all comparison client-side, meaning any XSS or
+// browser extension could trivially extract the password.  Auth is now backed
+// by the backend's /api/auth/login and /api/auth/logout endpoints.
 
 function useAuth() {
-  const [role, setRole] = useState(() => sessionStorage.getItem("lo_role") || "guest");
-  // Password persisted in localStorage so changes survive refreshes.
-  const [adminPass, setAdminPassState] = useState(
-    () => localStorage.getItem("lo_admin_pass") || ADMIN_PASS_DEFAULT
-  );
+  const [role,  setRole]  = useState(() => sessionStorage.getItem("lo_role")  || "guest");
+  const [token, setToken] = useState(() => sessionStorage.getItem("lo_token") || "");
 
-  const login = (user, pass) => {
-    if (user === ADMIN_USER_DEFAULT && pass === adminPass) {
-      sessionStorage.setItem("lo_role", "admin");
-      setRole("admin");
-      return true;
-    }
-    return false;
-  };
-
-  const logout = () => {
-    sessionStorage.removeItem("lo_role");
-    setRole("guest");
-  };
-
-  const changePassword = (currentPass, newPass) => {
-    if (currentPass !== adminPass) return false;
-    localStorage.setItem("lo_admin_pass", newPass);
-    setAdminPassState(newPass);
+  // login: calls the backend; returns true on success, false on bad credentials,
+  // throws on network error so the caller can show a toast.
+  const login = async (user, pass) => {
+    const res = await fetch(`${API_BASE}/api/auth/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: user, password: pass }),
+    });
+    if (res.status === 401) return false;
+    if (!res.ok) throw new Error(`Login failed (${res.status})`);
+    const { token: tok } = await res.json();
+    sessionStorage.setItem("lo_role",  "admin");
+    sessionStorage.setItem("lo_token", tok);
+    setRole("admin");
+    setToken(tok);
     return true;
   };
 
-  return { role, isAdmin: role === "admin", login, logout, changePassword };
+  const logout = () => {
+    const tok = sessionStorage.getItem("lo_token") || "";
+    sessionStorage.removeItem("lo_role");
+    sessionStorage.removeItem("lo_token");
+    setRole("guest");
+    setToken("");
+    // Best-effort server-side token revocation
+    if (tok) {
+      fetch(`${API_BASE}/api/auth/logout`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token: tok }),
+      }).catch(() => {});
+    }
+  };
+
+  // changePassword: validates the current password server-side, then updates
+  // the hash via the existing /api/settings/change-password endpoint.
+  // Returns true on success, false if currentPass is wrong, throws on error.
+  const changePassword = async (currentPass, newPass) => {
+    // Re-authenticate to verify the current password before allowing a change.
+    const adminUser = import.meta?.env?.VITE_ADMIN_USER || "admin";
+    const checkRes = await fetch(`${API_BASE}/api/auth/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: adminUser, password: currentPass }),
+    });
+    if (checkRes.status === 401) return false;
+    if (!checkRes.ok) throw new Error(`Verification failed (${checkRes.status})`);
+
+    await apiFetch("/api/settings/change-password", {
+      method: "POST",
+      body: JSON.stringify({ new_password: newPass }),
+    });
+    return true;
+  };
+
+  return { role, isAdmin: role === "admin", token, login, logout, changePassword };
 }
 
 // ── PLOTLY CHART PANEL ────────────────────────────────────────────────────────
@@ -418,6 +453,46 @@ function buildPairColorMap(rows) {
   return map;
 }
 
+// ── PACKET-CAPTURE GLYPH BUTTON ───────────────────────────────────────────────
+// Singleton <style> element for the "view packet details" glyph-margin icon.
+// Only rows whose log_name === "packet_capture" ever get this decoration, so
+// every other log line in the editor is completely untouched.
+let _packetGlyphStyleEl = null;
+function ensurePacketGlyphStyleEl() {
+  if (_packetGlyphStyleEl) return _packetGlyphStyleEl;
+  _packetGlyphStyleEl = document.createElement("style");
+  _packetGlyphStyleEl.id = "lo-packet-glyph-style";
+  document.head.appendChild(_packetGlyphStyleEl);
+  _packetGlyphStyleEl.textContent = `
+    .lo-packet-glyph {
+      cursor: pointer;
+      position: relative;
+    }
+    .lo-packet-glyph::before {
+      content: "\\1F50E";
+      font-size: 11px;
+      line-height: 20px;
+      position: absolute;
+      left: 3px;
+      top: 0;
+      opacity: 0.75;
+    }
+    .lo-packet-glyph:hover::before {
+      opacity: 1;
+    }
+  `;
+  return _packetGlyphStyleEl;
+}
+
+// Extracts the leading packet number from a packet_capture row's content,
+// e.g. "12 | eth:ip:tcp | 10.0.0.1:443 -> 10.0.0.2:51000 | len=1500 | …" → 12.
+// Mirrors the field order produced by PacketInfo.to_content_str().
+function parsePacketNumber(content) {
+  const head = String(content ?? "").split("|")[0].trim();
+  const n = parseInt(head, 10);
+  return Number.isNaN(n) ? null : n;
+}
+
 // ── MONACO LOG VIEWER ─────────────────────────────────────────────────────────
 /**
  * Renders log rows inside a Monaco Editor instance (read-only).
@@ -429,24 +504,45 @@ function buildPairColorMap(rows) {
  * (isWholeLine:true + className) and injected CSS classes.
  *
  * Props:
- *   rows      – array of { time, device_name, log_name, content }
- *   colorMode – bool; switches between logoctopus-dark and logoctopus-color themes
+ *   rows          – array of { time, device_name, log_name, content, snapshotId }
+ *   colorMode     – bool; switches between logoctopus-dark and logoctopus-color themes
+ *   onPacketClick – optional (row) => void, called when the user clicks the
+ *                   glyph-margin button next to a "packet_capture" row.
+ *                   Every other log line is untouched — the glyph margin
+ *                   only ever gets a decoration for packet_capture rows.
  */
-function MonacoLogViewer({ rows, colorMode }) {
+function MonacoLogViewer({ rows, colorMode, onPacketClick }) {
   const containerRef      = useRef(null);
   const editorRef         = useRef(null);
   const modelRef          = useRef(null);
-  const decorationsRef    = useRef([]); // current decoration IDs
+  const decorationsRef    = useRef([]); // current line-color decoration IDs
+  const glyphDecorationsRef = useRef([]); // current packet-glyph decoration IDs
   const [ready, setReady] = useState(false);
   const [loadErr, setLoadErr] = useState(null);
 
-  // Build flat log text from rows
-  const logText = useRef("");
-  logText.current = rows && rows.length > 0
-    ? rows.map((r) =>
-        `[${r.time ?? ""}] [${r.device_name ?? ""}] [${r.log_name ?? ""}]  ${r.content ?? ""}`
-      ).join("\n")
-    : "";
+  // Kept as refs so the mousedown handler (registered once, at editor
+  // creation time) always sees the latest rows / callback without needing
+  // to recreate the editor whenever they change.
+  const rowsRef = useRef(rows);
+  rowsRef.current = rows;
+  const onPacketClickRef = useRef(onPacketClick);
+  onPacketClickRef.current = onPacketClick;
+
+  // FIX: compute the flat log text with useMemo so it is only rebuilt when
+  // `rows` actually changes, not on every render of the parent component.
+  const logTextValue = useMemo(
+    () =>
+      rows && rows.length > 0
+        ? rows
+            .map((r) => `[${r.time ?? ""}] [${r.device_name ?? ""}] [${r.log_name ?? ""}]  ${r.content ?? ""}`)
+            .join("\n")
+        : "",
+    [rows]
+  );
+  // Keep logText as a ref so Monaco update effect can read the current value
+  // without itself being listed as a dependency.
+  const logText = useRef(logTextValue);
+  logText.current = logTextValue;
 
   // ── Apply / clear line-number decorations ────────────────────────────────
   const applyLineNumberDecorations = useCallback((rowsData, isColor) => {
@@ -491,6 +587,37 @@ function MonacoLogViewer({ rows, colorMode }) {
     );
   }, []);
 
+  // ── Apply glyph-margin "view packet details" buttons ─────────────────────
+  // Only rows with log_name === "packet_capture" get a decoration here, so
+  // this never touches the appearance of any other log line.
+  const applyPacketGlyphDecorations = useCallback((rowsData) => {
+    const editor = editorRef.current;
+    if (!editor) return;
+
+    ensurePacketGlyphStyleEl();
+
+    const newDecorations = (rowsData ?? [])
+      .map((r, lineIndex) => ({ r, lineIndex }))
+      .filter(({ r }) => r.log_name === "network capture")
+      .map(({ lineIndex }) => ({
+        range: {
+          startLineNumber: lineIndex + 1,
+          startColumn: 1,
+          endLineNumber: lineIndex + 1,
+          endColumn: 1,
+        },
+        options: {
+          glyphMarginClassName: "lo-packet-glyph",
+          glyphMarginHoverMessage: { value: "Click to view packet details" },
+        },
+      }));
+
+    glyphDecorationsRef.current = editor.deltaDecorations(
+      glyphDecorationsRef.current,
+      newDecorations
+    );
+  }, []);
+
   // Load Monaco once, then create the editor
   useEffect(() => {
     let cancelled = false;
@@ -509,6 +636,10 @@ function MonacoLogViewer({ rows, colorMode }) {
           scrollBeyondLastLine: false,
           wordWrap:          "off",
           lineNumbers:       "on",
+          // Adds a slim gutter column used only by packet_capture rows'
+          // "view packet details" glyph — empty/unchanged for every other
+          // line, so it doesn't alter the appearance of other log types.
+          glyphMargin:       true,
           renderLineHighlight: "line",
           fontFamily:        "'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace",
           fontSize:          12,
@@ -534,6 +665,19 @@ function MonacoLogViewer({ rows, colorMode }) {
           },
         });
         editorRef.current = editor;
+
+        // Handle clicks on the glyph margin — only packet_capture rows ever
+        // carry a glyph decoration, so this is a no-op for every other line.
+        editor.onMouseDown((e) => {
+          if (e.target?.type !== monaco.editor.MouseTargetType.GUTTER_GLYPH_MARGIN) return;
+          const lineNumber = e.target.position?.lineNumber;
+          if (!lineNumber) return;
+          const row = rowsRef.current?.[lineNumber - 1];
+          if (row && row.log_name === "network capture" && onPacketClickRef.current) {
+            onPacketClickRef.current(row);
+          }
+        });
+
         setReady(true);
       })
       .catch((e) => {
@@ -547,6 +691,7 @@ function MonacoLogViewer({ rows, colorMode }) {
       editorRef.current = null;
       modelRef.current  = null;
       decorationsRef.current = [];
+      glyphDecorationsRef.current = [];
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -567,6 +712,13 @@ function MonacoLogViewer({ rows, colorMode }) {
     if (!ready) return;
     applyLineNumberDecorations(rows, colorMode);
   }, [rows, colorMode, ready, applyLineNumberDecorations]);
+
+  // Apply packet_capture glyph buttons whenever rows change (and editor is
+  // ready). Independent of colorMode — the button shows in both themes.
+  useEffect(() => {
+    if (!ready) return;
+    applyPacketGlyphDecorations(rows);
+  }, [rows, ready, applyPacketGlyphDecorations]);
 
   // Swap theme when colorMode toggles
   useEffect(() => {
@@ -621,7 +773,7 @@ function MonacoLogViewer({ rows, colorMode }) {
 }
 
 // ── LOG CONTENT VIEW ──────────────────────────────────────────────────────────
-function LogContentView({ rows, isChart, colorMode, chartGroups }) {
+function LogContentView({ rows, isChart, colorMode, chartGroups, onPacketClick }) {
   if (isChart) return <ChartContentView chartGroups={chartGroups} />;
 
   if (!rows || rows.length === 0)
@@ -629,9 +781,83 @@ function LogContentView({ rows, isChart, colorMode, chartGroups }) {
 
   return (
     <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
-      <MonacoLogViewer rows={rows} colorMode={colorMode} />
+      <MonacoLogViewer rows={rows} colorMode={colorMode} onPacketClick={onPacketClick} />
     </div>
   );
+}
+
+// ── PACKET DETAILS TREE ───────────────────────────────────────────────────────
+/**
+ * Recursively renders the nested "layer → field → value" dict returned by
+ * PcapDecoder.get_packet_details() (tshark's -T json output). Objects render
+ * as collapsible <details> sections, primitives as key/value rows, and
+ * arrays as a stacked list of their (recursively rendered) items.
+ */
+function PacketFieldTree({ data, depth = 0 }) {
+  if (data === null || data === undefined || data === "") {
+    return <span style={{ color: "var(--muted)" }}>—</span>;
+  }
+
+  if (Array.isArray(data)) {
+    return (
+      <div style={{ marginLeft: depth ? 14 : 0 }}>
+        {data.map((item, i) => (
+          <div key={i} style={{ marginBottom: 4 }}>
+            <PacketFieldTree data={item} depth={depth + 1} />
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  if (typeof data === "object") {
+    return (
+      <div style={{ marginLeft: depth ? 14 : 0 }}>
+        {Object.entries(data).map(([key, value]) => {
+          const isBranch = value !== null && typeof value === "object";
+          if (isBranch) {
+            return (
+              <details key={key} open={depth < 1} style={{ marginBottom: 2 }}>
+                <summary
+                  style={{
+                    cursor: "pointer",
+                    fontFamily: "var(--font-mono)",
+                    fontSize: 12,
+                    fontWeight: 600,
+                    color: "var(--accent)",
+                    padding: "4px 0",
+                  }}
+                >
+                  {key}
+                </summary>
+                <PacketFieldTree data={value} depth={depth + 1} />
+              </details>
+            );
+          }
+          return (
+            <div
+              key={key}
+              style={{
+                display: "flex",
+                gap: 10,
+                fontFamily: "var(--font-mono)",
+                fontSize: 12,
+                padding: "3px 0",
+                borderBottom: "1px solid rgba(255,255,255,0.05)",
+              }}
+            >
+              <span style={{ color: "var(--muted)", minWidth: 220, flexShrink: 0, wordBreak: "break-word" }}>
+                {key}
+              </span>
+              <span style={{ color: "var(--text)", wordBreak: "break-all" }}>{String(value)}</span>
+            </div>
+          );
+        })}
+      </div>
+    );
+  }
+
+  return <span style={{ color: "var(--text)" }}>{String(data)}</span>;
 }
 
 // ── DOWNLOAD FORMATS ──────────────────────────────────────────────────────────
@@ -900,18 +1126,80 @@ function SettingsModal({ open, onClose, isAdmin, onRequestLogin, auth, addToast,
   const [pwError,  setPwError]  = useState("");
   const [pwShake,  setPwShake]  = useState(false);
 
-  const submitPasswordChange = () => {
-    if (newPass.length < 6)      { setPwError("New password must be at least 6 characters."); shake(); return; }
-    if (newPass !== confPass)    { setPwError("Passwords do not match.");                      shake(); return; }
-    const ok = auth.changePassword(curPass, newPass);
-    if (!ok)                     { setPwError("Current password is incorrect.");               shake(); return; }
-    setPwError(""); setCurPass(""); setNewPass(""); setConfPass("");
-    addToast("Admin password updated successfully.", "success");
-    // Also push to backend if available (best-effort)
-    apiFetch("/api/settings/change-password", {
-      method: "POST",
-      body: JSON.stringify({ new_password: newPass }),
-    }).catch(() => {});
+  // ── Dissector management state ──
+  const [dissectors,       setDissectors]       = useState([]);
+  const [dissectorsLoading, setDissectorsLoading] = useState(false);
+  const [dissectorUploading, setDissectorUploading] = useState(false);
+  const [dissectorError,   setDissectorError]   = useState("");
+  const dissectorFileRef = useRef(null);
+
+  const fetchDissectors = useCallback(async () => {
+    setDissectorsLoading(true);
+    try {
+      const data = await apiFetch("/api/settings/dissectors");
+      setDissectors(data || []);
+    } catch (e) {
+      setDissectorError(`Failed to load dissectors: ${e.message}`);
+    } finally {
+      setDissectorsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (open && tab === "dissectors") fetchDissectors();
+  }, [open, tab, fetchDissectors]);
+
+  const handleDissectorUpload = async (e) => {
+    const files = Array.from(e.target.files || []);
+    if (!files.length) return;
+    setDissectorUploading(true);
+    setDissectorError("");
+    try {
+      for (const file of files) {
+        const formData = new FormData();
+        formData.append("file", file);
+        const res = await fetch(`${API_BASE}/api/settings/dissectors`, {
+          method: "POST",
+          body: formData,
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err.error || res.statusText);
+        }
+      }
+      addToast(`${files.length} dissector${files.length !== 1 ? "s" : ""} uploaded.`, "success");
+      await fetchDissectors();
+    } catch (err) {
+      setDissectorError(`Upload failed: ${err.message}`);
+    } finally {
+      setDissectorUploading(false);
+      if (dissectorFileRef.current) dissectorFileRef.current.value = "";
+    }
+  };
+
+  const deleteDissector = async (name) => {
+    try {
+      await apiFetch(`/api/settings/dissectors/${encodeURIComponent(name)}`, { method: "DELETE" });
+      setDissectors(prev => prev.filter(d => d.name !== name));
+      addToast(`Dissector "${name}" removed.`, "success");
+    } catch (e) {
+      setDissectorError(`Delete failed: ${e.message}`);
+    }
+  };
+
+  const submitPasswordChange = async () => {
+    if (newPass.length < 6)   { setPwError("New password must be at least 6 characters."); shake(); return; }
+    if (newPass !== confPass) { setPwError("Passwords do not match.");                      shake(); return; }
+    try {
+      // FIX: auth.changePassword is now async (validates against backend).
+      const ok = await auth.changePassword(curPass, newPass);
+      if (!ok) { setPwError("Current password is incorrect."); shake(); return; }
+      setPwError(""); setCurPass(""); setNewPass(""); setConfPass("");
+      addToast("Admin password updated successfully.", "success");
+    } catch (e) {
+      setPwError(`Error: ${e.message}`);
+      shake();
+    }
   };
 
   const shake = () => { setPwShake(true); setTimeout(() => setPwShake(false), 420); };
@@ -959,6 +1247,7 @@ function SettingsModal({ open, onClose, isAdmin, onRequestLogin, auth, addToast,
         <div style={{ display: "flex", gap: 4, padding: "12px 20px 0", borderBottom: "1px solid var(--border)", flexShrink: 0 }}>
           <button style={tabStyle(tab === "display")} onClick={() => setTab("display")}>🖥 Display</button>
           <button style={tabStyle(tab === "security")} onClick={() => setTab("security")}>🔐 Security</button>
+          <button style={tabStyle(tab === "dissectors")} onClick={() => setTab("dissectors")}> 🌐 Network Capture</button>
         </div>
 
         {/* Body */}
@@ -1068,6 +1357,147 @@ function SettingsModal({ open, onClose, isAdmin, onRequestLogin, auth, addToast,
               )}
             </div>
           )}
+
+          {/* ── NETWORK CAPTURE / DISSECTORS TAB ── */}
+          {tab === "dissectors" && (
+            <div>
+              {/* Info card */}
+              <div style={card}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+                  <span style={{ fontSize: 22 }}>🌐</span>
+                  <div style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 14, color: "var(--text)" }}>Custom Dissectors</div>
+                </div>
+                <div style={{ fontFamily: "var(--font-mono)", fontSize: 12, color: "var(--muted)", lineHeight: 1.7, marginBottom: 0 }}>
+                  Upload Lua scripts (<code style={{ color: "var(--accent)" }}>.lua</code>) or compiled plugin libraries (<code style={{ color: "var(--accent)" }}>.so</code> / <code style={{ color: "var(--accent)" }}>.dll</code>).
+                  tshark loads them automatically when decoding packet details, enriching the protocol tree with your custom fields.
+                </div>
+              </div>
+
+              {/* Upload area */}
+              <div style={card}>
+                <div style={sectionLabel}>Upload dissector files</div>
+                <input
+                  ref={dissectorFileRef}
+                  type="file"
+                  accept=".lua,.so,.dll"
+                  multiple
+                  style={{ display: "none" }}
+                  onChange={handleDissectorUpload}
+                />
+                <div
+                  onClick={() => !dissectorUploading && dissectorFileRef.current?.click()}
+                  style={{
+                    border: `2px dashed ${dissectorUploading ? "rgba(34,211,238,0.5)" : "var(--border)"}`,
+                    borderRadius: 10,
+                    padding: "24px 20px",
+                    textAlign: "center",
+                    cursor: dissectorUploading ? "wait" : "pointer",
+                    background: dissectorUploading ? "rgba(34,211,238,0.04)" : "rgba(255,255,255,0.02)",
+                    transition: "all 0.18s",
+                  }}
+                  onMouseEnter={e => { if (!dissectorUploading) e.currentTarget.style.borderColor = "rgba(34,211,238,0.45)"; e.currentTarget.style.background = "rgba(34,211,238,0.04)"; }}
+                  onMouseLeave={e => { if (!dissectorUploading) e.currentTarget.style.borderColor = "var(--border)"; e.currentTarget.style.background = "rgba(255,255,255,0.02)"; }}
+                >
+                  {dissectorUploading ? (
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8, color: "#22d3ee", fontFamily: "var(--font-mono)", fontSize: 12 }}>
+                      <svg width="14" height="14" viewBox="0 0 14 14" style={{ animation: "spin 1s linear infinite" }}>
+                        <circle cx="7" cy="7" r="5.5" fill="none" stroke="#22d3ee" strokeWidth="2" strokeDasharray="17" strokeDashoffset="8" />
+                      </svg>
+                      Uploading…
+                    </div>
+                  ) : (
+                    <>
+                      <div style={{ fontSize: 24, marginBottom: 6 }}>📂</div>
+                      <div style={{ fontFamily: "var(--font-mono)", fontSize: 12, color: "var(--muted)" }}>
+                        Click to upload <span style={{ color: "#22d3ee" }}>.lua</span>, <span style={{ color: "#22d3ee" }}>.so</span>, or <span style={{ color: "#22d3ee" }}>.dll</span> files
+                      </div>
+                      <div style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--muted)", marginTop: 4, opacity: 0.6 }}>
+                        Multiple files supported
+                      </div>
+                    </>
+                  )}
+                </div>
+                {dissectorError && (
+                  <div style={{ marginTop: 10, fontFamily: "var(--font-mono)", fontSize: 11, color: "#f87171", background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.2)", borderRadius: 6, padding: "7px 12px" }}>
+                    ⚠ {dissectorError}
+                  </div>
+                )}
+              </div>
+
+              {/* Installed dissectors list */}
+              <div style={{ ...card, marginBottom: 0 }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+                  <div style={sectionLabel}>Installed dissectors ({dissectors.length})</div>
+                  <button
+                    onClick={fetchDissectors}
+                    disabled={dissectorsLoading}
+                    style={{ background: "none", border: "none", cursor: "pointer", color: "var(--muted)", fontSize: 13, padding: "2px 6px", opacity: dissectorsLoading ? 0.4 : 1 }}
+                    title="Refresh list"
+                  >↻</button>
+                </div>
+
+                {dissectorsLoading ? (
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, color: "var(--muted)", fontFamily: "var(--font-mono)", fontSize: 12, padding: "10px 0" }}>
+                    <svg width="12" height="12" viewBox="0 0 12 12" style={{ animation: "spin 1s linear infinite" }}>
+                      <circle cx="6" cy="6" r="4.5" fill="none" stroke="var(--accent)" strokeWidth="1.8" strokeDasharray="14" strokeDashoffset="7" />
+                    </svg>
+                    Loading…
+                  </div>
+                ) : dissectors.length === 0 ? (
+                  <div style={{
+                    padding: "18px",
+                    border: "1px dashed var(--border)",
+                    borderRadius: 8,
+                    textAlign: "center",
+                    color: "var(--muted)",
+                    fontFamily: "var(--font-mono)",
+                    fontSize: 11,
+                    opacity: 0.7,
+                  }}>
+                    No dissectors installed — upload a Lua script above.
+                  </div>
+                ) : (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                    {dissectors.map(d => (
+                      <div key={d.name} style={{
+                        display: "flex", alignItems: "center", gap: 10,
+                        padding: "8px 12px", borderRadius: 8,
+                        background: "rgba(255,255,255,0.03)", border: "1px solid var(--border)",
+                      }}>
+                        {/* Extension chip */}
+                        <span style={{
+                          flexShrink: 0,
+                          fontFamily: "var(--font-mono)", fontSize: 9, fontWeight: 700,
+                          background: d.extension === ".lua" ? "rgba(34,211,238,0.12)" : "rgba(167,139,250,0.12)",
+                          color: d.extension === ".lua" ? "#22d3ee" : "#a78bfa",
+                          border: `1px solid ${d.extension === ".lua" ? "rgba(34,211,238,0.3)" : "rgba(167,139,250,0.3)"}`,
+                          borderRadius: 4, padding: "1px 6px", textTransform: "uppercase",
+                        }}>
+                          {d.extension.replace(".", "")}
+                        </span>
+                        {/* Name */}
+                        <span style={{ flex: 1, fontFamily: "var(--font-mono)", fontSize: 12, color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          {d.name}
+                        </span>
+                        {/* Size */}
+                        <span style={{ flexShrink: 0, fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--muted)" }}>
+                          {d.size_bytes < 1024 ? `${d.size_bytes} B` : `${(d.size_bytes / 1024).toFixed(1)} kB`}
+                        </span>
+                        {/* Delete */}
+                        <button
+                          onClick={() => deleteDissector(d.name)}
+                          title={`Remove ${d.name}`}
+                          style={{ flexShrink: 0, background: "none", border: "none", color: "#f87171", cursor: "pointer", fontSize: 15, padding: "2px 4px", opacity: 0.7, lineHeight: 1 }}
+                          onMouseEnter={e => e.currentTarget.style.opacity = "1"}
+                          onMouseLeave={e => e.currentTarget.style.opacity = "0.7"}
+                        >×</button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </div>
@@ -1080,14 +1510,28 @@ function LoginModal({ open, onClose, onLogin }) {
   const [pass, setPass] = useState("");
   const [error, setError] = useState("");
   const [shaking, setShaking] = useState(false);
+  const [loading, setLoading] = useState(false);
 
-  const attempt = () => {
-    if (onLogin(user, pass)) {
-      setUser(""); setPass(""); setError(""); onClose();
-    } else {
-      setError("Invalid credentials");
+  // FIX: onLogin is now async (calls /api/auth/login).  Handle the Promise and
+  // surface network errors rather than silently showing "Invalid credentials".
+  const attempt = async () => {
+    if (loading) return;
+    setLoading(true);
+    try {
+      const ok = await onLogin(user, pass);
+      if (ok) {
+        setUser(""); setPass(""); setError(""); onClose();
+      } else {
+        setError("Invalid credentials");
+        setShaking(true);
+        setTimeout(() => setShaking(false), 500);
+      }
+    } catch (e) {
+      setError(`Login error: ${e.message}`);
       setShaking(true);
       setTimeout(() => setShaking(false), 500);
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -1186,8 +1630,8 @@ function LoginModal({ open, onClose, onLogin }) {
               ⚠ {error}
             </div>
           )}
-          <Btn variant="primary" onClick={attempt} style={{ width: "100%", justifyContent: "center", marginTop: 4 }}>
-            Sign In
+          <Btn variant="primary" onClick={attempt} disabled={loading} style={{ width: "100%", justifyContent: "center", marginTop: 4 }}>
+            {loading ? "Signing in…" : "Sign In"}
           </Btn>
           <Btn variant="ghost" onClick={onClose} style={{ width: "100%", justifyContent: "center" }}>
             Cancel
@@ -1745,7 +2189,36 @@ function DeviceCard({ device, selected, onSelect, onInfo, onAutoCollectionSave, 
         />
 
         {/* Info + Settings toggle buttons */}
-        <div style={{ position: "absolute", top: 10, right: 10, display: "flex", gap: 4 }}>
+        <div style={{ position: "absolute", top: 10, right: 10, display: "flex", alignItems: "center", gap: 4 }}>
+          {/* Pcap collection ongoing indicator — shown left of the info button
+              whenever this device is collecting AND has a packets_capture_config.
+              Rendered as an animated triangular dorsal fin (as seen breaking
+              the water's surface) evoking Wireshark. */}
+      {device.collecting && device.config?.packets_capture_config && (
+        <span
+          title="Packet capture in progress"
+          style={{
+            display: "inline-flex", alignItems: "center", justifyContent: "center",
+            width: 22, height: 20,
+            background: "rgba(34,211,238,0.10)", border: "1px solid rgba(34,211,238,0.32)",
+            borderRadius: 6,
+          }}
+        >
+      <svg width="16" height="16" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" style={{ flexShrink: 0 }}>
+        <defs>
+          <clipPath id="cable-clip"><rect x="0" y="0" width="24" height="24" /></clipPath>
+        </defs>
+        <g clipPath="url(#cable-clip)">
+          <path id="cable-path" d="M2,18 Q8,10 12,12 Q16,14 22,6" fill="none" stroke="#22d3ee" strokeWidth="1.4" opacity="0.5" />
+          <rect x="1" y="16" width="4" height="4" rx="0.6" fill="none" stroke="#22d3ee" strokeWidth="1.2" />
+          <rect x="19" y="4" width="4" height="4" rx="0.6" fill="none" stroke="#22d3ee" strokeWidth="1.2" />
+          <circle r="1.8" fill="#22d3ee">
+            <animateMotion dur="1.4s" repeatCount="indefinite" path="M2,18 Q8,10 12,12 Q16,14 22,6" />
+          </circle>
+        </g>
+      </svg>
+        </span>
+      )}
           <button
             onClick={onInfo}
             title="Device details"
@@ -1792,6 +2265,8 @@ function DeviceCard({ device, selected, onSelect, onInfo, onAutoCollectionSave, 
             </span>
           </div>
         )}
+
+        {/* Network capture indicator now lives solely next to the info button above. */}
       </div>
 
       {/* ── Auto-collection settings panel ── */}
@@ -1925,6 +2400,14 @@ function SnapshotsPagination({ page, totalPages, total, pageSize, onPage }) {
   );
 }
 
+// Strips a trailing ".123456"-style fractional-seconds suffix from a
+// "YYYY-MM-DD HH:MM:SS.ffffff"-style timestamp string so it displays
+// without decimal places. Non-string / already-plain values pass through.
+function trimFractionalSeconds(ts) {
+  if (typeof ts !== "string") return ts;
+  return ts.split(".")[0];
+}
+
 function SnapshotsTable({ snapshots, selected, onSelect, onView }) {
   if (snapshots.length === 0) {
     return (
@@ -1977,9 +2460,9 @@ function SnapshotsTable({ snapshots, selected, onSelect, onView }) {
               </td>
               <td style={{ padding: "10px 14px", color: "var(--text)" }}>{s.deviceName}</td>
               <td style={{ padding: "10px 14px" }}><Badge color="cyan">{s.logName}</Badge></td>
-              <td style={{ padding: "10px 14px", color: "var(--muted)" }}>{s.startTime}</td>
-              <td style={{ padding: "10px 14px", color: "var(--muted)" }}>{s.finishTime}</td>
-              <td style={{ padding: "10px 14px", color: "var(--text)" }}>{s.duration}s</td>
+              <td style={{ padding: "10px 14px", color: "var(--muted)" }}>{trimFractionalSeconds(s.startTime)}</td>
+              <td style={{ padding: "10px 14px", color: "var(--muted)" }}>{trimFractionalSeconds(s.finishTime)}</td>
+              <td style={{ padding: "10px 14px", color: "var(--text)" }}>{Math.round(Number(s.duration) || 0)}s</td>
               <td style={{ padding: "10px 14px", color: "var(--text)" }}>{s.sizeKb} kB</td>
               <td style={{ padding: "10px 14px" }}>
                 <code style={{ fontSize: 10, color: "var(--muted)", background: "rgba(255,255,255,0.05)", padding: "2px 6px", borderRadius: 4 }}>
@@ -2253,11 +2736,40 @@ requests.post(f"{BASE}/api/stop-logs-collection",
 // ── DEVICE DETAILS ────────────────────────────────────────────────────────────
 function DeviceDetails({ device, isAdmin, onRequestLogin }) {
   const [configVisible, setConfigVisible] = useState(false);
+  const [errors, setErrors] = useState(null);
+  const [errorsLoading, setErrorsLoading] = useState(false);
+  const [errorsLoadError, setErrorsLoadError] = useState(null);
+  const [errorsVisible, setErrorsVisible] = useState(false);
 
   const handleShowConfig = () => {
     if (!isAdmin) { onRequestLogin(); return; }
     setConfigVisible((v) => !v);
   };
+
+  const fetchErrors = async () => {
+    setErrorsLoading(true);
+    setErrorsLoadError(null);
+    try {
+      const url = `/api/devices/${encodeURIComponent(device.id)}/errors`;
+      const data = await apiFetch(url);
+      setErrors(data.errors || []);
+    } catch (e) {
+      // e.message is "Failed to fetch" for network errors, or the server's error string
+      setErrorsLoadError(e.message || "Failed to load error log");
+    } finally {
+      setErrorsLoading(false);
+    }
+  };
+
+  const handleToggleErrors = () => {
+    if (!errorsVisible) {
+      setErrorsVisible(true);
+      if (errors === null) fetchErrors();
+    } else {
+      setErrorsVisible(false);
+    }
+  };
+
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
@@ -2345,6 +2857,87 @@ function DeviceDetails({ device, isAdmin, onRequestLogin }) {
           <p style={{ color: "var(--muted)", fontFamily: "var(--font-mono)", fontSize: 12 }}>No configuration data available.</p>
         )}
       </div>
+
+      {/* Error Logs section */}
+      <div>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 10 }}>
+          <h4 style={{ fontFamily: "var(--font-display)", fontSize: 13, color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.08em", margin: 0 }}>
+            Error Logs
+          </h4>
+          {errors !== null && errors.length > 0 && (
+            <span style={{
+              background: "rgba(248,113,113,0.15)", color: "#f87171",
+              border: "1px solid rgba(248,113,113,0.3)", borderRadius: 10,
+              fontFamily: "var(--font-mono)", fontSize: 10, padding: "1px 8px", fontWeight: 700,
+            }}>
+              {errors.length}
+            </span>
+          )}
+          <Btn size="sm" variant="subtle" onClick={handleToggleErrors}>
+            {errorsVisible ? "Hide" : "Show"}
+          </Btn>
+          {errorsVisible && (
+            <Btn size="sm" variant="ghost" onClick={fetchErrors} disabled={errorsLoading}>
+              {errorsLoading ? "..." : "Refresh"}
+            </Btn>
+          )}
+        </div>
+
+        {errorsVisible && (
+          <div>
+            {errorsLoading && <Spinner />}
+
+            {!errorsLoading && errorsLoadError && (
+              <div style={{
+                background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.25)",
+                borderRadius: 8, padding: "14px 18px", fontFamily: "var(--font-mono)",
+                fontSize: 12, color: "#f87171",
+              }}>
+                Failed to load: {errorsLoadError}
+              </div>
+            )}
+
+            {!errorsLoading && !errorsLoadError && errors !== null && errors.length === 0 && (
+              <div style={{
+                background: "rgba(74,222,128,0.06)", border: "1px solid rgba(74,222,128,0.2)",
+                borderRadius: 8, padding: "14px 18px", fontFamily: "var(--font-mono)",
+                fontSize: 12, color: "#4ade80", display: "flex", alignItems: "center", gap: 10,
+              }}>
+                No errors recorded for this device.
+              </div>
+            )}
+
+            {!errorsLoading && !errorsLoadError && errors !== null && errors.length > 0 && (
+              <div style={{ overflowX: "auto", borderRadius: 8, border: "1px solid var(--border)", maxHeight: 380, overflowY: "auto" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: "var(--font-mono)", fontSize: 12 }}>
+                  <thead style={{ position: "sticky", top: 0, zIndex: 1 }}>
+                    <tr style={{ background: "rgba(248,113,113,0.10)", borderBottom: "1px solid var(--border)" }}>
+                      <th style={{ padding: "9px 14px", textAlign: "left", color: "var(--muted)", fontWeight: 600, fontSize: 10, textTransform: "uppercase", letterSpacing: "0.07em", whiteSpace: "nowrap", width: 210 }}>
+                        Time
+                      </th>
+                      <th style={{ padding: "9px 14px", textAlign: "left", color: "var(--muted)", fontWeight: 600, fontSize: 10, textTransform: "uppercase", letterSpacing: "0.07em" }}>
+                        Error
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {errors.map((err, i) => (
+                      <tr key={i} style={{ borderBottom: i < errors.length - 1 ? "1px solid rgba(255,255,255,0.04)" : "none", background: i % 2 === 0 ? "transparent" : "rgba(255,255,255,0.015)" }}>
+                        <td style={{ padding: "8px 14px", color: "#6b7280", whiteSpace: "nowrap", verticalAlign: "top" }}>
+                          {err.time}
+                        </td>
+                        <td style={{ padding: "8px 14px", color: "#fca5a5", wordBreak: "break-all" }}>
+                          {err.error_info}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -2362,6 +2955,7 @@ const EMPTY_LOG_ENTRY = () => ({
   custom_shell_prompt: "",
   log_type: "text",
   data_unit: "",
+  description: "",
 });
 
 const FIELD_LABEL = {
@@ -2761,6 +3355,27 @@ function LogEntryEditor({ entry, conn, index, onChange, onRemove, onDuplicate })
             )}
           </div>
 
+          {/* ── Description ── */}
+          <div style={{ marginBottom: 14 }}>
+            <div style={FIELD_LABEL}>
+              Description *
+            </div>
+            <textarea
+              value={entry.description || ""}
+              onChange={e => set("description", e.target.value)}
+              placeholder="Describe what this log captures and how it is used…"
+              rows={2}
+              style={{
+                ...inputStyle,
+                resize: "vertical",
+                minHeight: 56,
+                fontFamily: "var(--font-mono)",
+                fontSize: 12,
+                lineHeight: 1.5,
+              }}
+            />
+          </div>
+
           {/* ── Custom Shell Prompt (collapsed inline) ── */}
           <div style={{ marginBottom: 14, display: "flex", alignItems: "center", gap: 10 }}>
             <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--muted)", flexShrink: 0 }}>shell prompt</span>
@@ -2958,6 +3573,16 @@ function ConfigBuilderModal({ open, onClose, onSave }) {
   const [connStatus, setConnStatus] = useState(null); // null | "testing" | {success, message}
   const [saving, setSaving] = useState(false);
 
+  const EMPTY_PACKET_CAPTURE = () => ({
+    enabled: false,
+    capture_start_cmd: "tcpdump -i any",
+    capture_stop_cmd: "pkill -INT -f 'tcpdump -i any'",
+    capture_description: "Network packet capture",
+    max_pcap_size_mb: "",
+  });
+  const [packetCapture, setPacketCapture] = useState(EMPTY_PACKET_CAPTURE);
+  const setPC = (k, v) => setPacketCapture(prev => ({ ...prev, [k]: v }));
+
   const setC = (k, v) => setConn(prev => ({ ...prev, [k]: v }));
 
   const testConnection = async () => {
@@ -3036,6 +3661,20 @@ function ConfigBuilderModal({ open, onClose, onSave }) {
       config.gateway = nested;
     }
 
+    if (packetCapture.enabled) {
+      const pcc = {
+        capture_start_cmd: packetCapture.capture_start_cmd,
+        capture_stop_cmd: packetCapture.capture_stop_cmd,
+        capture_description: packetCapture.capture_description || "Network packet capture",
+      };
+      // Omit when blank so the watchdog treats it as "unlimited" rather
+      // than a literal 0 MB cap.
+      if (packetCapture.max_pcap_size_mb !== "" && packetCapture.max_pcap_size_mb != null) {
+        pcc.max_pcap_size_mb = Number(packetCapture.max_pcap_size_mb);
+      }
+      config.packets_capture_config = pcc;
+    }
+
     return config;
   };
 
@@ -3050,6 +3689,7 @@ function ConfigBuilderModal({ open, onClose, onSave }) {
       setStep(1);
       setConn(EMPTY_CONN());
       setEntries([EMPTY_LOG_ENTRY()]);
+      setPacketCapture(EMPTY_PACKET_CAPTURE());
       setConnStatus(null);
     } finally {
       setSaving(false);
@@ -3060,15 +3700,20 @@ function ConfigBuilderModal({ open, onClose, onSave }) {
     const config = buildConfig();
     const blob = new Blob([JSON.stringify(config, null, 2)], { type: "application/json" });
     const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
+    const cfgBlobUrl = URL.createObjectURL(blob);
+    a.href = cfgBlobUrl;
     a.download = `${conn.device_name || "device"}_config.json`;
     a.click();
+    // FIX: revoke to release blob memory.
+    URL.revokeObjectURL(cfgBlobUrl);
   };
 
   if (!open) return null;
 
   const step1Valid = conn.ip_address && conn.user && conn.port;
-  const step2Valid = entries.length > 0 && entries.every(e => e.log_name && e.log_file_cmd);
+  const packetCaptureValid = !packetCapture.enabled ||
+    (packetCapture.capture_start_cmd.trim() && packetCapture.capture_stop_cmd.trim());
+  const step2Valid = entries.length > 0 && entries.every(e => e.log_name && e.log_file_cmd) && packetCaptureValid;
 
   const stepTabStyle = (s) => ({
     display: "flex", alignItems: "center", gap: 9, padding: "12px 24px",
@@ -3415,6 +4060,83 @@ function ConfigBuilderModal({ open, onClose, onSave }) {
                   No entries yet. Click "+ Add Entry" to get started.
                 </div>
               )}
+
+              {/* ── Network Packet Capture (optional) ── */}
+              <div style={CARD}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: packetCapture.enabled ? 14 : 0 }}>
+                  <div>
+                    <div style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 13, color: "var(--text)" }}>Network Packet Capture</div>
+                    <div style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--muted)", marginTop: 3 }}>
+                      Optional. Captures raw traffic via tcpdump/tshark over SSH alongside the log entries above.
+                    </div>
+                  </div>
+                  <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", flexShrink: 0 }}>
+                    <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--muted)" }}>Enabled</span>
+                    <input
+                      type="checkbox"
+                      checked={packetCapture.enabled}
+                      onChange={e => setPC("enabled", e.target.checked)}
+                      style={{ accentColor: "var(--accent)", width: 15, height: 15 }}
+                    />
+                  </label>
+                </div>
+
+                {packetCapture.enabled && (
+                  <>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
+                      <div>
+                        <div style={FIELD_LABEL}>Capture Start Command</div>
+                        <input
+                          value={packetCapture.capture_start_cmd}
+                          onChange={e => setPC("capture_start_cmd", e.target.value)}
+                          placeholder="tcpdump -i any"
+                          style={{ ...inputStyle, fontFamily: "var(--font-mono)" }}
+                        />
+                        <div style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--muted)", marginTop: 4 }}>
+                          Remote command that writes pcap data to stdout. The capture pipeline appends the output redirection itself — don't add it here.
+                        </div>
+                      </div>
+                      <div>
+                        <div style={FIELD_LABEL}>Capture Stop Command</div>
+                        <input
+                          value={packetCapture.capture_stop_cmd}
+                          onChange={e => setPC("capture_stop_cmd", e.target.value)}
+                          placeholder="pkill -INT -f 'tcpdump -i any'"
+                          style={{ ...inputStyle, fontFamily: "var(--font-mono)" }}
+                        />
+                        <div style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--muted)", marginTop: 4 }}>
+                          Remote command that signals the capture process to stop and flush cleanly.
+                        </div>
+                      </div>
+                    </div>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 220px", gap: 12 }}>
+                      <div>
+                        <div style={FIELD_LABEL}>Description</div>
+                        <input
+                          value={packetCapture.capture_description}
+                          onChange={e => setPC("capture_description", e.target.value)}
+                          placeholder="Network packet capture"
+                          style={inputStyle}
+                        />
+                      </div>
+                      <div>
+                        <div style={FIELD_LABEL}>Max PCAP Size (MB)</div>
+                        <input
+                          type="number"
+                          min="1"
+                          value={packetCapture.max_pcap_size_mb}
+                          onChange={e => setPC("max_pcap_size_mb", e.target.value)}
+                          placeholder="Unlimited"
+                          style={inputStyle}
+                        />
+                        <div style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--muted)", marginTop: 4 }}>
+                          Capture stops automatically once reached. Blank = unlimited.
+                        </div>
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
             </div>
           )}
         </div>
@@ -3793,6 +4515,135 @@ function SessionInfo({ sessionId, textUrl, chartUrl, partial = false }) {
   );
 }
 
+// ── LOG LOAD PROGRESS BAR ─────────────────────────────────────────────────────
+const LOG_LOAD_MESSAGES = [
+  "Fetching log snapshots…",
+  "Reading log files…",
+  "Assembling rows…",
+  "Sorting by timestamp…",
+  "Almost ready…",
+];
+
+/**
+ * Shown inside the log modal while snapshot content is being fetched.
+ * Mirrors the CollectionLoadingOverlay style exactly: concentric spinning rings,
+ * determinate/indeterminate progress bar, cycling status messages, bouncing dots.
+ */
+function LogLoadProgressBar({ done, total }) {
+  const [msgIdx, setMsgIdx] = useState(0);
+
+  useEffect(() => {
+    const id = setInterval(() => setMsgIdx((i) => (i + 1) % LOG_LOAD_MESSAGES.length), 2200);
+    return () => clearInterval(id);
+  }, []);
+
+  const pct = total > 0 ? Math.min(100, Math.round((done / total) * 100)) : null;
+
+  return (
+    <div style={{
+      display: "flex",
+      flexDirection: "column",
+      alignItems: "center",
+      justifyContent: "center",
+      gap: 24,
+      flex: 1,
+      padding: "48px 32px",
+    }}>
+      <style>{`
+        @keyframes lo-spin   { from{transform:rotate(0deg)}   to{transform:rotate(360deg)} }
+        @keyframes lo-rspin  { from{transform:rotate(0deg)}   to{transform:rotate(-360deg)} }
+        @keyframes lo-pulse  { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:0.55;transform:scale(1.18)} }
+        @keyframes lo-fadein { from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:translateY(0)} }
+        @keyframes lo-dot    { 0%,80%,100%{opacity:0.15;transform:scale(0.8)} 40%{opacity:1;transform:scale(1)} }
+        @keyframes lo-shimmer { 0%{transform:translateX(-100%)} 100%{transform:translateX(200%)} }
+        .lo-dot:nth-child(1){animation-delay:0s}
+        .lo-dot:nth-child(2){animation-delay:0.2s}
+        .lo-dot:nth-child(3){animation-delay:0.4s}
+      `}</style>
+
+      {/* Concentric rings + logo */}
+      <div style={{ position: "relative", width: 96, height: 96 }}>
+        <svg width="96" height="96" style={{ position: "absolute", inset: 0, animation: "lo-spin 3s linear infinite" }}>
+          <circle cx="48" cy="48" r="44" fill="none" stroke="rgba(129,140,248,0.18)" strokeWidth="2" strokeDasharray="40 8 20 8" />
+        </svg>
+        <svg width="96" height="96" style={{ position: "absolute", inset: 0, animation: "lo-rspin 2s linear infinite" }}>
+          <circle cx="48" cy="48" r="34" fill="none" stroke="rgba(129,140,248,0.3)" strokeWidth="2.5" strokeDasharray="30 6" />
+        </svg>
+        <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", animation: "lo-pulse 1.6s ease-in-out infinite", filter: "drop-shadow(0 0 12px rgba(129,140,248,0.45))" }}>
+          <svg width="36" height="36" viewBox="0 0 36 36">
+            <circle cx="18" cy="18" r="17" fill="none" stroke="#818cf8" strokeWidth="1.5" />
+            <circle cx="18" cy="18" r="6" fill="#818cf8" />
+            {[0, 45, 90, 135, 180, 225, 270, 315].map((a, i) => {
+              const rad = (a * Math.PI) / 180;
+              return <line key={i} x1={18 + 7 * Math.cos(rad)} y1={18 + 7 * Math.sin(rad)} x2={18 + 15 * Math.cos(rad)} y2={18 + 15 * Math.sin(rad)} stroke="#818cf8" strokeWidth="1.8" strokeLinecap="round" />;
+            })}
+          </svg>
+        </div>
+      </div>
+
+      {/* Title */}
+      <div style={{ fontFamily: "var(--font-display)", fontWeight: 800, fontSize: 17, color: "var(--text)", letterSpacing: "-0.01em" }}>
+        Loading Logs
+      </div>
+
+      {/* Progress bar */}
+      <div style={{ width: 320, display: "flex", flexDirection: "column", gap: 8 }}>
+        <div style={{ width: "100%", height: 6, borderRadius: 99, background: "rgba(255,255,255,0.07)", overflow: "hidden", position: "relative" }}>
+          {pct !== null ? (
+            <div style={{
+              height: "100%",
+              width: `${pct}%`,
+              borderRadius: 99,
+              background: pct === 100
+                ? "linear-gradient(90deg, #4ade80, #34d399)"
+                : "linear-gradient(90deg, #818cf8, #a78bfa)",
+              transition: "width 0.6s cubic-bezier(0.4,0,0.2,1)",
+              boxShadow: pct === 100
+                ? "0 0 8px rgba(74,222,128,0.5)"
+                : "0 0 8px rgba(129,140,248,0.45)",
+            }} />
+          ) : (
+            <div style={{
+              position: "absolute", inset: 0,
+              background: "linear-gradient(90deg, transparent 0%, rgba(129,140,248,0.5) 50%, transparent 100%)",
+              animation: "lo-shimmer 1.6s ease-in-out infinite",
+            }} />
+          )}
+        </div>
+
+        {/* Counts row */}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--muted)" }}>
+            {done > 0 ? (
+              <><span style={{ color: pct === 100 ? "#4ade80" : "var(--accent)", fontWeight: 600 }}>{done}</span>
+              {total > 0 ? ` / ${total} snapshot${total !== 1 ? "s" : ""} loaded` : ` snapshot${done !== 1 ? "s" : ""} loaded`}</>
+            ) : (
+              "Waiting for response…"
+            )}
+          </span>
+          {pct !== null && (
+            <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: pct === 100 ? "#4ade80" : "var(--accent)", fontWeight: 600 }}>
+              {pct}%
+            </span>
+          )}
+        </div>
+      </div>
+
+      {/* Cycling status message */}
+      <div key={msgIdx} style={{ fontFamily: "var(--font-mono)", fontSize: 12, color: "var(--accent)", animation: "lo-fadein 0.35s ease", minHeight: 18, textAlign: "center" }}>
+        {LOG_LOAD_MESSAGES[msgIdx]}
+      </div>
+
+      {/* Bouncing dots */}
+      <div style={{ display: "flex", gap: 7 }}>
+        {[0, 1, 2].map(i => (
+          <div key={i} className="lo-dot" style={{ width: 7, height: 7, borderRadius: "50%", background: "var(--accent)", animation: "lo-dot 1.2s ease-in-out infinite" }} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // ── MAIN APP ──────────────────────────────────────────────────────────────────
 const PULSE_KF = `
   @keyframes pulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:0.4;transform:scale(1.6)} }
@@ -3804,6 +4655,7 @@ export default function App() {
 
   const [devices,         setDevices]         = useState([]);
   const [devicesLoading,  setDevicesLoading]  = useState(true);
+  const [systemStats,     setSystemStats]     = useState(null);
   const [selectedDevices, setSelectedDevices] = useState([]);
   // Device groups: { id, name, deviceIds[] }
   const [groups, setGroups] = useState(() => {
@@ -3838,7 +4690,15 @@ export default function App() {
   const [logRows,         setLogRows]         = useState([]);
   const [chartGroups,     setChartGroups]     = useState([]); // [{ snapInfo, rows }]
   const [logRowsLoading,  setLogRowsLoading]  = useState(false);
+  const [viewingSnaps,    setViewingSnaps]    = useState([]); // snapshots currently open in the log modal
+  const [logLoadProgress, setLogLoadProgress] = useState({ done: 0, total: 0 });
   const [colorMode,       setColorMode]       = useState(false);
+
+  // packet_capture "view packet details" modal
+  const [packetModal,        setPacketModal]        = useState(false);
+  const [packetModalData,    setPacketModalData]    = useState(null); // { packet_number, details }
+  const [packetModalLoading, setPacketModalLoading] = useState(false);
+  const [packetModalError,   setPacketModalError]   = useState("");
   const [deviceModal,     setDeviceModal]     = useState(null);
   const [sessionModal,    setSessionModal]    = useState(null);
   const [apiModal,        setApiModal]        = useState(false);
@@ -3871,6 +4731,15 @@ export default function App() {
       setDevicesLoading(false);
     }
   }, [addToast]);
+
+  const fetchSystemStats = useCallback(async () => {
+    try {
+      setSystemStats(await apiFetch("/api/system/stats"));
+    } catch {
+      // Non-critical: leave the last known stats (or null) in place rather
+      // than spamming a toast every poll interval.
+    }
+  }, []);
 
   const fetchSnapshots = useCallback(async (param, value, chart, page = 1, pSize) => {
     setSnapsLoading(true);
@@ -3983,18 +4852,24 @@ export default function App() {
 
   useEffect(() => { fetchDevices(); }, [fetchDevices]);
   useEffect(() => { fetchSnapshots("", "", false); }, [fetchSnapshots]);
+  useEffect(() => { fetchSystemStats(); }, [fetchSystemStats]);
 
   useEffect(() => {
     const id = setInterval(fetchDevices, 10000);
     return () => clearInterval(id);
   }, [fetchDevices]);
 
-  const prevIsChart = useRef(isChart);
   useEffect(() => {
-    if (prevIsChart.current === isChart) return;
-    prevIsChart.current = isChart;
+    const id = setInterval(fetchSystemStats, 5000);
+    return () => clearInterval(id);
+  }, [fetchSystemStats]);
+
+  // FIX: this effect previously had no dependency array, causing it to run
+  // after every render and rely on a manual ref comparison to detect changes.
+  // Using [isChart] as the dependency array is correct and idiomatic.
+  useEffect(() => {
     fetchSnapshots(filterActive ? searchParam : "", filterActive ? searchValue : "", isChart);
-  });
+  }, [isChart]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     const p = new URLSearchParams(window.location.search);
@@ -4211,14 +5086,18 @@ export default function App() {
     setLogRowsLoading(true);
     setLogRows([]);
     setChartGroups([]);
+    setViewingSnaps(snapsToView);
+    setLogLoadProgress({ done: 0, total: snapsToView.length });
 
     try {
+      let done = 0;
       const results = await Promise.all(
         snapsToView.map((s) =>
-          apiFetch(`/api/snapshots/${s.id}/content?log_type=${isChart ? "chart" : "text"}`).then((r) => ({
-            snapInfo: s,
-            rows: r.rows,
-          }))
+          apiFetch(`/api/snapshots/${s.id}/content?log_type=${isChart ? "chart" : "text"}`).then((r) => {
+            done += 1;
+            setLogLoadProgress({ done, total: snapsToView.length });
+            return { snapInfo: s, rows: r.rows };
+          })
         )
       );
 
@@ -4226,7 +5105,14 @@ export default function App() {
         setChartGroups(results);
       } else {
         const merged = results.flatMap((r) =>
-          r.rows.map((row) => ({ ...row, device_name: r.snapInfo.deviceName ?? r.snapInfo.device_name ?? "" }))
+          r.rows.map((row) => ({
+            ...row,
+            device_name: r.snapInfo.deviceName ?? r.snapInfo.device_name ?? "",
+            // Needed so packet_capture rows can call back to
+            // /api/snapshots/<snapshotId>/packets/<n> for that specific
+            // snapshot's pcap file.
+            snapshotId: r.snapInfo.id,
+          }))
         );
         // Sort all text entries by timestamp ascending
         merged.sort((a, b) => {
@@ -4241,6 +5127,34 @@ export default function App() {
       setLogModal(false);
     } finally {
       setLogRowsLoading(false);
+    }
+  };
+
+  /**
+   * Opens the "packet details" modal for a single packet_capture row.
+   * row.content's leading field (before the first " | ") is the tshark
+   * frame number produced by PacketInfo.to_content_str(); row.snapshotId
+   * identifies which snapshot's pcap file to decode it from.
+   */
+  const openPacketDetails = async (row) => {
+    const packetNumber = parsePacketNumber(row?.content);
+    if (!row?.snapshotId || packetNumber === null) {
+      addToast("Couldn't determine which packet to look up.", "error");
+      return;
+    }
+
+    setPacketModal(true);
+    setPacketModalLoading(true);
+    setPacketModalError("");
+    setPacketModalData(null);
+
+    try {
+      const res = await apiFetch(`/api/snapshots/${row.snapshotId}/packets/${packetNumber}`);
+      setPacketModalData(res);
+    } catch (e) {
+      setPacketModalError(e.message || "Failed to load packet details.");
+    } finally {
+      setPacketModalLoading(false);
     }
   };
 
@@ -4349,9 +5263,12 @@ ${chartSections}
 </html>`;
         const blob = new Blob([html], { type: "text/html" });
         const a = document.createElement("a");
-        a.href = URL.createObjectURL(blob);
+        const chartBlobUrl = URL.createObjectURL(blob);
+        a.href = chartBlobUrl;
         a.download = "charts.html";
         a.click();
+        // FIX: revoke to release blob memory.
+        URL.revokeObjectURL(chartBlobUrl);
         addToast(`${chartGroups.length} chart(s) exported as HTML.`, "success");
       }
       return;
@@ -4447,10 +5364,15 @@ ${rows}
       filename = "logs.html";
     }
 
+    const blobUrl = URL.createObjectURL(blob);
     const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
+    a.href = blobUrl;
     a.download = filename;
     a.click();
+    // FIX: revoke the object URL immediately after triggering the download so
+    // the browser can release the underlying memory.  Previously the URL was
+    // never revoked, causing a blob memory leak on every export.
+    URL.revokeObjectURL(blobUrl);
     addToast(`Logs exported as ${format === "html-color" ? "HTML" : format.toUpperCase()}.`, "success");
   };
 
@@ -4551,9 +5473,12 @@ ${chartSections}
 </html>`;
           const blob = new Blob([html], { type: "text/html" });
           const a = document.createElement("a");
-          a.href = URL.createObjectURL(blob);
+          const selChartBlobUrl = URL.createObjectURL(blob);
+          a.href = selChartBlobUrl;
           a.download = "charts.html";
           a.click();
+          // FIX: revoke to release blob memory.
+          URL.revokeObjectURL(selChartBlobUrl);
           addToast(`${results.length} chart(s) exported as HTML.`, "success");
         }
         return;
@@ -4643,10 +5568,13 @@ ${rowsHtml}
         filename = "logs.html";
       }
 
+      const blobUrl2 = URL.createObjectURL(blob);
       const a = document.createElement("a");
-      a.href = URL.createObjectURL(blob);
+      a.href = blobUrl2;
       a.download = filename;
       a.click();
+      // FIX: revoke object URL to release blob memory.
+      URL.revokeObjectURL(blobUrl2);
       addToast(`${merged.length} log rows exported as ${format === "html-color" ? "HTML" : format.toUpperCase()}.`, "success");
     } catch (e) {
       addToast(`Download failed: ${e.message}`);
@@ -4655,10 +5583,37 @@ ${rowsHtml}
     }
   };
 
+  // Downloads the untouched raw .pcap file for a "network capture" snapshot
+  // (as opposed to downloadLogs, which exports the *decoded* packet rows
+  // shown in the log content view).
+  const downloadRawPcap = async (snap) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/snapshots/${snap.id}/pcap`);
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || res.statusText);
+      }
+      const blob = await res.blob();
+      const a = document.createElement("a");
+      const blobUrl = URL.createObjectURL(blob);
+      a.href = blobUrl;
+      a.download = `${snap.deviceName}_${snap.sessionId}.pcap`.replace(/\s+/g, "_");
+      a.click();
+      URL.revokeObjectURL(blobUrl);
+      addToast("Raw pcap downloaded.", "success");
+    } catch (e) {
+      addToast(`PCAP download failed: ${e.message}`);
+    }
+  };
+
   // Modal title with chart count info
   const logModalTitle = isChart && chartGroups.length > 0
     ? `Chart Data — ${chartGroups.length} snapshot${chartGroups.length > 1 ? "s" : ""}`
     : "Logs Content";
+
+  // Snapshots open in the log modal that are network captures — used to
+  // show a "Download Raw PCAP" button per capture in the footer.
+  const networkCaptureSnaps = viewingSnaps.filter((s) => s.logName === "network capture");
 
   // ── Inject SVG favicon matching the header logo color ──────────────────────
   useEffect(() => {
@@ -4752,9 +5707,21 @@ ${rowsHtml}
           <div style={{ flex: 1 }} />
 
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 8, marginRight: 12 }}>
-              <span style={{ width: 8, height: 8, borderRadius: "50%", background: "#4ade80", boxShadow: "0 0 8px #4ade80", animation: "pulse 2s infinite" }} />
-              <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--muted)" }}>LIVE</span>
+            <div
+              title={systemStats ? `Backend host — RAM: ${systemStats.ramUsedGb} / ${systemStats.ramTotalGb} GB · Disk: ${systemStats.diskUsedGb} / ${systemStats.diskTotalGb} GB` : "Loading host stats…"}
+              style={{ display: "flex", alignItems: "center", gap: 10, marginRight: 12, fontFamily: "var(--font-mono)", fontSize: 15, color: "var(--muted)" }}
+            >
+              {systemStats ? (
+                <>
+                  <span>CPU {systemStats.cpuPercent.toFixed(0)}%</span>
+                  <span style={{ opacity: 0.4 }}>·</span>
+                  <span>RAM {systemStats.ramPercent.toFixed(0)}%</span>
+                  <span style={{ opacity: 0.4 }}>·</span>
+                  <span>DISK {systemStats.diskPercent.toFixed(0)}%</span>
+                </>
+              ) : (
+                <span>…</span>
+              )}
             </div>
             {/* Auth controls */}
             {auth.isAdmin ? (
@@ -5080,13 +6047,18 @@ ${rowsHtml}
         footer={
           <>
             {!isChart && <Toggle checked={colorMode} onChange={setColorMode} labelLeft="Raw" labelRight="Color mode" />}
+            {networkCaptureSnaps.map((s) => (
+              <Btn key={s.id} size="sm" variant="subtle" onClick={() => downloadRawPcap(s)}>
+                ⬇ Raw PCAP{networkCaptureSnaps.length > 1 ? `: ${s.deviceName}` : ""}
+              </Btn>
+            ))}
             <DownloadMenu onDownload={downloadLogs} isChart={isChart} />
             <Btn variant="ghost" onClick={() => setLogModal(false)}>Close</Btn>
           </>
         }
       >
         {logRowsLoading ? (
-          <Spinner />
+          <LogLoadProgressBar done={logLoadProgress.done} total={logLoadProgress.total} />
         ) : (
           <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
             <LogContentView
@@ -5094,8 +6066,30 @@ ${rowsHtml}
               isChart={isChart}
               colorMode={colorMode}
               chartGroups={chartGroups}
+              onPacketClick={openPacketDetails}
             />
           </div>
+        )}
+      </Modal>
+
+      {/* Packet details modal — opened from the 🔎 glyph next to packet_capture rows */}
+      <Modal
+        open={packetModal}
+        onClose={() => setPacketModal(false)}
+        title={packetModalData ? `Packet #${packetModalData.packet_number}` : "Packet Details"}
+        size="lg"
+        footer={<Btn variant="ghost" onClick={() => setPacketModal(false)}>Close</Btn>}
+      >
+        {packetModalLoading ? (
+          <Spinner />
+        ) : packetModalError ? (
+          <p style={{ color: "#f87171", fontFamily: "var(--font-mono)", fontSize: 13 }}>
+            ⚠ {packetModalError}
+          </p>
+        ) : packetModalData?.details && Object.keys(packetModalData.details).length > 0 ? (
+          <PacketFieldTree data={packetModalData.details} />
+        ) : (
+          <p style={{ color: "var(--muted)" }}>No packet detail available.</p>
         )}
       </Modal>
 

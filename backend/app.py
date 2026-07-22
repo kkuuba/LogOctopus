@@ -9,22 +9,27 @@ import signal
 import uuid
 from pathlib import Path
 
-from flask import Flask, jsonify, request
+import psutil
+from flask import Flask, jsonify, request, send_file
 from flask_cors import CORS
 from paramiko_expect import SSHClientInteraction
 
 from backend.models.device import Device
 from backend.models.device_config import DeviceConfig
-from backend.utils.config_helper import ConfigurationHelper
+from backend.utils.log_snapshots_helper import LogSnapshotsHelper
 from backend.utils.device_config_loader import DeviceConfigLoader
+from backend.utils.pcap_decoder import DissectorRegistry, PcapDecoder
+from backend.utils.fabric_connection import build_nested_connection as _build_nested_connection
 
 
-SETTINGS_FILE = Path("settings.json")
-FRONTEND_BASE = os.getenv("FRONTEND_BASE", "http://localhost:8100")
-
+SETTINGS_FILE   = Path("settings.json")
+FRONTEND_BASE   = os.getenv("FRONTEND_BASE", "http://localhost:8100")
+PROJECT_ROOT    = Path(__file__).resolve().parent.parent
+DISSECTORS_DIR  = PROJECT_ROOT / "data" / "dissectors"
 
 app = Flask(__name__)
-CORS(app)  # allow the React dev-server / built bundle to call the API
+CORS(app)  
+dissector_registry = DissectorRegistry(DISSECTORS_DIR)
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -40,6 +45,9 @@ def get_current_devices() -> list[Device]:
 
 def get_target_device(device_id: str) -> Device | None:
     """Return the 'Device' whose config ID matches device_id.
+
+    Calls get_current_devices() once and searches the result, avoiding a
+    second filesystem scan inside a single request.
 
     Args:
         device_id (str): The device config ID to look up.
@@ -151,6 +159,57 @@ def _save_settings(settings: dict) -> None:
     """
     SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
     SETTINGS_FILE.write_text(json.dumps(settings, indent=2))
+
+
+# ── system ────────────────────────────────────────────────────────────────────
+
+@app.get("/api/system/stats")
+def system_stats():
+    """Return current CPU, RAM and storage usage for the backend host.
+
+    GET '/api/system/stats'
+
+    Returns:
+        200 OK:
+            JSON object containing:
+
+            - cpuPercent (float) - Current CPU utilisation, 0-100.
+            - ramPercent (float) - Current RAM utilisation, 0-100.
+            - ramUsedGb (float) - RAM currently in use, in GB.
+            - ramTotalGb (float) - Total installed RAM, in GB.
+            - diskPercent (float) - Utilisation of the filesystem hosting the
+              app, 0-100.
+            - diskUsedGb (float) - Disk space currently in use, in GB.
+            - diskTotalGb (float) - Total disk capacity, in GB.
+
+            Example::
+
+                {
+                    "cpuPercent": 12.5,
+                    "ramPercent": 43.2,
+                    "ramUsedGb": 6.9,
+                    "ramTotalGb": 16.0,
+                    "diskPercent": 58.1,
+                    "diskUsedGb": 232.4,
+                    "diskTotalGb": 400.0
+                }
+    """
+    # interval=0.1 blocks briefly to get a real (non-zero) reading instead of
+    # the meaningless 0.0 psutil returns on the very first call in a process.
+    cpu_percent = psutil.cpu_percent(interval=0.1)
+    mem = psutil.virtual_memory()
+    disk = psutil.disk_usage(str(PROJECT_ROOT))
+
+    gb = 1024 ** 3
+    return jsonify({
+        "cpuPercent":  cpu_percent,
+        "ramPercent":  mem.percent,
+        "ramUsedGb":   round(mem.used / gb, 1),
+        "ramTotalGb":  round(mem.total / gb, 1),
+        "diskPercent": disk.percent,
+        "diskUsedGb":  round(disk.used / gb, 1),
+        "diskTotalGb": round(disk.total / gb, 1),
+    })
 
 
 # ── devices ───────────────────────────────────────────────────────────────────
@@ -294,6 +353,64 @@ def get_device(device_id: str):
     return jsonify(device_to_dict(device))
 
 
+@app.get("/api/devices/<device_id>/errors")
+def get_device_errors(device_id: str):
+    """Return the error log for a single device.
+
+    Reads the ``errors.feather`` file written by the device watchdog whenever
+    a command execution fails or an SSH exception is recorded.
+
+    GET '/api/devices/<device_id>/errors'
+
+    Path parameters:
+        - device_id (str) - The config ID of the device.
+
+    Returns:
+        200 OK:
+            JSON object with an ``errors`` list.  Each entry contains:
+
+            - time (str) - ISO-formatted timestamp of the error.
+            - error_info (str) - Human-readable error description.
+
+            Example::
+
+                {
+                    "errors": [
+                        {
+                            "time": "2024-01-01 10:03:12.456789",
+                            "error_info": "cmd 'journalctl -b -n 200 --no-pager' failed with -> timed out"
+                        }
+                    ]
+                }
+
+        404 Not Found:
+            '{ "error": "not_found" }' - No device with the given ID exists.
+    """
+    device = get_target_device(device_id)
+    if not device:
+        return _bad("not_found", 404)
+
+    errors_path = Path("data") / device_id / "errors.feather"
+    if not errors_path.exists():
+        return jsonify({"errors": []})
+
+    try:
+        import pandas as pd  # lazy import — pandas is a heavy dep; keep it out of module scope
+        df = pd.read_feather(str(errors_path))
+        # Ensure consistent column presence even if the file is empty
+        if df.empty or "time" not in df.columns:
+            return jsonify({"errors": []})
+        rows = df[["time", "error_info"]].copy()
+        rows["time"] = rows["time"].astype(str)
+        # Most-recent errors first
+        errors = rows.iloc[::-1].to_dict(orient="records")
+        return jsonify({"errors": errors})
+    except ImportError:
+        return _bad("pandas is not installed on the server", 500)
+    except Exception as exc:
+        return _bad(f"failed to read error log: {exc}", 500)
+
+
 # ── log snapshots ─────────────────────────────────────────────────────────────
 
 @app.get("/api/snapshots")
@@ -370,11 +487,11 @@ def list_snapshots():
     devices = get_current_devices()
 
     if search_param and search_value:
-        snapshots = ConfigurationHelper.get_filtered_log_snapshots_list(
+        snapshots = LogSnapshotsHelper.get_filtered_log_snapshots_list(
             devices, search_param, search_value, is_chart
         )
     else:
-        snapshots = ConfigurationHelper.get_log_snapshots_list(devices, is_chart)
+        snapshots = LogSnapshotsHelper.get_log_snapshots_list(devices, is_chart)
 
     total       = len(snapshots)
     total_pages = max(1, -(-total // page_size))   # ceiling division
@@ -417,14 +534,117 @@ def get_snapshot_content(snapshot_id: str):
     """
     is_chart  = request.args.get("log_type", "text") == "chart"
     devices   = get_current_devices()
-    snapshots = ConfigurationHelper.get_log_snapshots_list(devices, is_chart)
+    snapshots = LogSnapshotsHelper.get_log_snapshots_list(devices, is_chart)
 
     target = next((s for s in snapshots if s.id == snapshot_id), None)
     if not target:
         return _bad("not_found", 404)
 
-    rows = ConfigurationHelper.get_log_content_for_selected_snapshots([target]).to_dict(orient="records")
+    rows = LogSnapshotsHelper.get_log_content_for_selected_snapshots([target]).to_dict(orient="records")
     return jsonify({"rows": rows})
+
+
+@app.get("/api/snapshots/<snapshot_id>/packets/<int:packet_number>")
+def get_packet_details(snapshot_id: str, packet_number: int):
+    """Return the full decoded tshark field detail for a single packet.
+
+    Only valid for "packet_capture" snapshots (produced by
+    PcapDecoder.to_log_snapshot / DeviceWatchdog.save_log_snapshots).
+    Locates the snapshot's saved '<session_id>.pcap' file via the
+    snapshot's device_config_id/session_id and decodes the requested frame
+    with PcapDecoder.get_session_packet_details.
+
+    GET '/api/snapshots/<snapshot_id>/packets/<packet_number>'
+
+    Path parameters:
+        - snapshot_id (str) - ID of the packet_capture snapshot.
+        - packet_number (int) - 1-based tshark frame number, i.e. the
+          leading field of PacketInfo.to_content_str() shown at the start
+          of each packet line's "content".
+
+    Returns:
+        200 OK:
+            '{ "packet_number": N, "details": { "<layer>": { "<field>": "<value>", … }, … } }'
+
+        404 Not Found:
+            '{ "error": "not_found" }' - No snapshot with the given ID
+            exists, it isn't a "packet_capture" snapshot, or no packet
+            with that frame number exists in the capture.
+
+        500 Internal Server Error:
+            '{ "error": "tshark not available: …" }' - tshark is not
+            installed on the server, or the session's pcap file is
+            missing on disk.
+    """
+    devices   = get_current_devices()
+    snapshots = LogSnapshotsHelper.get_log_snapshots_list(devices, log_type_chart=False)
+
+    target = next((s for s in snapshots if s.id == snapshot_id), None)
+    if not target or getattr(target, "log_name", "") != "network capture":
+        return _bad("not_found", 404)
+
+    device_data_dir = os.path.join("data", target.device_id)
+    try:
+        details = PcapDecoder.get_session_packet_details(
+            device_data_dir, target.session_id, packet_number,
+            dissectors_dir=dissector_registry,
+        )
+    except FileNotFoundError as exc:
+        return _bad(f"tshark not available: {exc}", 500)
+
+    if not details:
+        return _bad("not_found", 404)
+
+    return jsonify({"packet_number": packet_number, "details": details})
+
+
+@app.get("/api/snapshots/<snapshot_id>/pcap")
+def download_snapshot_pcap(snapshot_id: str):
+    """Download the full raw pcap file backing a "network capture" snapshot.
+
+    Only valid for "packet_capture" snapshots (see get_packet_details for
+    how the underlying '<session_id>.pcap' file is produced/located).
+    Unlike the decoded/paginated view used by the log content and packet
+    detail endpoints, this streams the untouched pcap file as-is so it can
+    be opened directly in Wireshark or any other pcap tool.
+
+    GET '/api/snapshots/<snapshot_id>/pcap'
+
+    Path parameters:
+        - snapshot_id (str) - ID of the "network capture" snapshot.
+
+    Returns:
+        200 OK:
+            The raw pcap file, streamed as an attachment
+            ('application/vnd.tcpdump.pcap').
+
+        404 Not Found:
+            '{ "error": "not_found" }' - No snapshot with the given ID
+            exists, it isn't a "network capture" snapshot, or its pcap
+            file is missing on disk.
+    """
+    devices   = get_current_devices()
+    snapshots = LogSnapshotsHelper.get_log_snapshots_list(devices, log_type_chart=False)
+
+    target = next((s for s in snapshots if s.id == snapshot_id), None)
+    if not target or getattr(target, "log_name", "") != "network capture":
+        return _bad("not_found", 404)
+
+    pcap_path = os.path.join(PROJECT_ROOT, "data", target.device_id, f"{target.session_id}.pcap")
+    print(pcap_path)
+    if not os.path.exists(pcap_path):
+        return _bad("not_found", 404)
+
+    device_name = getattr(target, "device_name", "device")
+    safe_name = "_".join(device_name.split())
+    download_name = f"{safe_name}_{target.session_id}.pcap"
+
+    return send_file(
+        pcap_path,
+        mimetype="application/vnd.tcpdump.pcap",
+        as_attachment=True,
+        download_name=download_name,
+    )
 
 
 @app.delete("/api/snapshots")
@@ -462,7 +682,7 @@ def remove_snapshots():
         return _bad("snapshot_ids must be a non-empty list")
 
     devices   = get_current_devices()
-    snapshots = ConfigurationHelper.get_log_snapshots_list(devices, is_chart)
+    snapshots = LogSnapshotsHelper.get_log_snapshots_list(devices, is_chart)
     by_id     = {s.id: s for s in snapshots}
 
     removed   = []
@@ -503,7 +723,7 @@ def start_logs_collection():
 
         400 Bad Request:
             '{ "error": "selected_devices must be a list" }'
-            or '{ "error": "session_scenario must be a string" }'
+            or '{ "error": "session_scenario is required and must be a non-empty string" }'
     """
     body             = request.get_json(force=True)
     selected_devices = body.get("selected_devices", [])
@@ -511,7 +731,8 @@ def start_logs_collection():
 
     if not isinstance(selected_devices, list):
         return _bad("selected_devices must be a list")
-    if not isinstance(session_scenario, str):
+
+    if not isinstance(session_scenario, str) or not session_scenario.strip():
         return _bad("session_scenario is required and must be a non-empty string")
 
     session_id = uuid.uuid1().hex[:12]
@@ -695,17 +916,6 @@ def set_auto_collection():
     return jsonify({"status": "ok", "devices": updated})
 
 
-# ── device config builder helpers ─────────────────────────────────────────────
-#
-# Connection building now lives in backend.utils.fabric_connection, shared
-# with device_watchdog.py, so that a connection (including ssh_key_string of
-# any supported type, with or without a passphrase, and either gateway
-# shape) which passes Test Connection here behaves identically once the
-# watchdog picks up the saved config. See that module's docstring for the
-# accepted field/gateway shapes.
-from backend.utils.fabric_connection import build_nested_connection as _build_nested_connection
-
-
 @app.post("/api/devices/test-connection")
 def test_device_connection():
     """Test SSH connectivity to a device using provided credentials.
@@ -740,11 +950,6 @@ def test_device_connection():
         400 Bad Request:
             '{ "error": "missing required fields" }'
     """
-    try:
-        from fabric import Connection  # noqa: F401  (validate import)
-    except ImportError:
-        return jsonify({"success": False, "message": "fabric not installed on server"}), 200
-
     body = request.get_json(force=True)
     ip   = body.get("ip_address", "").strip()
     port = int(body.get("port", 22))
@@ -813,16 +1018,17 @@ def exec_device_command():
         conn = _build_nested_connection(body)
         if custom_shell_prompt:
             conn.open()
-            client = conn.client
-            interact = SSHClientInteraction(client, timeout=20, display=False)
-            interact.expect(custom_shell_prompt)
-            cmd_output = ""
-            for single_cmd in command.split(";"):
-                interact.send(single_cmd)
+            try:
+                client = conn.client
+                interact = SSHClientInteraction(client, timeout=20, display=False)
                 interact.expect(custom_shell_prompt)
-                cmd_output = cmd_output + interact.current_output_clean
-
-            conn.close()
+                cmd_output = ""
+                for single_cmd in command.split(";"):
+                    interact.send(single_cmd)
+                    interact.expect(custom_shell_prompt)
+                    cmd_output = cmd_output + interact.current_output_clean
+            finally:
+                conn.close()
             return jsonify({"stdout": cmd_output, "stderr": "", "exit_code": 0})
 
         # ── Standard exec path ────────────────────────────────────────────────
@@ -875,5 +1081,179 @@ def change_password():
     settings = _load_settings()
     settings["admin_password_hash"] = pw_hash
     _save_settings(settings)
+
+    return jsonify({"status": "ok"})
+
+
+
+# ── dissectors ────────────────────────────────────────────────────────────────
+
+@app.get("/api/settings/dissectors")
+def list_dissectors():
+    """Return the list of custom dissector files installed on the server.
+
+    GET '/api/settings/dissectors'
+
+    Returns:
+        200 OK:
+            JSON array of dissector objects. Each element contains:
+
+            - name (str) - Bare filename (e.g. ``"my_proto.lua"``).
+            - size_bytes (int) - File size in bytes.
+            - extension (str) - File extension, e.g. ``".lua"``.
+
+            Example::
+
+                [
+                    {"name": "my_proto.lua", "size_bytes": 1024, "extension": ".lua"}
+                ]
+    """
+    return jsonify(dissector_registry.list_dissectors())
+
+
+@app.post("/api/settings/dissectors")
+def upload_dissector():
+    """Upload a custom tshark dissector file (Lua script or native plugin).
+
+    The file is saved to the server's dissectors directory and automatically
+    loaded by tshark on every subsequent packet-detail request.
+
+    POST '/api/settings/dissectors'
+
+    Request body (multipart/form-data):
+        - file (file) - The dissector file to upload.
+          Accepted extensions: ``.lua``, ``.so``, ``.dll``.
+
+    Returns:
+        201 Created:
+            JSON object describing the saved file:
+
+            - name (str) - Saved filename.
+            - size_bytes (int) - File size in bytes.
+            - extension (str) - File extension.
+
+            Example::
+
+                {"name": "my_proto.lua", "size_bytes": 1024, "extension": ".lua"}
+
+        400 Bad Request:
+            ``{"error": "no file provided"}`` — request contained no file part.
+
+            ``{"error": "filename is required"}`` — file part had an empty name.
+
+            ``{"error": "unsupported dissector extension …"}`` — the extension is
+            not in the allowed set (``.lua``, ``.so``, ``.dll``).
+    """
+    if "file" not in request.files:
+        return _bad("no file provided")
+
+    f = request.files["file"]
+    if not f.filename:
+        return _bad("filename is required")
+
+    try:
+        data = f.read()
+        saved = dissector_registry.save(f.filename, data)
+    except ValueError as exc:
+        return _bad(str(exc))
+
+    return jsonify({
+        "name":       saved.name,
+        "size_bytes": saved.stat().st_size,
+        "extension":  saved.suffix.lower(),
+    }), 201
+
+
+@app.delete("/api/settings/dissectors/<filename>")
+def delete_dissector(filename: str):
+    """Remove a custom dissector file from the server.
+
+    DELETE '/api/settings/dissectors/<filename>'
+
+    Path parameters:
+        - filename (str) - Bare filename of the dissector to remove
+          (e.g. ``"my_proto.lua"``).  Path separators are stripped server-side
+          to prevent directory-traversal attacks.
+
+    Returns:
+        200 OK:
+            ``{"deleted": true}`` — file existed and was removed.
+
+            ``{"deleted": false}`` — no file with that name was found
+            (treated as a no-op rather than a 404 so repeated DELETE calls
+            are idempotent).
+    """
+    deleted = dissector_registry.delete(filename)
+    return jsonify({"deleted": deleted})
+
+
+# ── login ─────────────────────────────────────────────────────────────────────
+
+@app.post("/api/auth/login")
+def login():
+    """Verify credentials and return an auth token for the session.
+
+    Compares the SHA-256 hash of the submitted password against the hash
+    stored in 'settings.json'.  Falls back to the default password
+    ('logoctopus') if no hash has been persisted yet.
+
+    POST '/api/auth/login'
+
+    Request body (JSON):
+        - username (str) - Must match the configured admin username.
+        - password (str) - Plain-text password; compared via SHA-256 hash.
+
+    Returns:
+        200 OK:
+            '{ "status": "ok", "token": "<32-char hex>" }'
+
+        401 Unauthorized:
+            '{ "error": "invalid credentials" }'
+    """
+    body     = request.get_json(force=True)
+    username = body.get("username", "").strip()
+    password = body.get("password", "")
+
+    admin_user = os.getenv("ADMIN_USER", "admin")
+    if username != admin_user:
+        return _bad("invalid credentials", 401)
+
+    settings         = _load_settings()
+    default_pw_hash  = hashlib.sha256(b"logoctopus").hexdigest()
+    stored_hash      = settings.get("admin_password_hash", default_pw_hash)
+    submitted_hash   = hashlib.sha256(password.encode()).hexdigest()
+
+    if submitted_hash != stored_hash:
+        return _bad("invalid credentials", 401)
+
+    token = uuid.uuid4().hex
+    settings.setdefault("auth_tokens", [])
+    settings["auth_tokens"] = (settings["auth_tokens"] + [token])[-10:]
+    _save_settings(settings)
+
+    return jsonify({"status": "ok", "token": token})
+
+
+@app.post("/api/auth/logout")
+def logout():
+    """Invalidate the current auth token.
+
+    POST '/api/auth/logout'
+
+    Request body (JSON):
+        - token (str) - The token to revoke.
+
+    Returns:
+        200 OK: '{ "status": "ok" }'
+    """
+    body  = request.get_json(force=True)
+    token = body.get("token", "")
+
+    settings = _load_settings()
+    tokens   = settings.get("auth_tokens", [])
+    if token in tokens:
+        tokens.remove(token)
+        settings["auth_tokens"] = tokens
+        _save_settings(settings)
 
     return jsonify({"status": "ok"})
