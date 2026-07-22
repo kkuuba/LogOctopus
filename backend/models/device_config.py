@@ -25,6 +25,15 @@ class DeviceConfig:
         self.device_config = None
 
     def save_config_file(self, file_content_str):
+        """
+        Save JSON config file to '/tmp/' directory under generated device config ID
+
+        Args:
+            file_content_str (str): Config file in raw str format.
+
+        Returns:
+            str: Unique device config ID.       
+        """
         decoded = base64.b64decode(file_content_str)
         device_config_id = self.get_device_config_id(json.loads(decoded))
         with open(f"/tmp/{device_config_id}.json", "wb") as f:
@@ -78,6 +87,13 @@ class DeviceConfig:
             logging.error("Configuraiton file -> '%s' not exists ", self.device_config_path)
 
     def update_runtime_parameter(self, key, value):
+        """
+        Update runtime parmater in target device config.
+
+        Args:
+            key (str): Runtime paramter key.
+            value (str): Runtime paramter value.   
+        """
         config_path = self.device_config_path
         with open(config_path, "r", encoding="utf-8") as f:
             data = json.load(f)
@@ -86,6 +102,15 @@ class DeviceConfig:
             json.dump(data, f, indent=2)
 
     def get_device_config_id(self, device_config):
+        """
+        Generate unique device config ID based on config content.
+
+        Args:
+            device_config (dict): Full device config in dict format.
+
+        Returns:
+            str: Unique device config ID.       
+        """
         for not_const_key in list(self.watchdog_data.keys()):
             if not_const_key in device_config.keys():
                 device_config.pop(not_const_key)

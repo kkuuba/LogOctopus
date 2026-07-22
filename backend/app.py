@@ -16,9 +16,10 @@ from paramiko_expect import SSHClientInteraction
 
 from backend.models.device import Device
 from backend.models.device_config import DeviceConfig
-from backend.utils.config_helper import ConfigurationHelper
+from backend.utils.log_snapshots_helper import LogSnapshotsHelper
 from backend.utils.device_config_loader import DeviceConfigLoader
 from backend.utils.pcap_decoder import DissectorRegistry, PcapDecoder
+from backend.utils.fabric_connection import build_nested_connection as _build_nested_connection
 
 
 SETTINGS_FILE   = Path("settings.json")
@@ -27,11 +28,7 @@ PROJECT_ROOT    = Path(__file__).resolve().parent.parent
 DISSECTORS_DIR  = PROJECT_ROOT / "data" / "dissectors"
 
 app = Flask(__name__)
-CORS(app)  # allow the React dev-server / built bundle to call the API
-
-# Shared dissector registry — created once at startup so every request that
-# decodes packets automatically picks up whatever Lua / native plugins the
-# user has uploaded via the settings UI.
+CORS(app)  
 dissector_registry = DissectorRegistry(DISSECTORS_DIR)
 
 
@@ -490,11 +487,11 @@ def list_snapshots():
     devices = get_current_devices()
 
     if search_param and search_value:
-        snapshots = ConfigurationHelper.get_filtered_log_snapshots_list(
+        snapshots = LogSnapshotsHelper.get_filtered_log_snapshots_list(
             devices, search_param, search_value, is_chart
         )
     else:
-        snapshots = ConfigurationHelper.get_log_snapshots_list(devices, is_chart)
+        snapshots = LogSnapshotsHelper.get_log_snapshots_list(devices, is_chart)
 
     total       = len(snapshots)
     total_pages = max(1, -(-total // page_size))   # ceiling division
@@ -537,13 +534,13 @@ def get_snapshot_content(snapshot_id: str):
     """
     is_chart  = request.args.get("log_type", "text") == "chart"
     devices   = get_current_devices()
-    snapshots = ConfigurationHelper.get_log_snapshots_list(devices, is_chart)
+    snapshots = LogSnapshotsHelper.get_log_snapshots_list(devices, is_chart)
 
     target = next((s for s in snapshots if s.id == snapshot_id), None)
     if not target:
         return _bad("not_found", 404)
 
-    rows = ConfigurationHelper.get_log_content_for_selected_snapshots([target]).to_dict(orient="records")
+    rows = LogSnapshotsHelper.get_log_content_for_selected_snapshots([target]).to_dict(orient="records")
     return jsonify({"rows": rows})
 
 
@@ -580,7 +577,7 @@ def get_packet_details(snapshot_id: str, packet_number: int):
             missing on disk.
     """
     devices   = get_current_devices()
-    snapshots = ConfigurationHelper.get_log_snapshots_list(devices, log_type_chart=False)
+    snapshots = LogSnapshotsHelper.get_log_snapshots_list(devices, log_type_chart=False)
 
     target = next((s for s in snapshots if s.id == snapshot_id), None)
     if not target or getattr(target, "log_name", "") != "network capture":
@@ -627,7 +624,7 @@ def download_snapshot_pcap(snapshot_id: str):
             file is missing on disk.
     """
     devices   = get_current_devices()
-    snapshots = ConfigurationHelper.get_log_snapshots_list(devices, log_type_chart=False)
+    snapshots = LogSnapshotsHelper.get_log_snapshots_list(devices, log_type_chart=False)
 
     target = next((s for s in snapshots if s.id == snapshot_id), None)
     if not target or getattr(target, "log_name", "") != "network capture":
@@ -685,7 +682,7 @@ def remove_snapshots():
         return _bad("snapshot_ids must be a non-empty list")
 
     devices   = get_current_devices()
-    snapshots = ConfigurationHelper.get_log_snapshots_list(devices, is_chart)
+    snapshots = LogSnapshotsHelper.get_log_snapshots_list(devices, is_chart)
     by_id     = {s.id: s for s in snapshots}
 
     removed   = []
@@ -734,7 +731,7 @@ def start_logs_collection():
 
     if not isinstance(selected_devices, list):
         return _bad("selected_devices must be a list")
-    # FIX: also reject empty strings, not just non-str types
+
     if not isinstance(session_scenario, str) or not session_scenario.strip():
         return _bad("session_scenario is required and must be a non-empty string")
 
@@ -919,17 +916,6 @@ def set_auto_collection():
     return jsonify({"status": "ok", "devices": updated})
 
 
-# ── device config builder helpers ─────────────────────────────────────────────
-#
-# Connection building now lives in backend.utils.fabric_connection, shared
-# with device_watchdog.py, so that a connection (including ssh_key_string of
-# any supported type, with or without a passphrase, and either gateway
-# shape) which passes Test Connection here behaves identically once the
-# watchdog picks up the saved config. See that module's docstring for the
-# accepted field/gateway shapes.
-from backend.utils.fabric_connection import build_nested_connection as _build_nested_connection
-
-
 @app.post("/api/devices/test-connection")
 def test_device_connection():
     """Test SSH connectivity to a device using provided credentials.
@@ -964,11 +950,6 @@ def test_device_connection():
         400 Bad Request:
             '{ "error": "missing required fields" }'
     """
-    try:
-        from fabric import Connection  # noqa: F401  (validate import)
-    except ImportError:
-        return jsonify({"success": False, "message": "fabric not installed on server"}), 200
-
     body = request.get_json(force=True)
     ip   = body.get("ip_address", "").strip()
     port = int(body.get("port", 22))
@@ -1036,8 +1017,6 @@ def exec_device_command():
     try:
         conn = _build_nested_connection(body)
         if custom_shell_prompt:
-            # FIX: use try/finally so the connection is always closed even if
-            # SSHClientInteraction raises mid-way through command execution.
             conn.open()
             try:
                 client = conn.client
@@ -1247,11 +1226,8 @@ def login():
     if submitted_hash != stored_hash:
         return _bad("invalid credentials", 401)
 
-    # Issue a simple random token stored server-side in settings.
-    # For production use, replace with a proper session/JWT library.
     token = uuid.uuid4().hex
     settings.setdefault("auth_tokens", [])
-    # Keep at most 10 active tokens to bound memory use.
     settings["auth_tokens"] = (settings["auth_tokens"] + [token])[-10:]
     _save_settings(settings)
 

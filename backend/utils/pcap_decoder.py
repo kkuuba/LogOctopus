@@ -1,49 +1,17 @@
-"""
-PcapDecoder: decodes a pcap file (as produced by SshNetworkCapture) using
-tshark, exposes each packet as a PacketInfo object, and can render the
-result as a "time"/"content" DataFrame suitable for wrapping in a
-LogSnapshot -- mirroring the shape DeviceWatchdog uses for its other logs
-(see DeviceWatchdog._entries_to_dataframe).
-
-Custom dissectors
------------------
-tshark honours Lua plugin files placed in its personal plugin directory
-(``~/.config/wireshark/plugins/`` on Linux, or whatever
-``tshark -G folders`` reports as ``Personal Lua Plugins``).  This class
-adds first-class support for *uploading* dissector files at runtime so
-that ``get_packet_details`` enriches its JSON output with the extra
-protocol fields those dissectors expose.
-
-Usage::
-
-    decoder = PcapDecoder("capture.pcap", dissectors_dir="/path/to/dissectors")
-    decoder.install_dissectors()     # copy *.lua / *.so files into tshark plugin dir
-    details = decoder.get_packet_details(42)
-
-The ``DissectorRegistry`` helper class manages the dissectors directory and
-the backend API endpoints for upload/list/delete (see app.py integration
-notes at the bottom of this module).
-"""
-
 from __future__ import annotations
-
 import json
 import logging
 import os
 import shutil
 import subprocess
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-
 import pandas as pd
-
 from backend.models.log_snapshot import LogSnapshot
 
 logger = logging.getLogger(__name__)
 
-# tshark fields pulled for each packet. Keep this list in sync with the
-# unpacking order in PcapDecoder._parse_line.
 _TSHARK_FIELDS = [
     "frame.time_epoch",
     "frame.number",
@@ -60,11 +28,7 @@ _TSHARK_FIELDS = [
     "_ws.col.Info",
 ]
 
-# Supported dissector file extensions.  Lua plugins are universally supported
-# by Wireshark/tshark; compiled .so/.dll plugins require a matching tshark
-# build but are included for completeness.
 DISSECTOR_EXTENSIONS = {".lua", ".so", ".dll"}
-
 
 @dataclass
 class PacketInfo:
@@ -82,8 +46,10 @@ class PacketInfo:
 
     def to_content_str(self) -> str:
         """
-        Basic decoded packet info as a single ' | '-delimited string, e.g.:
-        "12 | eth:ip:tcp | 10.0.0.1:443 -> 10.0.0.2:51000 | len=1500 | TLS Application Data"
+        Convert PacketInfo object to single string with all params divided by '|'.
+
+        Returns:
+            (str): String with all PacketInfo params divided by '|'
         """
         endpoints = f"{self.src_ip}:{self.src_port} -> {self.dst_ip}:{self.dst_port}"
         parts = [
@@ -100,39 +66,22 @@ class DissectorRegistry:
     """
     Manages a directory of custom tshark dissector files (Lua plugins, shared
     libraries) that the user uploads through the settings UI.
-
-    The registry keeps files in a persistent ``dissectors_dir`` on disk.
-    ``PcapDecoder`` calls ``get_plugin_args()`` to obtain the ``-X lua_script:``
-    / ``--plugin-path`` flags that inject those files into a tshark invocation.
-
-    Typical flow
-    ~~~~~~~~~~~~
-    1. User uploads a ``.lua`` file via ``POST /api/settings/dissectors``.
-    2. The backend saves it with ``registry.save(filename, file_bytes)``.
-    3. When a packet-details query comes in, ``PcapDecoder`` (initialised with
-       ``dissectors_dir``) picks up the file automatically via
-       ``get_plugin_args()``.
     """
 
     def __init__(self, dissectors_dir: str | os.PathLike):
         self.dissectors_dir = Path(dissectors_dir)
         self.dissectors_dir.mkdir(parents=True, exist_ok=True)
 
-    # ------------------------------------------------------------------
-    # File management
-    # ------------------------------------------------------------------
-
     def save(self, filename: str, data: bytes) -> Path:
         """
         Persist a dissector file.
 
         Args:
-            filename: Bare filename (e.g. ``"my_proto.lua"``).  Path components
-                are stripped to prevent directory-traversal attacks.
-            data: Raw file bytes.
+            filename (str): Bare filename of dissector (e.g. ``"my_proto.lua"``).
+            data (bytes): Raw dissector file bytes.
 
         Returns:
-            Path to the saved file.
+            (str): Path to the saved file.
 
         Raises:
             ValueError: The filename has an unsupported extension.
@@ -153,10 +102,10 @@ class DissectorRegistry:
         Remove a dissector file.
 
         Args:
-            filename: Bare filename.
+            filename (str): Bare dissector filename.
 
         Returns:
-            True if the file existed and was deleted, False otherwise.
+            (bool): True if the file existed and was deleted, False otherwise.
         """
         target = self.dissectors_dir / Path(filename).name
         if target.exists():
@@ -170,8 +119,7 @@ class DissectorRegistry:
         List all dissector files in the registry.
 
         Returns:
-            List of dicts with ``name``, ``size_bytes``, and ``extension`` keys,
-            sorted alphabetically by name.
+            (list): List of dicts with ``name``, ``size_bytes``, and ``extension`` keys, sorted alphabetically by name.
         """
         entries = []
         for p in sorted(self.dissectors_dir.iterdir()):
@@ -185,21 +133,15 @@ class DissectorRegistry:
                 )
         return entries
 
-    # ------------------------------------------------------------------
-    # tshark integration
-    # ------------------------------------------------------------------
-
     def get_plugin_args(self) -> list[str]:
         """
-        Build the tshark command-line arguments that load all registered
-        dissector files.
-
+        Build the tshark command-line arguments that load all registered dissector files.
         Lua scripts are loaded individually via ``-X lua_script:<path>``.
         Shared libraries (.so/.dll) are added via ``--plugin-path`` pointing
         at the dissectors directory (tshark scans the directory for plugins).
 
         Returns:
-            List of extra arguments to append to a tshark command.
+            (list): List of extra arguments to append to a tshark command.
         """
         args: list[str] = []
         has_native = False
@@ -213,7 +155,6 @@ class DissectorRegistry:
             elif ext in {".so", ".dll"}:
                 has_native = True
 
-        # A single --plugin-path covers all .so/.dll files in the directory.
         if has_native:
             args += ["--plugin-path", str(self.dissectors_dir)]
 
@@ -223,45 +164,15 @@ class DissectorRegistry:
 class PcapDecoder:
     """
     Decodes a pcap file using tshark and exposes the packets both as
-    PacketInfo objects and as a "time"/"content" DataFrame.
-
-    Custom dissectors
-    ~~~~~~~~~~~~~~~~~
-    Pass a ``dissectors_dir`` (or a pre-built ``DissectorRegistry``) to
-    automatically inject all registered plugin files into every tshark
-    invocation.  The extra protocol fields they expose will appear inside
-    the nested dict returned by ``get_packet_details()``.
-
-    Example::
-
-        registry = DissectorRegistry("data/dissectors")
-        decoder  = PcapDecoder("session.pcap", dissectors_dir=registry)
-        decoder.decode()
-        details = decoder.get_packet_details(5)
-        # details["my_custom_proto"] now contains dissector-injected fields
+    PacketInfo objects and as a "time" + "content" DataFrame. Custom dissectors
+    will be used to support extra protocol fields.
     """
 
     TSHARK_BIN = "tshark"
 
-    def __init__(
-        self,
-        pcap_file: str,
-        dissectors_dir: str | os.PathLike | DissectorRegistry | None = None,
-    ):
-        """
-        Args:
-            pcap_file: Path to the local .pcap/.pcapng file to decode
-                (e.g. the local_file used by SshNetworkCapture).
-            dissectors_dir: Optional path to a directory of custom dissector
-                files (Lua/so/dll), or an existing ``DissectorRegistry``
-                instance.  When provided, all files in the directory are
-                loaded into every tshark call so their decoded fields appear
-                in ``get_packet_details()`` output.
-        """
+    def __init__(self, pcap_file: str, dissectors_dir: str | os.PathLike | DissectorRegistry | None = None):
         self.pcap_file = pcap_file
         self.packets: list[PacketInfo] = []
-
-        # Normalise dissectors_dir to a DissectorRegistry (or None).
         if isinstance(dissectors_dir, DissectorRegistry):
             self._registry: DissectorRegistry | None = dissectors_dir
         elif dissectors_dir is not None:
@@ -269,53 +180,37 @@ class PcapDecoder:
         else:
             self._registry = None
 
-    # ------------------------------------------------------------------
-    # Convenience constructors
-    # ------------------------------------------------------------------
-
     @classmethod
-    def for_session(
-        cls,
-        device_data_dir: str,
-        session_id: str,
-        dissectors_dir: str | os.PathLike | DissectorRegistry | None = None,
-    ) -> "PcapDecoder":
+    def for_session(cls, device_data_dir: str, session_id: str, dissectors_dir: str | os.PathLike | DissectorRegistry | None = None) -> PcapDecoder:
         """
         Build a PcapDecoder for a session's saved pcap file, i.e.
         <device_data_dir>/<session_id>.pcap -- the naming convention used by
         DeviceWatchdog.save_log_snapshots once it renames the raw capture.
 
         Args:
-            device_data_dir: Per-device data directory (DeviceWatchdog.device_data_dir).
-            session_id: Session whose pcap should be decoded.
-            dissectors_dir: Optional custom dissectors directory or registry.
+            device_data_dir (str): Per-device data directory.
+            session_id (str): Session whose pcap should be decoded.
+            dissectors_dir (str): Optional custom dissectors directory or registry.
+
+        Returns:
+            (PcapDecoder): PcapDecoder class object.
         """
-        return cls(
-            os.path.join(device_data_dir, f"{session_id}.pcap"),
-            dissectors_dir=dissectors_dir,
-        )
+        return cls(os.path.join(device_data_dir, f"{session_id}.pcap"), dissectors_dir=dissectors_dir)
 
     @classmethod
-    def get_session_packet_details(
-        cls,
-        device_data_dir: str,
-        session_id: str,
-        packet_number: int,
-        dissectors_dir: str | os.PathLike | DissectorRegistry | None = None,
-    ) -> dict:
+    def get_session_packet_details(cls, device_data_dir: str, session_id: str, packet_number: int, dissectors_dir: str | os.PathLike | DissectorRegistry | None = None) -> dict:
         """
         Convenience one-shot: resolve a session's pcap path and decode a
         single packet's full field detail from it.
 
-        Returns {} if the session's pcap file doesn't exist (rather than
-        raising), since a missing session is an expected, non-exceptional
-        case for callers -- e.g. an invalid/expired session_id.
-
         Args:
-            device_data_dir: Per-device data directory.
-            session_id: Session whose pcap to decode.
-            packet_number: 1-based frame number.
-            dissectors_dir: Optional custom dissectors directory or registry.
+            device_data_dir (str): Per-device data directory.
+            session_id (str): Session whose pcap to decode.
+            packet_number (int): 1-based frame number.
+            dissectors_dir (str): Optional custom dissectors directory or registry.
+
+        Returns:
+            (dict): Single packet detaile extraced with tshark in dict format.
 
         Raises:
             FileNotFoundError: tshark is not installed / not on PATH.
@@ -325,26 +220,26 @@ class PcapDecoder:
             return {}
         return decoder.get_packet_details(packet_number)
 
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
 
     def _plugin_args(self) -> list[str]:
-        """Return extra tshark args for custom dissectors (empty list if none)."""
+        """
+        Return extra tshark args for custom dissectors (empty list if none).
+
+        Returns:
+            (list): Extra tshark args for custom dissectors.
+        """
         if self._registry is None:
             return []
         return self._registry.get_plugin_args()
 
     def _check_tshark(self) -> None:
-        """Raise FileNotFoundError if tshark is not on PATH."""
+        """
+        Raise FileNotFoundError if tshark is not on PATH
+        """
         if shutil.which(self.TSHARK_BIN) is None:
             raise FileNotFoundError(
                 f"'{self.TSHARK_BIN}' not found on PATH; install Wireshark/tshark to decode pcaps."
             )
-
-    # ------------------------------------------------------------------
-    # Decoding
-    # ------------------------------------------------------------------
 
     def decode(self) -> list[PacketInfo]:
         """
@@ -360,11 +255,10 @@ class PcapDecoder:
         here but do enrich ``get_packet_details()`` output.
 
         Returns:
-            The decoded list of PacketInfo objects (also stored on self.packets).
+            (list): The decoded list of PacketInfo objects (also stored on self.packets).
 
         Raises:
-            FileNotFoundError: tshark is not installed / not on PATH, or no
-                pcap_file path was given.
+            FileNotFoundError: tshark is not installed / not on PATH, or no pcap_file path was given.
         """
         if not self.pcap_file:
             raise FileNotFoundError("PcapDecoder was given no pcap_file path to decode.")
@@ -393,7 +287,15 @@ class PcapDecoder:
         return self.packets
 
     def _parse_line(self, line: str) -> PacketInfo | None:
-        """Parse a single tab-separated tshark output line into a PacketInfo."""
+        """
+        Parse a single tab-separated tshark output line into a PacketInfo.
+    
+        Args:
+            line (str): Single tab-separated tshark output line.        
+
+        Returns:
+            (PacketInfo): PacketInfo object.
+        """
         fields = line.split("\t")
         # Pad in case trailing empty fields were stripped by tshark.
         fields += [""] * (len(_TSHARK_FIELDS) - len(fields))
@@ -424,10 +326,6 @@ class PcapDecoder:
             info=info,
         )
 
-    # ------------------------------------------------------------------
-    # Single-packet full detail
-    # ------------------------------------------------------------------
-
     def get_packet_details(self, packet_number: int) -> dict:
         """
         Decode a single packet's full field detail into a nested dict.
@@ -437,18 +335,13 @@ class PcapDecoder:
         standard layers in the returned dict.
 
         Args:
-            packet_number: 1-based frame number, i.e. PacketInfo.number /
-                the leading field of to_content_str() -- matches the
-                "packet index" shown in the "content" column.
+            packet_number (int): Frame number ("packet index" shown in the "content" column).
 
         Returns:
-            Nested dict of every layer/field tshark parsed for that packet
-            (protocol name -> field name -> value), or {} if no packet with
-            that frame number exists in the file.
+            (dict): Nested dict of every layer/field tshark parsed for that packet.
 
         Raises:
-            FileNotFoundError: tshark is not installed / not on PATH, or the
-                pcap file doesn't exist.
+            FileNotFoundError: tshark is not installed / not on PATH, or the pcap file doesn't exist.
         """
         if not self.pcap_file or not os.path.exists(self.pcap_file):
             raise FileNotFoundError(f"pcap file not found: {self.pcap_file}")
@@ -478,16 +371,12 @@ class PcapDecoder:
 
         return parsed[0].get("_source", {}).get("layers", {})
 
-    # ------------------------------------------------------------------
-    # DataFrame / LogSnapshot output
-    # ------------------------------------------------------------------
-
     def to_dataframe(self) -> pd.DataFrame:
         """
         Build a "time" / "content" DataFrame from the decoded packets.
 
-        Decodes lazily: calls decode() first if it hasn't run yet. Each row's
-        "content" is the '|'-delimited basic packet info from PacketInfo.to_content_str().
+        Returns:
+            (pd.DataFrame): DataFrame object generated decoded packets.
         """
         if not self.packets:
             self.decode()
@@ -498,20 +387,17 @@ class PcapDecoder:
         rows = [{"time": pkt.time, "content": pkt.to_content_str()} for pkt in self.packets]
         return pd.DataFrame(rows)
 
-    def to_log_snapshot(
-        self,
-        device_config_id: str,
-        device_name: str,
-        session_id: str,
-        session_scenario: str,
-        log_name: str = "network capture",
-        log_description: str = "Decoded network packet capture",
-        data_unit: str = "",
-        log_type: str = "text",
-    ) -> LogSnapshot:
+    def to_log_snapshot(self,
+                        device_config_id: str,
+                        device_name: str,
+                        session_id: str,
+                        session_scenario: str,
+                        log_name: str = "network capture",
+                        log_description: str = "Decoded network packet capture",
+                        data_unit: str = "",
+                        log_type: str = "text") -> LogSnapshot:
         """
-        Wrap the decoded packets in a LogSnapshot, mirroring
-        DeviceWatchdog.save_log_snapshots.
+        Wrap the decoded packets in a LogSnapshot, mirroring DeviceWatchdog.save_log_snapshots.
         """
         log_content = self.to_dataframe()
         return LogSnapshot(
@@ -525,35 +411,3 @@ class PcapDecoder:
             log_type,
             log_content,
         )
-
-
-# ---------------------------------------------------------------------------
-# app.py integration notes
-# ---------------------------------------------------------------------------
-# The three new endpoints below should be wired into app.py alongside the
-# existing /api/snapshots/<id>/pcap route.  A single shared DissectorRegistry
-# instance is created at startup and passed to every PcapDecoder call.
-#
-# Suggested wiring in app.py:
-#
-#   from backend.utils.pcap_decoder import PcapDecoder, DissectorRegistry
-#
-#   DISSECTORS_DIR = Path("data/dissectors")
-#   dissector_registry = DissectorRegistry(DISSECTORS_DIR)
-#
-#   # Pass to decoder:
-#   decoder = PcapDecoder.for_session(
-#       device_data_dir, session_id, dissectors_dir=dissector_registry
-#   )
-#
-# POST /api/settings/dissectors
-#   body: multipart/form-data with field "file"
-#   saves dissector_registry.save(file.filename, file.read())
-#   returns {"name": ..., "size_bytes": ...}
-#
-# GET /api/settings/dissectors
-#   returns dissector_registry.list_dissectors()
-#
-# DELETE /api/settings/dissectors/<filename>
-#   dissector_registry.delete(filename)
-#   returns {"deleted": true/false}

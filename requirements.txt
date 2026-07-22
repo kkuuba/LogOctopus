@@ -7,3 +7,4 @@ pytest
 fastapi
 pyarrow
 flask_cors
+psutil

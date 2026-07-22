@@ -26,13 +26,6 @@ class DeviceWatchdog:
     MAX_LOG_ROWS = 50_000
 
     def __init__(self, device_config, device_config_id):
-        """
-        Initializes a DeviceWatchdog instance.
-
-        Args:
-            device_config (dict): Connection and logging configuration for the target device.
-            device_config_id (str): Unique identifier for this device config.
-        """
         self.device_config = device_config
         self.device_config_id = device_config_id
         self.device_data_dir = os.path.join("data", str(device_config_id))
@@ -50,28 +43,27 @@ class DeviceWatchdog:
         self.log_snapshots: list[LogSnapshot] = []
         self.connection_status = False
         self.log_access = False
-        self._log_config_map: dict[str, dict] = {
-            lc["log_name"]: lc for lc in device_config["log_file_configs"]
-        }
+        self._log_config_map: dict[str, dict] = {lc["log_name"]: lc for lc in device_config["log_file_configs"]}
         self._log_regex_map: dict[str, re.Pattern] = {
             lc["log_name"]: re.compile(lc["data_extraction_regex"])
             for lc in device_config["log_file_configs"]
         }
-        self._executor = ThreadPoolExecutor(
-            max_workers=len(device_config["log_file_configs"])
-        )
+        self._executor = ThreadPoolExecutor(max_workers=len(device_config["log_file_configs"]))
         self.network_capture = None
         self.packets_capture_file: str | None = None
 
     def _get_or_create_channel(self, ssh_channel_id: str) -> Connection:
-        """Return an existing SSH channel or create one, thread-safely.
+        """
+        Return an existing SSH channel or create one, thread-safely.
 
-        The entire lookup-and-create is performed inside the lock to eliminate
-        the race condition that arose from the previous pattern of checking
-        outside the lock and only locking on creation (TOCTOU).
+        Args:
+            ssh_channel_id (str): SSH channel ID.
+
+        Returns:
+            (Connection): SSH Fabric connection object.
         """
         with self._channel_lock:
-            if ssh_channel_id not in self.ssh_channels or not self.ssh_channels[ssh_channel_id].is_connected:
+            if ssh_channel_id not in self.ssh_channels:
                 conn = self.create_device_connection()
                 conn.open()
                 self.ssh_channels[ssh_channel_id] = conn
@@ -82,18 +74,18 @@ class DeviceWatchdog:
         Execute a command via SSH on the target device.
 
         Args:
-            cmd: Command string to run.
-            ssh_channel_id: SSH channel identifier (usually log_name).
-            custom_shell_prompt: Shell prompt to expect when using a custom shell.
+            cmd (str): Command string to run.
+            ssh_channel_id (str): SSH channel identifier (usually log_name).
+            custom_shell_prompt (str): Shell prompt to expect when using a custom shell.
 
         Returns:
-            Full command stdout on success, or None on failure.
+            (str): Full command stdout on success, or None on failure.
         """
         if cmd is None:
             return None
         try:
             channel = self._get_or_create_channel(ssh_channel_id)
-
+            self.ssh_channels[ssh_channel_id].open()
             if custom_shell_prompt:
                 interact = SSHClientInteraction(channel.client, timeout=20, display=False)
                 interact.expect(custom_shell_prompt)
@@ -122,19 +114,31 @@ class DeviceWatchdog:
         return None
 
     def _record_error(self, error_info: str) -> None:
-        """Append an error entry thread-safely (list-based, no pd.concat)."""
+        """
+        Append an error entry thread-safely.
+
+        Args:
+            error_info (str): Error info string.
+        """
         with self._error_lock:
             self._error_list.append({"time": datetime.now(), "error_info": error_info})
 
     @property
     def errors(self) -> pd.DataFrame:
-        """Return errors as a DataFrame (built lazily on access, thread-safe snapshot)."""
+        """
+        Return errors as a DataFrame.
+
+        Returns:
+            (pd.DataFrame): DataFrame object with full error info list.
+        """
         with self._error_lock:
             snapshot = list(self._error_list)
         return pd.DataFrame(snapshot) if snapshot else pd.DataFrame({"time": [], "error_info": []})
 
     def initialize_log_collectors(self) -> None:
-        """Initialize log collectors for all defined log file configs."""
+        """
+        Initialize log collectors for all defined log file configs.
+        """
         for log_config in self.device_config["log_file_configs"]:
             log_name = log_config["log_name"]
             self.execute_cmd(
@@ -169,11 +173,10 @@ class DeviceWatchdog:
             self.network_capture.start()
 
     def teardown_log_collectors(self) -> None:
-        """Teardown log collectors and close all open SSH channels.
-
-        Sends any configured deactivation command on each channel before
-        closing it, then clears the channel registry so that future calls to
-        _get_or_create_channel open fresh connections.
+        """
+        Teardown log collectors and close all open SSH channels. Sends any configured deactivation 
+        command on each channel before closing it, then clears the channel registry so that future 
+        calls will open fresh connections.
         """
         for log_config in self.device_config["log_file_configs"]:
             self.execute_cmd(
@@ -192,13 +195,11 @@ class DeviceWatchdog:
             self.ssh_channels.clear()
 
     def close(self) -> None:
-        """Shut down the thread-pool executor.
+        """
+        Shut down the thread-pool executor.
 
         Call this when the DeviceWatchdog is no longer needed (e.g. when
         a device is removed) to release the underlying worker threads.
-
-        FIX: the executor was previously never shut down, leaving threads
-        running until interpreter exit when a watchdog was replaced.
         """
         self._executor.shutdown(wait=False)
 
@@ -212,7 +213,7 @@ class DeviceWatchdog:
         do not race on reads or appends.
 
         Args:
-            log_config: Log collector configuration dict.
+            log_config (dict): Log collector configuration dict.
         """
         log_name = log_config["log_name"]
         pattern = self._log_regex_map[log_name]
@@ -247,11 +248,15 @@ class DeviceWatchdog:
                     self.collected_data[log_name] = existing[-self.MAX_LOG_ROWS:]
 
     def get_all_log_files_content(self) -> None:
-        """Fetch all logs concurrently using the persistent thread pool."""
+        """
+        Fetch all logs concurrently using the persistent thread pool.
+        """
         list(self._executor.map(self.get_log_file_content, self.device_config["log_file_configs"]))
 
     def start_logs_collection(self) -> None:
-        """Start the background log-collection thread."""
+        """
+        Start the background log-collection thread.
+        """
         self.collection_ongoing = True
         self.collection_stop_event = threading.Event()
         self.cutoff_time = pd.Timestamp.now()
@@ -263,11 +268,8 @@ class DeviceWatchdog:
         self.thread.start()
 
     def stop_logs_collection(self) -> None:
-        """Signal the collection thread to stop and wait for it to finish.
-
-        Safe to call even if collection was never started (no-op in that case).
-        FIX: previously crashed with AttributeError when called before
-        start_logs_collection because collection_stop_event and thread were None.
+        """
+        Signal the collection thread to stop and wait for it to finish.
         """
         if not self.collection_ongoing or self.collection_stop_event is None:
             return
@@ -282,18 +284,17 @@ class DeviceWatchdog:
         """
         Background loop: collect logs, wait for the interval, repeat.
 
-        Checks the stop event *before* each collection so a stop request is
-        honoured without waiting for the next network round-trip.
-
         Args:
-            interval: Seconds between log fetches.
+            interval (int): Seconds between log fetches.
         """
         while not self.collection_stop_event.is_set():
             self.get_all_log_files_content()
             self.collection_stop_event.wait(timeout=interval)
 
     def remove_all_outdated_entries(self) -> None:
-        """Drop log entries older than the collection start time and sort by time."""
+        """
+        Drop log entries older than the collection start time and sort by time.
+        """
         cutoff = self.cutoff_time
         for log_name, lock in self._data_locks.items():
             with lock:
@@ -302,7 +303,15 @@ class DeviceWatchdog:
                 self.collected_data[log_name] = sorted(filtered, key=lambda e: e["time"])
 
     def _entries_to_dataframe(self, log_name: str) -> pd.DataFrame:
-        """Convert the internal list-of-dicts for a log into a DataFrame."""
+        """
+        Convert the internal list-of-dicts for a log into a DataFrame.
+
+        Args:
+            log_name (str): Target log name.
+
+        Returns:
+            (pd.DataFrame): DataFrame object with full log content.
+        """
         lock = self._data_locks.get(log_name)
         if lock is not None:
             with lock:
@@ -316,8 +325,8 @@ class DeviceWatchdog:
         Persist collected logs as LogSnapshot objects.
 
         Args:
-            session_id: Unique logs collection session ID.
-            session_scenario: Scenario ID for this session.
+            session_id (str): Unique logs collection session ID.
+            session_scenario (str): Scenario ID for this session.
         """
         for log_name, entries in self.collected_data.items():
             if not entries:
@@ -366,21 +375,17 @@ class DeviceWatchdog:
         Get a log config parameter by log name in O(1) via the pre-built map.
 
         Args:
-            log_name: Log name to look up.
-            log_param: Config key to retrieve.
+            log_name (str): Log name to look up.
+            log_param (str): Config key to retrieve.
 
         Returns:
-            Parameter value, or empty string if not found.
+            (str): Parameter value, or empty string if not found.
         """
         return self._log_config_map.get(log_name, {}).get(log_param, "")
 
     def get_connection_status(self) -> None:
-        """Update connection_status based on all SSH channels.
-
-        FIX: previously only checked the first channel, which could report
-        'connected' even when other channels were dead.  Now reports True only
-        if *all* open channels are still connected.  Falls back to False when
-        no channels exist yet.
+        """
+        Update 'connection_status' based on all SSH channels.
         """
         with self._channel_lock:
             channels = dict(self.ssh_channels)
@@ -392,7 +397,9 @@ class DeviceWatchdog:
         self.connection_status = all(bool(ch and ch.is_connected) for ch in channels.values())
 
     def test_log_files_access(self) -> None:
-        """Check whether the first configured log file is accessible via SSH."""
+        """
+        Check whether the first configured log file is accessible via SSH.
+        """
         log_file_config = self.device_config["log_file_configs"][0]
         result = self.execute_cmd(
             log_file_config["log_file_cmd"],
@@ -405,17 +412,8 @@ class DeviceWatchdog:
         """
         Create a Fabric SSH Connection from the device config.
 
-        Uses the shared connection builder (backend.utils.fabric_connection),
-        the same one used by the config builder's Test Connection / Exec
-        Command endpoints in app.py. This guarantees that any connection
-        which passed "Test Connection" in the UI — including the SSH key
-        type detection (RSA / Ed25519 / ECDSA / DSS) and passphrase
-        handling — behaves identically here. Accepts either the nested
-        ``gateway: {...}`` shape (as saved by the config builder) or a flat
-        ``gateways: [...]`` list.
-
         Returns:
-            Configured Fabric Connection object.
+            (Connection): Configured Fabric Connection object.
         """
         return build_fabric_connection(self.device_config)
 
@@ -425,10 +423,10 @@ def get_current_device_config(path_to_config_file: str) -> dict:
     Load the device JSON configuration file.
 
     Args:
-        path_to_config_file: Path to the JSON config file.
+        path_to_config_file (str): Path to the JSON config file.
 
     Returns:
-        Parsed configuration dict.
+        (dict): Parsed configuration dict.
     """
     with open(path_to_config_file, "r", encoding="utf-8") as f:
         return json.load(f)
@@ -436,12 +434,11 @@ def get_current_device_config(path_to_config_file: str) -> dict:
 
 def update_device_config_parameters(path_to_config_file: str, updates: dict) -> None:
     """
-    Apply multiple key/value updates to the device config file in a single
-    read-write cycle (reduces disk I/O compared to one write per parameter).
+    Apply multiple key/value updates to the device config file in a single read-write cycle.
 
     Args:
-        path_to_config_file: Path to the JSON config file.
-        updates: Dict of {key: value} pairs to apply.
+        path_to_config_file (str): Path to the JSON config file.
+        updates (dict): Dict of {key: value} pairs to apply.
     """
     with open(path_to_config_file, "r", encoding="utf-8") as f:
         data = json.load(f)

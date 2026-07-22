@@ -239,7 +239,7 @@ class TestListSnapshots:
         with (
             patch("backend.app.get_current_devices", return_value=[]),
             patch(
-                "backend.app.ConfigurationHelper.get_log_snapshots_list",
+                "backend.app.LogSnapshotsHelper.get_log_snapshots_list",
                 return_value=[snap],
             ),
         ):
@@ -259,7 +259,7 @@ class TestListSnapshots:
         with (
             patch("backend.app.get_current_devices", return_value=[]),
             patch(
-                "backend.app.ConfigurationHelper.get_filtered_log_snapshots_list",
+                "backend.app.LogSnapshotsHelper.get_filtered_log_snapshots_list",
                 return_value=[snap],
             ) as mock_filtered,
         ):
@@ -272,7 +272,7 @@ class TestListSnapshots:
         with (
             patch("backend.app.get_current_devices", return_value=[]),
             patch(
-                "backend.app.ConfigurationHelper.get_log_snapshots_list",
+                "backend.app.LogSnapshotsHelper.get_log_snapshots_list",
                 return_value=[],
             ) as mock_list,
         ):
@@ -283,7 +283,7 @@ class TestListSnapshots:
     def test_returns_empty_list_when_no_snapshots(self, client):
         with (
             patch("backend.app.get_current_devices", return_value=[]),
-            patch("backend.app.ConfigurationHelper.get_log_snapshots_list", return_value=[]),
+            patch("backend.app.LogSnapshotsHelper.get_log_snapshots_list", return_value=[]),
         ):
             resp = client.get("/api/snapshots")
         data = resp.get_json()
@@ -301,9 +301,9 @@ class TestGetSnapshotContent:
 
         with (
             patch("backend.app.get_current_devices", return_value=[]),
-            patch("backend.app.ConfigurationHelper.get_log_snapshots_list", return_value=[snap]),
+            patch("backend.app.LogSnapshotsHelper.get_log_snapshots_list", return_value=[snap]),
             patch(
-                "backend.app.ConfigurationHelper.get_log_content_for_selected_snapshots",
+                "backend.app.LogSnapshotsHelper.get_log_content_for_selected_snapshots",
                 return_value=mock_df,
             ),
         ):
@@ -317,7 +317,7 @@ class TestGetSnapshotContent:
     def test_returns_404_for_unknown_snapshot(self, client):
         with (
             patch("backend.app.get_current_devices", return_value=[]),
-            patch("backend.app.ConfigurationHelper.get_log_snapshots_list", return_value=[]),
+            patch("backend.app.LogSnapshotsHelper.get_log_snapshots_list", return_value=[]),
         ):
             resp = client.get("/api/snapshots/does-not-exist/content")
         assert resp.status_code == 404
@@ -360,7 +360,7 @@ class TestStartLogsCollection:
 
     def test_defaults_to_empty_list_when_key_missing(self, client):
         with patch("backend.app.get_current_devices", return_value=[]):
-            resp = self._post(client, {})
+            resp = self._post(client, {"session_scenario": "test_1"})
         assert resp.status_code == 200
 
 
