@@ -17,6 +17,16 @@ LogOctopus automatically collects, stores, and visualises logs and system data f
 Built for automated and distributed testing workflows, it captures logs, system events, performance metrics, and command outputs from multiple devices within the context of a single test scenario — making debugging and root cause analysis significantly faster.
 Instead of manually gathering logs from different machines after a failed test, LogOctopus centralises all test evidence into one place and exposes it through an interactive web UI and REST API.
 
+## Live Demo
+
+<div align="center">
+
+[![Try the live demo](docs/demo-preview.gif)](https://kkuuba.github.io/LogOctopus/)
+
+*👆 Click the preview above to open the interactive demo*
+
+</div>
+
 ## Fast Track
 
 **What is it?** - LogOctopus is an SSH-native test observability platform that collects logs and execution data from multiple remote devices and organises everything per test session or scenario.
