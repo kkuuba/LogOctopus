@@ -123,6 +123,7 @@ Supports:
 
 * Direct SSH connections
 * Gateway/jump hosts
+* Network packet captures
 
 ### Test-session based investigation
 
@@ -164,6 +165,12 @@ reboot-test
 * Interactive charts
 * Zoom and pan
 * Device comparison
+
+**Network capture**
+
+* Collect packtes
+* Decode packets info 
+* Custom tshark dissctors
 
 ### Automation integration
 
