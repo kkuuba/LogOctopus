@@ -772,6 +772,409 @@ function MonacoLogViewer({ rows, colorMode, onPacketClick }) {
   );
 }
 
+// ── LOG FILTER BAR ────────────────────────────────────────────────────────────
+/**
+ * Filter bar with device+logName granularity.
+ *
+ * Filter key format: "deviceName\x00logName"  (null-byte separator, never
+ * appears in either field so it is safe to use as a delimiter).
+ *
+ * Layout:
+ *   - One collapsible device-group chip per unique device.
+ *   - Clicking a chip opens a popover that lists every log name for that
+ *     device, each with its own regex input field.
+ *   - Applying saves all per-(device, logName) regexes at once.
+ *
+ * Props:
+ *   logRows         – full (unfiltered) rows array
+ *   filters         – { ["device\x00logName"]: regexString }
+ *   onFiltersChange – (newFilters) => void
+ *   filteredCount   – rows after filtering
+ *   totalCount      – rows before filtering
+ */
+const FILTER_SEP = "\x00";
+const makeFilterKey = (device, logName) => `${device}${FILTER_SEP}${logName}`;
+
+const DEVICE_PALETTE = [
+  { accent: "#818cf8", bg: "rgba(129,140,248,0.12)", border: "rgba(129,140,248,0.32)" },
+  { accent: "#34d399", bg: "rgba(52,211,153,0.12)",  border: "rgba(52,211,153,0.32)"  },
+  { accent: "#fb923c", bg: "rgba(251,146,60,0.12)",  border: "rgba(251,146,60,0.32)"  },
+  { accent: "#f472b6", bg: "rgba(244,114,182,0.12)", border: "rgba(244,114,182,0.32)" },
+  { accent: "#60a5fa", bg: "rgba(96,165,250,0.12)",  border: "rgba(96,165,250,0.32)"  },
+  { accent: "#a78bfa", bg: "rgba(167,139,250,0.12)", border: "rgba(167,139,250,0.32)" },
+  { accent: "#facc15", bg: "rgba(250,204,21,0.12)",  border: "rgba(250,204,21,0.32)"  },
+  { accent: "#2dd4bf", bg: "rgba(45,212,191,0.12)",  border: "rgba(45,212,191,0.32)"  },
+];
+
+function LogFilterBar({ logRows, filters, onFiltersChange, filteredCount, totalCount }) {
+  // Build ordered map: deviceName → [logName, …]  (insertion order preserved)
+  const deviceLogMap = useMemo(() => {
+    const map = new Map(); // device → Set of logNames
+    for (const r of logRows) {
+      const dev = r.device_name ?? "";
+      const log = r.log_name   ?? "";
+      if (!map.has(dev)) map.set(dev, []);
+      if (!map.get(dev).includes(log)) map.get(dev).push(log);
+    }
+    return map;
+  }, [logRows]);
+
+  const deviceNames = useMemo(() => [...deviceLogMap.keys()], [deviceLogMap]);
+
+  // Draft state: same key format as `filters`
+  const [drafts, setDrafts] = useState(() => ({ ...filters }));
+
+  // Sync drafts when filters reset externally (modal re-open)
+  const prevFiltersRef = useRef(filters);
+  useEffect(() => {
+    if (prevFiltersRef.current !== filters) {
+      prevFiltersRef.current = filters;
+      setDrafts({ ...filters });
+    }
+  }, [filters]);
+
+  // Which device chip is expanded
+  const [expanded, setExpanded] = useState(null);
+
+  // Close popover when clicking outside
+  const popoverRef = useRef(null);
+  useEffect(() => {
+    if (!expanded) return;
+    const handler = (e) => {
+      if (popoverRef.current && !popoverRef.current.contains(e.target)) {
+        setExpanded(null);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [expanded]);
+
+  // Regex validity for all current drafts
+  const regexValid = useMemo(() => {
+    const v = {};
+    for (const [k, pat] of Object.entries(drafts)) {
+      if (!pat || !pat.trim()) { v[k] = true; continue; }
+      try { new RegExp(pat, "i"); v[k] = true; } catch { v[k] = false; }
+    }
+    return v;
+  }, [drafts]);
+
+  // Per-device helpers
+  const deviceHasFilter = (dev) =>
+    (deviceLogMap.get(dev) || []).some(log => {
+      const k = makeFilterKey(dev, log);
+      return (filters[k] ?? "").trim().length > 0;
+    });
+
+  const deviceActiveCount = (dev) =>
+    (deviceLogMap.get(dev) || []).filter(log => (filters[makeFilterKey(dev, log)] ?? "").trim()).length;
+
+  const allDraftsValid = Object.values(regexValid).every(Boolean);
+  const isFiltered = Object.values(filters).some(v => v && v.trim());
+
+  // Apply: push all drafts for the open device into applied filters
+  const applyDevice = (dev) => {
+    if (!allDraftsValid) return;
+    const next = { ...filters };
+    (deviceLogMap.get(dev) || []).forEach(log => {
+      const k = makeFilterKey(dev, log);
+      const val = drafts[k] ?? "";
+      if (val.trim()) next[k] = val; else delete next[k];
+    });
+    onFiltersChange(next);
+    setExpanded(null);
+  };
+
+  const clearDevice = (dev, e) => {
+    e.stopPropagation();
+    const next = { ...filters };
+    (deviceLogMap.get(dev) || []).forEach(log => delete next[makeFilterKey(dev, log)]);
+    const nextDrafts = { ...drafts };
+    (deviceLogMap.get(dev) || []).forEach(log => { nextDrafts[makeFilterKey(dev, log)] = ""; });
+    setDrafts(nextDrafts);
+    onFiltersChange(next);
+  };
+
+  const clearAll = () => {
+    setDrafts({});
+    onFiltersChange({});
+  };
+
+  return (
+    <div style={{
+      padding: "10px 16px",
+      borderBottom: "1px solid var(--border)",
+      background: "rgba(0,0,0,0.18)",
+      display: "flex",
+      alignItems: "center",
+      gap: 8,
+      flexWrap: "wrap",
+      flexShrink: 0,
+    }}>
+      {/* Label */}
+      <span style={{
+        fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--muted)",
+        textTransform: "uppercase", letterSpacing: "0.1em", flexShrink: 0,
+      }}>
+        Filter
+      </span>
+
+      {/* One chip per device */}
+      {deviceNames.map((dev, i) => {
+        const palette  = DEVICE_PALETTE[i % DEVICE_PALETTE.length];
+        const filtered = deviceHasFilter(dev);
+        const count    = deviceActiveCount(dev);
+        const isOpen   = expanded === dev;
+        const logNames = deviceLogMap.get(dev) || [];
+
+        return (
+          <div key={dev} style={{ position: "relative", display: "inline-flex" }} ref={isOpen ? popoverRef : null}>
+            {/* Chip button */}
+            <button
+              onClick={() => setExpanded(isOpen ? null : dev)}
+              style={{
+                display: "inline-flex", alignItems: "center", gap: 6,
+                padding: "4px 10px 4px 9px",
+                borderRadius: isOpen ? "10px 10px 0 0" : 20,
+                border: `1px solid ${isOpen || filtered ? palette.border : "var(--border)"}`,
+                borderBottom: isOpen ? "1px solid transparent" : undefined,
+                background: isOpen ? palette.bg : filtered ? palette.bg : "rgba(255,255,255,0.04)",
+                color: filtered || isOpen ? palette.accent : "var(--muted)",
+                fontFamily: "var(--font-mono)", fontSize: 11, fontWeight: filtered ? 700 : 500,
+                cursor: "pointer", transition: "all 0.15s", whiteSpace: "nowrap",
+                position: "relative", zIndex: isOpen ? 11 : 1,
+              }}
+            >
+              <span style={{
+                width: 6, height: 6, borderRadius: "50%", background: palette.accent,
+                flexShrink: 0, opacity: filtered || isOpen ? 1 : 0.4,
+                boxShadow: filtered ? `0 0 5px ${palette.accent}` : "none",
+                transition: "all 0.15s",
+              }} />
+              {dev}
+              {filtered && (
+                <>
+                  <span style={{
+                    display: "inline-flex", alignItems: "center", justifyContent: "center",
+                    minWidth: 16, height: 16, borderRadius: 8, padding: "0 4px",
+                    background: palette.accent, color: "#06061a",
+                    fontSize: 9, fontWeight: 800, flexShrink: 0,
+                  }}>
+                    {count}
+                  </span>
+                  {/* Clear-device × button */}
+                  <span
+                    onClick={(e) => clearDevice(dev, e)}
+                    title="Clear filters for this device"
+                    style={{
+                      display: "inline-flex", alignItems: "center", justifyContent: "center",
+                      width: 14, height: 14, borderRadius: "50%",
+                      background: "rgba(255,255,255,0.12)",
+                      color: palette.accent, fontSize: 10, lineHeight: 1,
+                      flexShrink: 0, cursor: "pointer",
+                    }}
+                  >×</span>
+                </>
+              )}
+              <span style={{ fontSize: 9, opacity: 0.55, marginLeft: 1 }}>{isOpen ? "▲" : "▼"}</span>
+            </button>
+
+            {/* Popover — per-logName rows */}
+            {isOpen && (
+              <div style={{
+                position: "absolute", top: "100%", left: 0,
+                background: "var(--modal-bg)",
+                border: `1px solid ${palette.border}`,
+                borderTop: "none",
+                borderRadius: "0 12px 12px 12px",
+                padding: "14px 16px 12px",
+                zIndex: 200,
+                minWidth: 340,
+                boxShadow: `0 10px 40px rgba(0,0,0,0.55), 0 0 0 1px ${palette.border}`,
+              }}>
+                {/* Popover header */}
+                <div style={{
+                  display: "flex", alignItems: "center", justifyContent: "space-between",
+                  marginBottom: 12,
+                }}>
+                  <div style={{
+                    fontFamily: "var(--font-mono)", fontSize: 10,
+                    color: palette.accent,
+                    textTransform: "uppercase", letterSpacing: "0.08em",
+                    display: "flex", alignItems: "center", gap: 6,
+                  }}>
+                    <span style={{
+                      width: 7, height: 7, borderRadius: "50%", background: palette.accent,
+                      display: "inline-block",
+                    }} />
+                    {dev}
+                  </div>
+                  <span style={{
+                    fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--muted)",
+                  }}>
+                    regex per log — case-insensitive
+                  </span>
+                </div>
+
+                {/* One row per logName */}
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  {logNames.map((log, li) => {
+                    const k       = makeFilterKey(dev, log);
+                    const draft   = drafts[k] ?? "";
+                    const valid   = regexValid[k] ?? true;
+                    const applied = (filters[k] ?? "").trim().length > 0;
+
+                    return (
+                      <div key={log}>
+                        {/* Log name label */}
+                        <div style={{
+                          display: "flex", alignItems: "center", gap: 6, marginBottom: 5,
+                        }}>
+                          <span style={{
+                            fontFamily: "var(--font-mono)", fontSize: 10,
+                            color: applied ? "#22d3ee" : "var(--muted)",
+                            background: applied ? "rgba(34,211,238,0.10)" : "rgba(255,255,255,0.05)",
+                            border: `1px solid ${applied ? "rgba(34,211,238,0.28)" : "var(--border)"}`,
+                            borderRadius: 12, padding: "2px 9px",
+                            fontWeight: applied ? 700 : 400,
+                            transition: "all 0.15s",
+                          }}>
+                            {log}
+                          </span>
+                          {applied && (
+                            <span style={{
+                              fontFamily: "var(--font-mono)", fontSize: 9,
+                              color: "#4ade80",
+                            }}>active</span>
+                          )}
+                        </div>
+
+                        {/* Regex input */}
+                        <div style={{ position: "relative" }}>
+                          <input
+                            autoFocus={li === 0}
+                            value={draft}
+                            onChange={e => setDrafts(prev => ({ ...prev, [k]: e.target.value }))}
+                            onKeyDown={e => {
+                              if (e.key === "Enter") applyDevice(dev);
+                              if (e.key === "Escape") setExpanded(null);
+                            }}
+                            placeholder={`e.g. ERROR|WARN`}
+                            style={{
+                              width: "100%",
+                              background: "var(--card-bg)",
+                              border: `1px solid ${!valid ? "#f87171" : draft ? palette.border : "var(--border)"}`,
+                              borderRadius: 7,
+                              color: "var(--text)",
+                              fontFamily: "var(--font-mono)", fontSize: 12,
+                              padding: "7px 30px 7px 10px",
+                              outline: "none", boxSizing: "border-box",
+                              transition: "border-color 0.15s",
+                            }}
+                          />
+                          {draft && (
+                            <button
+                              onClick={() => setDrafts(prev => ({ ...prev, [k]: "" }))}
+                              style={{
+                                position: "absolute", right: 8, top: "50%",
+                                transform: "translateY(-50%)",
+                                background: "none", border: "none", color: "var(--muted)",
+                                cursor: "pointer", fontSize: 14, lineHeight: 1, padding: 0,
+                              }}
+                            >×</button>
+                          )}
+                        </div>
+                        {!valid && (
+                          <div style={{ marginTop: 3, fontFamily: "var(--font-mono)", fontSize: 10, color: "#f87171" }}>
+                            ⚠ Invalid regular expression
+                          </div>
+                        )}
+                        {/* Divider between log entries */}
+                        {li < logNames.length - 1 && (
+                          <div style={{ height: 1, background: "var(--border)", marginTop: 8 }} />
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* Footer actions */}
+                <div style={{
+                  display: "flex", gap: 6, marginTop: 14,
+                  justifyContent: "space-between", alignItems: "center",
+                }}>
+                  <button
+                    onClick={(e) => clearDevice(dev, e)}
+                    style={{
+                      background: "transparent", border: "1px solid var(--border)",
+                      borderRadius: 6, color: "var(--muted)",
+                      fontFamily: "var(--font-mono)", fontSize: 11,
+                      padding: "5px 11px", cursor: "pointer",
+                    }}
+                  >Clear</button>
+                  <div style={{ display: "flex", gap: 6 }}>
+                    <button
+                      onClick={() => setExpanded(null)}
+                      style={{
+                        background: "transparent", border: "1px solid var(--border)",
+                        borderRadius: 6, color: "var(--muted)",
+                        fontFamily: "var(--font-mono)", fontSize: 11,
+                        padding: "5px 11px", cursor: "pointer",
+                      }}
+                    >Cancel</button>
+                    <button
+                      onClick={() => applyDevice(dev)}
+                      disabled={!allDraftsValid}
+                      style={{
+                        background: palette.bg, border: `1px solid ${palette.border}`,
+                        borderRadius: 6, color: palette.accent,
+                        fontFamily: "var(--font-mono)", fontSize: 11, fontWeight: 700,
+                        padding: "5px 16px",
+                        cursor: allDraftsValid ? "pointer" : "not-allowed",
+                        opacity: allDraftsValid ? 1 : 0.5, transition: "all 0.15s",
+                      }}
+                    >Apply ↵</button>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })}
+
+      {/* Spacer */}
+      <div style={{ flex: 1 }} />
+
+      {/* Row count + clear all */}
+      {isFiltered ? (
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
+          <span style={{
+            fontFamily: "var(--font-mono)", fontSize: 11,
+            color: filteredCount === 0 ? "#f87171" : "#4ade80",
+          }}>
+            {filteredCount.toLocaleString()} / {totalCount.toLocaleString()} rows
+          </span>
+          <button
+            onClick={clearAll}
+            style={{
+              background: "rgba(248,113,113,0.10)", border: "1px solid rgba(248,113,113,0.30)",
+              borderRadius: 6, color: "#f87171",
+              fontFamily: "var(--font-mono)", fontSize: 10, fontWeight: 700,
+              padding: "3px 10px", cursor: "pointer", transition: "all 0.15s", whiteSpace: "nowrap",
+            }}
+            onMouseEnter={e => e.currentTarget.style.background = "rgba(248,113,113,0.18)"}
+            onMouseLeave={e => e.currentTarget.style.background = "rgba(248,113,113,0.10)"}
+          >✕ Clear all</button>
+        </div>
+      ) : (
+        <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--muted)", flexShrink: 0 }}>
+          {totalCount.toLocaleString()} rows
+        </span>
+      )}
+    </div>
+  );
+}
+
 // ── LOG CONTENT VIEW ──────────────────────────────────────────────────────────
 function LogContentView({ rows, isChart, colorMode, chartGroups, onPacketClick }) {
   if (isChart) return <ChartContentView chartGroups={chartGroups} />;
@@ -4693,6 +5096,8 @@ export default function App() {
   const [viewingSnaps,    setViewingSnaps]    = useState([]); // snapshots currently open in the log modal
   const [logLoadProgress, setLogLoadProgress] = useState({ done: 0, total: 0 });
   const [colorMode,       setColorMode]       = useState(false);
+  // Per-device regex filter: Map<deviceName, regexString>
+  const [deviceRegexFilters, setDeviceRegexFilters] = useState({});
 
   // packet_capture "view packet details" modal
   const [packetModal,        setPacketModal]        = useState(false);
@@ -5088,6 +5493,7 @@ export default function App() {
     setChartGroups([]);
     setViewingSnaps(snapsToView);
     setLogLoadProgress({ done: 0, total: snapsToView.length });
+    setDeviceRegexFilters({});
 
     try {
       let done = 0;
@@ -5606,6 +6012,28 @@ ${rowsHtml}
     }
   };
 
+  // Apply per-(device, logName) regex filters to the full log rows.
+  // Filter keys use the same FILTER_SEP-delimited format as LogFilterBar.
+  const filteredLogRows = useMemo(() => {
+    if (!logRows || logRows.length === 0) return logRows;
+    const hasFilter = Object.values(deviceRegexFilters).some(v => v && v.trim());
+    if (!hasFilter) return logRows;
+    return logRows.filter(row => {
+      const deviceName = row.device_name ?? "";
+      const logName    = row.log_name    ?? "";
+      const key        = `${deviceName}\x00${logName}`;
+      const pattern    = deviceRegexFilters[key];
+      if (!pattern || !pattern.trim()) return true; // no filter for this pair → keep row
+      try {
+        const re   = new RegExp(pattern, "i");
+        const line = `[${row.time ?? ""}] [${deviceName}] [${logName}]  ${row.content ?? ""}`;
+        return re.test(line);
+      } catch {
+        return true; // invalid regex → keep row (safe fallback)
+      }
+    });
+  }, [logRows, deviceRegexFilters]);
+
   // Modal title with chart count info
   const logModalTitle = isChart && chartGroups.length > 0
     ? `Chart Data — ${chartGroups.length} snapshot${chartGroups.length > 1 ? "s" : ""}`
@@ -6061,8 +6489,17 @@ ${rowsHtml}
           <LogLoadProgressBar done={logLoadProgress.done} total={logLoadProgress.total} />
         ) : (
           <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
+            {!isChart && logRows.length > 0 && (
+              <LogFilterBar
+                logRows={logRows}
+                filters={deviceRegexFilters}
+                onFiltersChange={setDeviceRegexFilters}
+                filteredCount={filteredLogRows.length}
+                totalCount={logRows.length}
+              />
+            )}
             <LogContentView
-              rows={logRows}
+              rows={filteredLogRows}
               isChart={isChart}
               colorMode={colorMode}
               chartGroups={chartGroups}
