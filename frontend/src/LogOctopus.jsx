@@ -3137,16 +3137,58 @@ requests.post(f"{BASE}/api/stop-logs-collection",
 }
 
 // ── DEVICE DETAILS ────────────────────────────────────────────────────────────
+// Small pill used in the device header to show a boolean status at a glance.
+function StatusPill({ label, ok, onLabel, offLabel, pulse }) {
+  return (
+    <div
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 7,
+        background: ok ? "rgba(74,222,128,0.10)" : "rgba(248,113,113,0.08)",
+        border: `1px solid ${ok ? "rgba(74,222,128,0.28)" : "rgba(248,113,113,0.22)"}`,
+        borderRadius: 20,
+        padding: "5px 12px 5px 10px",
+        fontFamily: "var(--font-mono)",
+        fontSize: 11.5,
+        whiteSpace: "nowrap",
+      }}
+    >
+      <span
+        style={{
+          width: 6,
+          height: 6,
+          borderRadius: "50%",
+          background: ok ? "#4ade80" : "#f87171",
+          animation: pulse ? "pulse 1.6s ease-in-out infinite" : "none",
+          flexShrink: 0,
+        }}
+      />
+      <span style={{ color: "var(--muted)" }}>{label}</span>
+      <span style={{ color: ok ? "#4ade80" : "#f87171", fontWeight: 700 }}>{ok ? onLabel : offLabel}</span>
+    </div>
+  );
+}
+
 function DeviceDetails({ device, isAdmin, onRequestLogin }) {
   const [configVisible, setConfigVisible] = useState(false);
   const [errors, setErrors] = useState(null);
   const [errorsLoading, setErrorsLoading] = useState(false);
   const [errorsLoadError, setErrorsLoadError] = useState(null);
   const [errorsVisible, setErrorsVisible] = useState(false);
+  const [idCopied, setIdCopied] = useState(false);
 
   const handleShowConfig = () => {
     if (!isAdmin) { onRequestLogin(); return; }
     setConfigVisible((v) => !v);
+  };
+
+  const copyConfigId = () => {
+    if (!device.id) return;
+    navigator.clipboard.writeText(String(device.id)).then(() => {
+      setIdCopied(true);
+      setTimeout(() => setIdCopied(false), 1600);
+    });
   };
 
   const fetchErrors = async () => {
@@ -3175,39 +3217,115 @@ function DeviceDetails({ device, isAdmin, onRequestLogin }) {
 
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
-      <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
-        {[
-          ["Name",       device.name],
-          ["Connection", device.connection ? "✅ Online" : "❌ Offline"],
-          ["Log Access", device.logAccess  ? "✅ Yes"    : "❌ No"],
-          ["Collecting", device.collecting ? "🟢 Active" : "🟡 Idle"],
-        ].map(([k, v]) => (
-          <div
-            key={k}
+    <div style={{ display: "flex", flexDirection: "column", gap: 22 }}>
+      {/* Header card — device identity, live status pills, and the config id */}
+      <div
+        style={{
+          background: "linear-gradient(135deg, rgba(129,140,248,0.09), rgba(167,139,250,0.03))",
+          border: "1px solid var(--border)",
+          borderRadius: 12,
+          padding: "18px 20px",
+          display: "flex",
+          flexDirection: "column",
+          gap: 16,
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
+            <span
+              title={device.connection ? "Online" : "Offline"}
+              style={{
+                width: 10,
+                height: 10,
+                borderRadius: "50%",
+                background: device.connection ? "#4ade80" : "#f87171",
+                boxShadow: device.connection ? "0 0 8px rgba(74,222,128,0.7)" : "0 0 8px rgba(248,113,113,0.6)",
+                flexShrink: 0,
+              }}
+            />
+            <span
+              style={{
+                fontFamily: "var(--font-display)",
+                fontSize: 18,
+                fontWeight: 700,
+                color: "var(--text)",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {device.name}
+            </span>
+          </div>
+
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <StatusPill label="Connection" ok={device.connection} onLabel="Online" offLabel="Offline" />
+            <StatusPill label="Log Access" ok={device.logAccess} onLabel="Yes" offLabel="No" />
+            <StatusPill label="Collecting" ok={device.collecting} onLabel="Active" offLabel="Idle" pulse={device.collecting} />
+          </div>
+        </div>
+
+        {/* Device Config ID — copyable */}
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 12,
+            background: "rgba(0,0,0,0.28)",
+            border: "1px solid var(--border)",
+            borderRadius: 8,
+            padding: "10px 10px 10px 14px",
+          }}
+        >
+          <span
             style={{
-              background: "var(--card-bg)",
-              border: "1px solid var(--border)",
-              borderRadius: 8,
-              padding: "12px 18px",
-              minWidth: 140,
+              fontSize: 10,
+              color: "var(--muted)",
+              textTransform: "uppercase",
+              letterSpacing: "0.07em",
+              fontFamily: "var(--font-display)",
+              fontWeight: 600,
+              whiteSpace: "nowrap",
+              flexShrink: 0,
             }}
           >
-            <div style={{ fontSize: 10, color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>{k}</div>
-            <div style={{ fontFamily: "var(--font-mono)", fontSize: 14, color: "var(--text)" }}>{v}</div>
-          </div>
-        ))}
+            Device ID
+          </span>
+          <code
+            title={device.id ? String(device.id) : undefined}
+            style={{
+              flex: 1,
+              minWidth: 0,
+              fontFamily: "var(--font-mono)",
+              fontSize: 12.5,
+              color: "#a5b4fc",
+              overflowX: "auto",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {device.id || "—"}
+          </code>
+          <Btn
+            size="sm"
+            variant={idCopied ? "success" : "subtle"}
+            onClick={copyConfigId}
+            disabled={!device.id}
+            style={{ flexShrink: 0 }}
+          >
+            {idCopied ? "✓ Copied" : "⧉ Copy"}
+          </Btn>
+        </div>
       </div>
 
       {/* Config section — guarded by admin role */}
-      <div>
+      <div style={{ borderTop: "1px solid var(--border)", paddingTop: 18 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 10 }}>
-          <h4 style={{ fontFamily: "var(--font-display)", fontSize: 13, color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.08em", margin: 0 }}>
-            JSON Configuration
+          <h4 style={{ fontFamily: "var(--font-display)", fontSize: 13, color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.08em", margin: 0, display: "flex", alignItems: "center", gap: 7 }}>
+            <span style={{ fontSize: 13 }}>🛠️</span> JSON Configuration
           </h4>
           <Btn size="sm" variant={isAdmin ? "subtle" : "admin"} onClick={handleShowConfig}>
             {isAdmin
-              ? configVisible ? "🙈 Hide" : "👁 Show"
+              ? configVisible ? "Hide" : "Show"
               : "🔐 Admin only"}
           </Btn>
         </div>
@@ -3262,10 +3380,10 @@ function DeviceDetails({ device, isAdmin, onRequestLogin }) {
       </div>
 
       {/* Error Logs section */}
-      <div>
+      <div style={{ borderTop: "1px solid var(--border)", paddingTop: 18 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 10 }}>
-          <h4 style={{ fontFamily: "var(--font-display)", fontSize: 13, color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.08em", margin: 0 }}>
-            Error Logs
+          <h4 style={{ fontFamily: "var(--font-display)", fontSize: 13, color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.08em", margin: 0, display: "flex", alignItems: "center", gap: 7 }}>
+            <span style={{ fontSize: 13 }}>⚠️</span> Error Logs
           </h4>
           {errors !== null && errors.length > 0 && (
             <span style={{
