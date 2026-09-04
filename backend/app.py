@@ -288,6 +288,79 @@ def add_device():
     return jsonify({"device": device_to_dict(device_instance)}), 201
 
 
+@app.put("/api/devices/<device_id>")
+def update_device(device_id: str):
+    """Replace the configuration of an existing device in-place.
+
+    The device watchdog process is not restarted automatically; the frontend
+    should prompt the user to restart collection if it is currently in
+    progress.
+
+    PUT '/api/devices/<device_id>'
+
+    Path parameters:
+        - device_id (str) - The config ID of the device to update.
+
+    Request body (JSON):
+        - contents (str) - Base-64-encoded replacement config file content.
+          Optionally prefixed with a data-URI header; the prefix is stripped
+          automatically.
+
+    Returns:
+        200 OK:
+            JSON object containing the updated device:
+
+            - device (dict) - Serialised device (see :func:`device_to_dict`).
+
+        404 Not Found:
+            '{ "error": "not_found" }' - No device with the given ID exists.
+
+        422 Unprocessable Entity:
+            '{ "error": "invalid_config" }' - The decoded config failed
+            validation; the original config is left untouched.
+    """
+    import base64
+
+    device = get_target_device(device_id)
+    if not device:
+        return _bad("not_found", 404)
+
+    body = request.get_json(force=True)
+    contents = body.get("contents", "")
+
+    # Strip data-URI prefix if present
+    if "," in contents:
+        contents = contents.split(",", 1)[1]
+
+    try:
+        new_cfg_dict = json.loads(base64.b64decode(contents).decode())
+    except Exception:
+        return _bad("invalid_config", 422)
+
+    if not isinstance(new_cfg_dict, dict) or not new_cfg_dict.get("device_name"):
+        return _bad("invalid_config", 422)
+
+    # Locate the config file that belongs to this device and overwrite it
+    # in-place so the device_id (directory name) stays the same.
+    cfg_path = Path("data") / device_id / f"{device_id}.json"
+    if not cfg_path.exists():
+        return _bad("not_found", 404)
+
+    # Write atomically: save to a temp file first, then replace.
+    tmp_path = cfg_path.with_suffix(".json.tmp")
+    try:
+        tmp_path.write_text(json.dumps(new_cfg_dict, indent=2))
+        tmp_path.replace(cfg_path)
+    except Exception as exc:
+        tmp_path.unlink(missing_ok=True)
+        return _bad(f"failed to write config: {exc}", 500)
+
+    updated_device = get_target_device(device_id)
+    if not updated_device:
+        return _bad("not_found", 404)
+    return jsonify({"device": device_to_dict(updated_device)})
+
+
 @app.delete("/api/devices/<device_id>")
 def remove_device(device_id: str):
     """Remove a single device and terminate its watchdog process.

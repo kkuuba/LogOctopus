@@ -3170,7 +3170,7 @@ function StatusPill({ label, ok, onLabel, offLabel, pulse }) {
   );
 }
 
-function DeviceDetails({ device, isAdmin, onRequestLogin }) {
+function DeviceDetails({ device, isAdmin, onRequestLogin, onEdit }) {
   const [configVisible, setConfigVisible] = useState(false);
   const [errors, setErrors] = useState(null);
   const [errorsLoading, setErrorsLoading] = useState(false);
@@ -3328,6 +3328,11 @@ function DeviceDetails({ device, isAdmin, onRequestLogin }) {
               ? configVisible ? "Hide" : "Show"
               : "🔐 Admin only"}
           </Btn>
+          {isAdmin && (
+            <Btn size="sm" variant="primary" onClick={() => onEdit(device)}>
+              ✏️ Edit Config
+            </Btn>
+          )}
         </div>
 
         {!isAdmin && (
@@ -4082,18 +4087,83 @@ function LogEntryEditor({ entry, conn, index, onChange, onRemove, onDuplicate })
 }
 
 // ── CONFIG BUILDER WIZARD ──────────────────────────────────────────────────────
-function ConfigBuilderModal({ open, onClose, onSave }) {
+// ── CONFIG → BUILDER STATE ───────────────────────────────────────────────────
+// Converts a raw device.config object (as returned by the API) into the
+// conn / entries / packetCapture shapes that ConfigBuilderModal uses.
+// Called when the user clicks "Edit Config" on an existing device.
+function configToBuilderState(config) {
+  // ── connection fields ────────────────────────────────────────────────────
+  // Flatten the nested gateway chain back into the flat gateways[] array
+  // that the builder uses internally.
+  const flatGateways = [];
+  let hop = config.gateway;
+  while (hop) {
+    flatGateways.push({
+      _id: Math.random().toString(36).slice(2),
+      ip_address: hop.ip_address || "",
+      port: hop.port ?? 22,
+      user: hop.user || "",
+      password: hop.password || "",
+      ssh_key_string: hop.ssh_key_string || "",
+      authMode: hop.ssh_key_string ? "key" : "password",
+    });
+    hop = hop.gateway;
+  }
+
+  const conn = {
+    device_name:         config.device_name || "",
+    ip_address:          config.ip_address  || "",
+    port:                config.port        ?? 22,
+    user:                config.user        || "pi",
+    password:            config.password    || "",
+    ssh_key_string:      config.ssh_key_string || "",
+    authMode:            config.ssh_key_string ? "key" : "password",
+    collection_interval: config.collection_interval ?? 30,
+    gateways:            flatGateways,
+  };
+
+  // ── log entries ──────────────────────────────────────────────────────────
+  const entries = (config.log_file_configs || []).map(e => ({
+    _id:                   Math.random().toString(36).slice(2),
+    log_name:              e.log_name              || "",
+    log_file_cmd:          e.log_file_cmd          || "",
+    data_extraction_regex: e.data_extraction_regex || "",
+    log_activation_cmd:    e.log_activation_cmd    || "",
+    log_deactivation_cmd:  e.log_deactivation_cmd  || "",
+    custom_shell_prompt:   e.custom_shell_prompt   || "",
+    log_type:              e.log_type              || "text",
+    data_unit:             e.data_unit             || "",
+    description:           e.description           || "",
+  }));
+
+  // ── packet capture ───────────────────────────────────────────────────────
+  const pcc = config.packets_capture_config;
+  const packetCapture = pcc
+    ? {
+        enabled:             true,
+        capture_start_cmd:   pcc.capture_start_cmd   || "tcpdump -i any",
+        capture_stop_cmd:    pcc.capture_stop_cmd     || "pkill -INT -f 'tcpdump -i any'",
+        capture_description: pcc.capture_description || "Network packet capture",
+        max_pcap_size_mb:    pcc.max_pcap_size_mb != null ? String(pcc.max_pcap_size_mb) : "",
+      }
+    : {
+        enabled:             false,
+        capture_start_cmd:   "tcpdump -i any",
+        capture_stop_cmd:    "pkill -INT -f 'tcpdump -i any'",
+        capture_description: "Network packet capture",
+        max_pcap_size_mb:    "",
+      };
+
+  return { conn, entries, packetCapture };
+}
+
+function ConfigBuilderModal({ open, onClose, onSave, initialDevice }) {
   const [step, setStep] = useState(1); // 1=connection, 2=log entries
   const EMPTY_CONN = () => ({
     device_name: "", ip_address: "", port: 22,
     user: "pi", password: "", ssh_key_string: "", authMode: "password", collection_interval: 30,
     gateways: [],
   });
-  const [conn, setConn] = useState(EMPTY_CONN);
-  const [entries, setEntries] = useState([EMPTY_LOG_ENTRY()]);
-  const [connStatus, setConnStatus] = useState(null); // null | "testing" | {success, message}
-  const [saving, setSaving] = useState(false);
-
   const EMPTY_PACKET_CAPTURE = () => ({
     enabled: false,
     capture_start_cmd: "tcpdump -i any",
@@ -4101,8 +4171,32 @@ function ConfigBuilderModal({ open, onClose, onSave }) {
     capture_description: "Network packet capture",
     max_pcap_size_mb: "",
   });
+
+  const [conn, setConn] = useState(EMPTY_CONN);
+  const [entries, setEntries] = useState([EMPTY_LOG_ENTRY()]);
+  const [connStatus, setConnStatus] = useState(null); // null | "testing" | {success, message}
+  const [saving, setSaving] = useState(false);
   const [packetCapture, setPacketCapture] = useState(EMPTY_PACKET_CAPTURE);
   const setPC = (k, v) => setPacketCapture(prev => ({ ...prev, [k]: v }));
+
+  // When the modal opens for editing an existing device, pre-populate all
+  // fields from the device's current config.  When it opens for a new device
+  // (initialDevice is null/undefined) reset everything to blank.
+  useEffect(() => {
+    if (!open) return;
+    if (initialDevice?.config) {
+      const { conn: c, entries: e, packetCapture: pc } = configToBuilderState(initialDevice.config);
+      setConn(c);
+      setEntries(e.length > 0 ? e : [EMPTY_LOG_ENTRY()]);
+      setPacketCapture(pc);
+    } else {
+      setConn(EMPTY_CONN());
+      setEntries([EMPTY_LOG_ENTRY()]);
+      setPacketCapture(EMPTY_PACKET_CAPTURE());
+    }
+    setStep(1);
+    setConnStatus(null);
+  }, [open, initialDevice]);
 
   const setC = (k, v) => setConn(prev => ({ ...prev, [k]: v }));
 
@@ -4203,15 +4297,16 @@ function ConfigBuilderModal({ open, onClose, onSave }) {
     setSaving(true);
     try {
       const config = buildConfig();
-      const b64 = btoa(JSON.stringify(config, null, 2));
-      await onSave(`data:application/json;base64,${b64}`);
+      const b64 = btoa(unescape(encodeURIComponent(JSON.stringify(config, null, 2))));
+      const contents = `data:application/json;base64,${b64}`;
+      if (initialDevice) {
+        // Edit mode: update the existing device in-place via PUT
+        await onSave(contents, initialDevice.id);
+      } else {
+        // Create mode: add a new device via POST
+        await onSave(contents, null);
+      }
       onClose();
-      // Reset
-      setStep(1);
-      setConn(EMPTY_CONN());
-      setEntries([EMPTY_LOG_ENTRY()]);
-      setPacketCapture(EMPTY_PACKET_CAPTURE());
-      setConnStatus(null);
     } finally {
       setSaving(false);
     }
@@ -4263,8 +4358,12 @@ function ConfigBuilderModal({ open, onClose, onSave }) {
               🛠
             </div>
             <div>
-              <div style={{ fontFamily: "var(--font-display)", fontWeight: 800, fontSize: 17, color: "var(--text)", letterSpacing: "0.02em" }}>Device Config Builder</div>
-              <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--muted)", marginTop: 2 }}>Build and test your configuration interactively</div>
+              <div style={{ fontFamily: "var(--font-display)", fontWeight: 800, fontSize: 17, color: "var(--text)", letterSpacing: "0.02em" }}>
+                {initialDevice ? `Edit Config — ${initialDevice.name}` : "Device Config Builder"}
+              </div>
+              <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--muted)", marginTop: 2 }}>
+                {initialDevice ? "Modify the device configuration. Changes take effect on the next collection cycle." : "Build and test your configuration interactively"}
+              </div>
             </div>
           </div>
           <button onClick={onClose} style={{ background: "rgba(255,255,255,0.06)", border: "1px solid var(--border)", borderRadius: 8, color: "var(--muted)", cursor: "pointer", fontSize: 18, lineHeight: 1, padding: "5px 9px", transition: "all 0.15s" }}
@@ -4684,7 +4783,7 @@ function ConfigBuilderModal({ open, onClose, onSave }) {
               <>
                 <Btn variant="ghost" onClick={() => setStep(1)}>← Back</Btn>
                 <Btn variant="success" onClick={handleSave} disabled={saving || !step2Valid}>
-                  {saving ? "Saving…" : "💾 Save Device"}
+                  {saving ? "Saving…" : initialDevice ? "💾 Save Changes" : "💾 Save Device"}
                 </Btn>
               </>
             )}
@@ -5234,6 +5333,7 @@ export default function App() {
   const [sessionModal,    setSessionModal]    = useState(null);
   const [apiModal,        setApiModal]        = useState(false);
   const [builderModal,    setBuilderModal]    = useState(false);
+  const [editBuilderDevice, setEditBuilderDevice] = useState(null); // Device being edited, or null for new
   const [loginModal,              setLoginModal]              = useState(false);
   const [settingsModal,           setSettingsModal]           = useState(false);
   const [scenarioModal,           setScenarioModal]           = useState(false);
@@ -5445,7 +5545,25 @@ export default function App() {
     setDevices((prev) => [...prev, device]);
   };
 
-  const handleUpload = async (contents) => {
+  // handleUpload is called by ConfigBuilderModal.onSave with (contents, deviceId).
+  // When deviceId is set it is an edit (PUT); otherwise it is a new device (POST).
+  const handleUpload = async (contents, deviceId = null) => {
+    if (deviceId) {
+      // ── Edit existing device ────────────────────────────────────────────
+      try {
+        const { device } = await apiFetch(`/api/devices/${encodeURIComponent(deviceId)}`, {
+          method: "PUT",
+          body: JSON.stringify({ contents }),
+        });
+        setDevices(prev => prev.map(d => d.id === deviceId ? device : d));
+        addToast(`Device "${device.name}" updated successfully.`, "success");
+      } catch (e) {
+        addToast(e.status === 422 ? "Invalid configuration — could not update device." : `Update failed: ${e.message}`);
+      }
+      return;
+    }
+
+    // ── Add new device ────────────────────────────────────────────────────
     // Single file: keep the original behaviour/messages unchanged.
     if (!Array.isArray(contents)) {
       try {
@@ -6511,11 +6629,12 @@ ${rowsHtml}
 
       {/* MODALS */}
 
-      {/* Config Builder Modal */}
+      {/* Config Builder Modal — used for both creating new devices and editing existing ones */}
       <ConfigBuilderModal
         open={builderModal}
-        onClose={() => setBuilderModal(false)}
+        onClose={() => { setBuilderModal(false); setEditBuilderDevice(null); }}
         onSave={handleUpload}
+        initialDevice={editBuilderDevice}
       />
 
       {/* Session scenario modal — shown when the user clicks ▶ Start Collection */}
@@ -6691,6 +6810,11 @@ ${rowsHtml}
             device={deviceModal}
             isAdmin={auth.isAdmin}
             onRequestLogin={() => setLoginModal(true)}
+            onEdit={(device) => {
+              setEditBuilderDevice(device);
+              setBuilderModal(true);
+              setDeviceModal(null);
+            }}
           />
         )}
       </Modal>
