@@ -5179,9 +5179,10 @@ export default function App() {
   const [systemStats,     setSystemStats]     = useState(null);
   const [selectedDevices, setSelectedDevices] = useState([]);
   // Device groups: { id, name, deviceIds[] }
-  const [groups, setGroups] = useState(() => {
-    try { return JSON.parse(localStorage.getItem("lo_device_groups") || "[]"); } catch { return []; }
-  });
+  // Loaded from the server so all users share the same grouping configuration.
+  const [groups, setGroups] = useState([]);
+  // Collapsed state is intentionally kept local — it is a UI preference, not
+  // shared data, so each user can expand/collapse independently.
   const [collapsedGroups, setCollapsedGroups] = useState(() => {
     try { return new Set(JSON.parse(localStorage.getItem("lo_collapsed_groups") || "[]")); } catch { return new Set(); }
   });
@@ -5197,10 +5198,17 @@ export default function App() {
   });
   const [snapsLoading,    setSnapsLoading]    = useState(true);
   const [selectedSnaps,   setSelectedSnaps]   = useState([]);
-  const [isChart,         setIsChart]         = useState(false);
-  const [searchParam,     setSearchParam]     = useState("");
-  const [searchValue,     setSearchValue]     = useState("");
-  const [filterActive,    setFilterActive]    = useState(false);
+  // Initialise filter state directly from the URL so the correct values are
+  // available before the first render and before any fetch fires.  This
+  // eliminates all races: no effect needs to read the URL and set state after
+  // mount, so there is no window where the wrong (empty) filter is visible.
+  const [isChart,      setIsChart]      = useState(() => new URLSearchParams(window.location.search).get("log_type") === "chart");
+  const [searchParam,  setSearchParam]  = useState(() => new URLSearchParams(window.location.search).get("search_param") || "");
+  const [searchValue,  setSearchValue]  = useState(() => new URLSearchParams(window.location.search).get("search_value")  || "");
+  const [filterActive, setFilterActive] = useState(() => {
+    const p = new URLSearchParams(window.location.search);
+    return !!(p.get("search_param") || p.get("search_value"));
+  });
 
   // stop-collection loading overlay
   const [stoppingCollection, setStoppingCollection] = useState(false);
@@ -5282,8 +5290,33 @@ export default function App() {
     }
   }, [addToast, pageSize]);
 
+  // Load groups from the server once on mount so all users share the same
+  // device-group configuration.
   useEffect(() => {
-    localStorage.setItem("lo_device_groups", JSON.stringify(groups));
+    apiFetch("/api/settings/device-groups")
+      .then((data) => { if (Array.isArray(data)) setGroups(data); })
+      .catch(() => {}); // non-critical — fall back to empty groups
+  }, []);
+
+  // Persist the full groups array to the server whenever it changes.
+  // We skip the first render (empty initial state) by checking length, but
+  // still save when the user explicitly empties all groups.
+  const groupsRef = useRef(null);
+  useEffect(() => {
+    // Don't save the uninitialised empty array that exists before the server
+    // fetch completes — only save after the first real server response has
+    // set groupsRef.current to a non-null value.
+    if (groupsRef.current === null) {
+      // Mark that we have now received the server state; subsequent changes
+      // (including user-driven deletions down to []) will be persisted.
+      groupsRef.current = groups;
+      return;
+    }
+    groupsRef.current = groups;
+    apiFetch("/api/settings/device-groups", {
+      method: "PUT",
+      body: JSON.stringify({ groups }),
+    }).catch(() => {}); // best-effort
   }, [groups]);
 
   useEffect(() => {
@@ -5374,7 +5407,14 @@ export default function App() {
   );
 
   useEffect(() => { fetchDevices(); }, [fetchDevices]);
-  useEffect(() => { fetchSnapshots("", "", false); }, [fetchSnapshots]);
+
+  // On mount, filter state is already correct (initialised from URL params via
+  // lazy useState), so we just fire the fetch directly with those values.
+  // No URL-reading or setState needed here — that's what prevents the flicker.
+  useEffect(() => {
+    fetchSnapshots(filterActive ? searchParam : "", filterActive ? searchValue : "", isChart);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
   useEffect(() => { fetchSystemStats(); }, [fetchSystemStats]);
 
   useEffect(() => {
@@ -5387,23 +5427,14 @@ export default function App() {
     return () => clearInterval(id);
   }, [fetchSystemStats]);
 
-  // FIX: this effect previously had no dependency array, causing it to run
-  // after every render and rely on a manual ref comparison to detect changes.
-  // Using [isChart] as the dependency array is correct and idiomatic.
+  // Re-fetch when the user manually toggles text/chart.
+  // isChart is stable on mount (set from URL before first render) so this
+  // effect only fires on genuine user-driven toggles, never on initial load.
+  const isMountedRef = useRef(false);
   useEffect(() => {
+    if (!isMountedRef.current) { isMountedRef.current = true; return; }
     fetchSnapshots(filterActive ? searchParam : "", filterActive ? searchValue : "", isChart);
   }, [isChart]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  useEffect(() => {
-    const p = new URLSearchParams(window.location.search);
-    const sp = p.get("search_param") || "";
-    const sv = p.get("search_value")  || "";
-    const lt = p.get("log_type") === "chart";
-    if (sp || sv) {
-      setSearchParam(sp); setSearchValue(sv); setIsChart(lt); setFilterActive(true);
-      fetchSnapshots(sp, sv, lt);
-    }
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── handlers ───────────────────────────────────────────────────────────────
   const uploadOne = async (contents) => {

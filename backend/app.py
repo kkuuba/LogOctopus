@@ -1187,6 +1187,64 @@ def delete_dissector(filename: str):
     return jsonify({"deleted": deleted})
 
 
+# ── device groups ─────────────────────────────────────────────────────────────
+
+@app.get("/api/settings/device-groups")
+def get_device_groups():
+    """Return the persisted device-group configuration.
+
+    Device groups are stored server-side so that every user/browser session
+    sees the same grouping without having to configure it independently.
+
+    GET '/api/settings/device-groups'
+
+    Returns:
+        200 OK:
+            JSON array of group objects.  Each element contains:
+
+            - id (str) - Stable group identifier.
+            - name (str) - Human-readable group name.
+            - deviceIds (list[str]) - Ordered list of device config IDs in this group.
+
+            Example::
+
+                [{"id": "abc", "name": "Core Routers", "deviceIds": ["d1", "d2"]}]
+    """
+    settings = _load_settings()
+    return jsonify(settings.get("device_groups", []))
+
+
+@app.put("/api/settings/device-groups")
+def save_device_groups():
+    """Persist the full device-group configuration.
+
+    Replaces the stored groups array atomically.  The frontend sends the
+    complete array on every mutation (create, rename, reorder, delete).
+
+    PUT '/api/settings/device-groups'
+
+    Request body (JSON):
+        - groups (list[dict]) - Full replacement groups array.
+          Each entry must have id (str), name (str), and deviceIds (list[str]).
+
+    Returns:
+        200 OK:
+            '{ "status": "ok" }'
+
+        400 Bad Request:
+            '{ "error": "groups must be a list" }'
+    """
+    body   = request.get_json(force=True)
+    groups = body.get("groups")
+    if not isinstance(groups, list):
+        return _bad("groups must be a list")
+
+    settings = _load_settings()
+    settings["device_groups"] = groups
+    _save_settings(settings)
+    return jsonify({"status": "ok"})
+
+
 # ── login ─────────────────────────────────────────────────────────────────────
 
 @app.post("/api/auth/login")
