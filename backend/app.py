@@ -656,14 +656,23 @@ def get_packet_details(snapshot_id: str, packet_number: int):
     if not target or getattr(target, "log_name", "") != "network capture":
         return _bad("not_found", 404)
 
+    # Resolve the device so we can read its optional custom decoder command.
+    snap_device = get_target_device(target.device_id)
+    decoder_cmd = (
+        snap_device.device_config.get("packets_capture_config", {}).get("decoder_cmd")
+        if snap_device
+        else None
+    )
+
     device_data_dir = os.path.join("data", target.device_id)
     try:
         details = PcapDecoder.get_session_packet_details(
             device_data_dir, target.session_id, packet_number,
             dissectors_dir=dissector_registry,
+            decoder_cmd=decoder_cmd,
         )
     except FileNotFoundError as exc:
-        return _bad(f"tshark not available: {exc}", 500)
+        return _bad(f"pcap decoder not available: {exc}", 500)
 
     if not details:
         return _bad("not_found", 404)

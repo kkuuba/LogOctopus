@@ -4145,6 +4145,7 @@ function configToBuilderState(config) {
         capture_stop_cmd:    pcc.capture_stop_cmd     || "pkill -INT -f 'tcpdump -i any'",
         capture_description: pcc.capture_description || "Network packet capture",
         max_pcap_size_mb:    pcc.max_pcap_size_mb != null ? String(pcc.max_pcap_size_mb) : "",
+        decoder_cmd:         pcc.decoder_cmd          || "",
       }
     : {
         enabled:             false,
@@ -4152,6 +4153,7 @@ function configToBuilderState(config) {
         capture_stop_cmd:    "pkill -INT -f 'tcpdump -i any'",
         capture_description: "Network packet capture",
         max_pcap_size_mb:    "",
+        decoder_cmd:         "",
       };
 
   return { conn, entries, packetCapture };
@@ -4170,6 +4172,7 @@ function ConfigBuilderModal({ open, onClose, onSave, initialDevice }) {
     capture_stop_cmd: "pkill -INT -f 'tcpdump -i any'",
     capture_description: "Network packet capture",
     max_pcap_size_mb: "",
+    decoder_cmd: "",
   });
 
   const [conn, setConn] = useState(EMPTY_CONN);
@@ -4286,6 +4289,10 @@ function ConfigBuilderModal({ open, onClose, onSave, initialDevice }) {
       // than a literal 0 MB cap.
       if (packetCapture.max_pcap_size_mb !== "" && packetCapture.max_pcap_size_mb != null) {
         pcc.max_pcap_size_mb = Number(packetCapture.max_pcap_size_mb);
+      }
+      // Omit when blank so the backend falls back to the default tshark binary.
+      if (packetCapture.decoder_cmd && packetCapture.decoder_cmd.trim()) {
+        pcc.decoder_cmd = packetCapture.decoder_cmd.trim();
       }
       config.packets_capture_config = pcc;
     }
@@ -4752,6 +4759,18 @@ function ConfigBuilderModal({ open, onClose, onSave, initialDevice }) {
                         <div style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--muted)", marginTop: 4 }}>
                           Capture stops automatically once reached. Blank = unlimited.
                         </div>
+                      </div>
+                    </div>
+                    <div style={{ marginTop: 12 }}>
+                      <div style={FIELD_LABEL}>Custom PCAP Decoder Command</div>
+                      <input
+                        value={packetCapture.decoder_cmd}
+                        onChange={e => setPC("decoder_cmd", e.target.value)}
+                        placeholder="Default: tshark"
+                        style={{ ...inputStyle, fontFamily: "var(--font-mono)" }}
+                      />
+                      <div style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--muted)", marginTop: 4 }}>
+                        Optional. Override the local binary used to decode pcap files. The command must accept the pcap file path as its last argument and write tab-separated lines in tshark field order to stdout. Leave blank to use the default <span style={{ color: "var(--text)" }}>tshark</span>.
                       </div>
                     </div>
                   </>
