@@ -239,7 +239,7 @@ function PlotlyChart({ rows, title, index, dataUnit }) {
  * snapshot as its own titled Plotly panel inside the modal — side by side
  * (2-column grid) or stacked depending on count.
  */
-function ChartContentView({ chartGroups }) {
+function ChartContentView({ chartGroups, onShareChart }) {
   // chartGroups: [{ snapInfo, rows }]
   if (!chartGroups || chartGroups.length === 0)
     return <p style={{ color: "var(--muted)" }}>No chart data.</p>;
@@ -265,6 +265,7 @@ function ChartContentView({ chartGroups }) {
                 marginTop: -12,
                 marginBottom: 8,
                 paddingLeft: 4,
+                alignItems: "center",
               }}
             >
               <Badge color="cyan">{g.snapInfo.logName}</Badge>
@@ -272,6 +273,28 @@ function ChartContentView({ chartGroups }) {
               <Badge color="default">{g.rows.length} points</Badge>
               <Badge color="default">Session: {g.snapInfo.sessionId}</Badge>
               <Badge color="default">Data unit: {g.snapInfo.dataUnit}</Badge>
+              {onShareChart && (
+                <button
+                  onClick={() => onShareChart(g.snapInfo.id)}
+                  title="Copy shareable link to this chart"
+                  style={{
+                    marginLeft: "auto",
+                    display: "inline-flex", alignItems: "center", gap: 5,
+                    padding: "4px 10px",
+                    background: "rgba(129,140,248,0.1)",
+                    border: "1px solid rgba(129,140,248,0.3)",
+                    borderRadius: 7,
+                    color: "var(--accent)",
+                    fontFamily: "var(--font-mono)", fontSize: 11,
+                    cursor: "pointer",
+                    transition: "all 0.15s",
+                  }}
+                  onMouseEnter={e => { e.currentTarget.style.background = "rgba(129,140,248,0.2)"; }}
+                  onMouseLeave={e => { e.currentTarget.style.background = "rgba(129,140,248,0.1)"; }}
+                >
+                  🔗 Share Chart
+                </button>
+              )}
             </div>
           </div>
         );
@@ -511,12 +534,13 @@ function parsePacketNumber(content) {
  *                   Every other log line is untouched — the glyph margin
  *                   only ever gets a decoration for packet_capture rows.
  */
-function MonacoLogViewer({ rows, colorMode, onPacketClick }) {
+function MonacoLogViewer({ rows, colorMode, onPacketClick, highlightLine, onEditorReady }) {
   const containerRef      = useRef(null);
   const editorRef         = useRef(null);
   const modelRef          = useRef(null);
   const decorationsRef    = useRef([]); // current line-color decoration IDs
   const glyphDecorationsRef = useRef([]); // current packet-glyph decoration IDs
+  const shareDecorationsRef = useRef([]); // highlight for shared line
   const [ready, setReady] = useState(false);
   const [loadErr, setLoadErr] = useState(null);
 
@@ -678,6 +702,13 @@ function MonacoLogViewer({ rows, colorMode, onPacketClick }) {
           }
         });
 
+        // Expose a function the parent can call to get the current cursor line
+        if (onEditorReady) {
+          onEditorReady({
+            getCurrentLine: () => editor.getPosition()?.lineNumber ?? 1,
+          });
+        }
+
         setReady(true);
       })
       .catch((e) => {
@@ -692,6 +723,7 @@ function MonacoLogViewer({ rows, colorMode, onPacketClick }) {
       modelRef.current  = null;
       decorationsRef.current = [];
       glyphDecorationsRef.current = [];
+      shareDecorationsRef.current = [];
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -733,6 +765,43 @@ function MonacoLogViewer({ rows, colorMode, onPacketClick }) {
     ro.observe(containerRef.current);
     return () => ro.disconnect();
   }, [ready]);
+
+  // Highlight and scroll to the shared line when highlightLine changes
+  useEffect(() => {
+    const editor = editorRef.current;
+    if (!ready || !editor || !highlightLine) return;
+
+    // Ensure style element for the highlight class exists
+    const styleId = "lo-share-highlight-style";
+    if (!document.getElementById(styleId)) {
+      const el = document.createElement("style");
+      el.id = styleId;
+      el.textContent = `.lo-share-line { background: rgba(251,191,36,0.18) !important; border-left: 3px solid #fbbf24 !important; }
+        .lo-share-line-number { color: #fbbf24 !important; font-weight: 700 !important; }`;
+      document.head.appendChild(el);
+    }
+
+    shareDecorationsRef.current = editor.deltaDecorations(
+      shareDecorationsRef.current,
+      [{
+        range: {
+          startLineNumber: highlightLine,
+          startColumn: 1,
+          endLineNumber: highlightLine,
+          endColumn: 1,
+        },
+        options: {
+          isWholeLine: true,
+          className: "lo-share-line",
+          lineNumberClassName: "lo-share-line-number",
+        },
+      }]
+    );
+
+    // Scroll the highlighted line into view (center it)
+    editor.revealLineInCenter(highlightLine);
+    editor.setPosition({ lineNumber: highlightLine, column: 1 });
+  }, [ready, highlightLine]);
 
   if (loadErr) {
     return (
@@ -1176,15 +1245,21 @@ function LogFilterBar({ logRows, filters, onFiltersChange, filteredCount, totalC
 }
 
 // ── LOG CONTENT VIEW ──────────────────────────────────────────────────────────
-function LogContentView({ rows, isChart, colorMode, chartGroups, onPacketClick }) {
-  if (isChart) return <ChartContentView chartGroups={chartGroups} />;
+function LogContentView({ rows, isChart, colorMode, chartGroups, onPacketClick, onShareChart, onEditorReady, highlightLine }) {
+  if (isChart) return <ChartContentView chartGroups={chartGroups} onShareChart={onShareChart} />;
 
   if (!rows || rows.length === 0)
     return <p style={{ color: "var(--muted)" }}>No data.</p>;
 
   return (
     <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
-      <MonacoLogViewer rows={rows} colorMode={colorMode} onPacketClick={onPacketClick} />
+      <MonacoLogViewer
+        rows={rows}
+        colorMode={colorMode}
+        onPacketClick={onPacketClick}
+        onEditorReady={onEditorReady}
+        highlightLine={highlightLine}
+      />
     </div>
   );
 }
@@ -5366,6 +5441,12 @@ export default function App() {
   const [confirmRemoveSnaps,      setConfirmRemoveSnaps]      = useState(false);
   const [removingSnaps,           setRemovingSnaps]           = useState(false);
 
+  // share-link feature: ref to Monaco's getCurrentLine helper, and the
+  // highlighted line number injected when opening via a shared URL
+  const monacoEditorApiRef  = useRef(null); // { getCurrentLine: () => number }
+  const [shareLinkCopied,   setShareLinkCopied]   = useState(false);
+  const [highlightLine,     setHighlightLine]      = useState(null); // line number to highlight on open
+
   // toasts
   const [toasts, setToasts] = useState([]);
   const addToast    = useCallback((message, type = "error") => setToasts((prev) => [...prev, { id: Date.now(), message, type }]), []);
@@ -5554,6 +5635,53 @@ export default function App() {
     if (!isMountedRef.current) { isMountedRef.current = true; return; }
     fetchSnapshots(filterActive ? searchParam : "", filterActive ? searchValue : "", isChart);
   }, [isChart]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Auto-open a snapshot (and optionally jump to a line) when the URL
+  // contains ?open_snap=<id>&line=<N> (text) or ?open_snap=<id>&log_type=chart
+  // These params are written by the share-link feature; clean them from the URL
+  // after consuming them so refreshing doesn't re-trigger the open.
+  const autoOpenHandledRef = useRef(false);
+  useEffect(() => {
+    if (autoOpenHandledRef.current || snapsLoading) return;
+    const p = new URLSearchParams(window.location.search);
+    const snapId = p.get("open_snap");
+    if (!snapId) return;
+    autoOpenHandledRef.current = true;
+
+    // Remove open_snap and line from the URL without a page reload
+    const lineParam = p.get("line");
+    p.delete("open_snap");
+    p.delete("line");
+    const newSearch = p.toString();
+    window.history.replaceState(null, "", newSearch ? `?${newSearch}` : window.location.pathname);
+
+    // Find the snapshot in the current page; if not found, fetch all pages
+    const findAndOpen = async () => {
+      let target = snapshots.find(s => s.id === snapId);
+      if (!target) {
+        // Try fetching all snapshots to locate it (it may be on a different page)
+        try {
+          const logType = isChart ? "chart" : "text";
+          const data = await apiFetch(`/api/snapshots?log_type=${logType}&page_size=9999`);
+          target = (data.items ?? []).find(s => s.id === snapId);
+        } catch { /* ignore */ }
+      }
+      if (!target) {
+        addToast("Shared snapshot not found.", "error");
+        return;
+      }
+
+      // Set highlight line before opening so it is available when Monaco mounts
+      if (lineParam) {
+        const ln = parseInt(lineParam, 10);
+        if (ln > 0) setHighlightLine(ln);
+      }
+
+      openLogContent([target]);
+    };
+
+    findAndOpen();
+  }, [snapsLoading]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── handlers ───────────────────────────────────────────────────────────────
   const uploadOne = async (contents) => {
@@ -5848,6 +5976,48 @@ export default function App() {
     } finally {
       setPacketModalLoading(false);
     }
+  };
+
+  // ── share-link helpers ─────────────────────────────────────────────────────
+
+  /**
+   * Copies a shareable URL for the current cursor line in the Monaco viewer.
+   * The URL includes ?open_snap=<id>&line=<N> so recipients land directly on
+   * the right snapshot, with that line highlighted.
+   */
+  const shareCurrentLine = () => {
+    const lineNumber = monacoEditorApiRef.current?.getCurrentLine?.() ?? 1;
+    // viewingSnaps contains all snapshots currently open; for multi-snap text
+    // logs the rows are merged, so we resolve the snap by matching the row.
+    const targetSnap = viewingSnaps[0]; // first (or only) snap in view
+    if (!targetSnap) return;
+
+    const p = new URLSearchParams(window.location.search);
+    p.set("open_snap", targetSnap.id);
+    p.set("line", String(lineNumber));
+    p.set("log_type", "text");
+    const url = `${window.location.origin}${window.location.pathname}?${p.toString()}`;
+    navigator.clipboard.writeText(url).then(() => {
+      setShareLinkCopied(true);
+      setTimeout(() => setShareLinkCopied(false), 2500);
+      addToast(`Link to line ${lineNumber} copied to clipboard.`, "success");
+    }).catch(() => addToast("Could not copy to clipboard.", "error"));
+  };
+
+  /**
+   * Copies a shareable URL for a specific chart snapshot.
+   * The URL includes ?open_snap=<id>&log_type=chart.
+   */
+  const shareChart = (snapId) => {
+    const p = new URLSearchParams(window.location.search);
+    p.set("open_snap", snapId);
+    p.set("log_type", "chart");
+    // Clear unrelated params that could conflict
+    p.delete("line");
+    const url = `${window.location.origin}${window.location.pathname}?${p.toString()}`;
+    navigator.clipboard.writeText(url).then(() => {
+      addToast("Chart link copied to clipboard.", "success");
+    }).catch(() => addToast("Could not copy to clipboard.", "error"));
   };
 
   const applyFilter = () => {
@@ -6756,19 +6926,29 @@ ${rowsHtml}
 
       <Modal
         open={logModal}
-        onClose={() => setLogModal(false)}
+        onClose={() => { setLogModal(false); setHighlightLine(null); monacoEditorApiRef.current = null; setShareLinkCopied(false); }}
         title={logModalTitle}
         size="full"
         footer={
           <>
             {!isChart && <Toggle checked={colorMode} onChange={setColorMode} labelLeft="Raw" labelRight="Color mode" />}
+            {!isChart && !logRowsLoading && filteredLogRows.length > 0 && (
+              <Btn
+                variant="subtle"
+                size="sm"
+                onClick={shareCurrentLine}
+                title="Copy a link to the currently selected line"
+              >
+                {shareLinkCopied ? "✓ Copied!" : "🔗 Share Line"}
+              </Btn>
+            )}
             {networkCaptureSnaps.map((s) => (
               <Btn key={s.id} size="sm" variant="subtle" onClick={() => downloadRawPcap(s)}>
                 ⬇ Raw PCAP{networkCaptureSnaps.length > 1 ? `: ${s.deviceName}` : ""}
               </Btn>
             ))}
             <DownloadMenu onDownload={downloadLogs} isChart={isChart} />
-            <Btn variant="ghost" onClick={() => setLogModal(false)}>Close</Btn>
+            <Btn variant="ghost" onClick={() => { setLogModal(false); setHighlightLine(null); monacoEditorApiRef.current = null; setShareLinkCopied(false); }}>Close</Btn>
           </>
         }
       >
@@ -6791,6 +6971,9 @@ ${rowsHtml}
               colorMode={colorMode}
               chartGroups={chartGroups}
               onPacketClick={openPacketDetails}
+              onShareChart={shareChart}
+              onEditorReady={(api) => { monacoEditorApiRef.current = api; }}
+              highlightLine={highlightLine}
             />
           </div>
         )}
