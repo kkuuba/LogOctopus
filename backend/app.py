@@ -292,9 +292,12 @@ def add_device():
 def update_device(device_id: str):
     """Replace the configuration of an existing device in-place.
 
-    The device watchdog process is not restarted automatically; the frontend
-    should prompt the user to restart collection if it is currently in
-    progress.
+    The device_id (and its data directory) is preserved across the edit —
+    it is not re-derived from the new config content — so existing log
+    snapshots that reference this device_id stay linked to it. Runtime/
+    watchdog state (connection status, active session, pid, etc.) is also
+    preserved, and the watchdog process is restarted so it picks up the
+    new config.
 
     PUT '/api/devices/<device_id>'
 
@@ -333,27 +336,53 @@ def update_device(device_id: str):
         contents = contents.split(",", 1)[1]
 
     try:
-        new_cfg_dict = json.loads(base64.b64decode(contents).decode())
+        decoded_cfg = json.loads(base64.b64decode(contents).decode())
     except Exception:
         return _bad("invalid_config", 422)
 
-    if not isinstance(new_cfg_dict, dict) or not new_cfg_dict.get("device_name"):
+    if not isinstance(decoded_cfg, dict) or not decoded_cfg.get("device_name"):
         return _bad("invalid_config", 422)
 
-    # Locate the config file that belongs to this device and overwrite it
-    # in-place so the device_id (directory name) stays the same.
-    cfg_path = Path("data") / device_id / f"{device_id}.json"
-    if not cfg_path.exists():
-        return _bad("not_found", 404)
+    # Carry forward the live watchdog/runtime state (connection status,
+    # active session, pid, etc.). The config editor (frontend) only ever
+    # knows about connection + log-entry fields, so left to itself it would
+    # submit a payload missing these entirely — the next Device load would
+    # then crash with e.g. KeyError: 'connected'.
+    old_cfg = device.device_config or {}
+    existing_watchdog_data = {
+        key: old_cfg.get(key, default)
+        for key, default in DeviceConfig.WATCHDOG_DATA_DEFAULTS.items()
+    }
 
-    # Write atomically: save to a temp file first, then replace.
-    tmp_path = cfg_path.with_suffix(".json.tmp")
-    try:
-        tmp_path.write_text(json.dumps(new_cfg_dict, indent=2))
-        tmp_path.replace(cfg_path)
-    except Exception as exc:
-        tmp_path.unlink(missing_ok=True)
-        return _bad(f"failed to write config: {exc}", 500)
+    # Force a watchdog restart against the new config: terminate the
+    # process that was running against the old config, and mark the pid as
+    # gone so Device.__init__ spawns a fresh watchdog against the
+    # just-saved config next time this device is loaded (see the
+    # `if self.watchdog_process_pid == 0 or not self.is_process_active()`
+    # check there).
+    old_pid = existing_watchdog_data.get("watchdog_process_pid")
+    if old_pid:
+        try:
+            os.kill(old_pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        except Exception:
+            pass
+    existing_watchdog_data["watchdog_process_pid"] = 0
+
+    # Save via DeviceConfig, the same as add_device does, but pinning the
+    # ID to the existing one — DeviceConfig.get_device_config_id() derives
+    # an ID from the config *content*, which would otherwise change on
+    # every edit and orphan this device's directory and all its log
+    # snapshots (which reference it by device_id).
+    device_config = DeviceConfig(
+        contents,
+        existing_device_config_id=device_id,
+        existing_watchdog_data=existing_watchdog_data,
+    )
+    if not device_config.validate_device_config():
+        device_config.remove_device_config()
+        return _bad("invalid_config", 422)
 
     updated_device = get_target_device(device_id)
     if not updated_device:
