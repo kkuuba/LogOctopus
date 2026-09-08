@@ -3557,6 +3557,7 @@ const EMPTY_LOG_ENTRY = () => ({
   log_type: "text",
   data_unit: "",
   description: "",
+  append_unmatched_to_last: false,
 });
 
 const FIELD_LABEL = {
@@ -3986,6 +3987,28 @@ function LogEntryEditor({ entry, conn, index, onChange, onRemove, onDuplicate })
               style={{ ...inputStyle, fontSize: 11, padding: "7px 12px", background: "rgba(255,255,255,0.02)" }} />
           </div>
 
+          {/* ── Append unmatched lines (text logs only) ── */}
+          {entry.log_type === "text" && <label style={{
+            display: "inline-flex", alignItems: "center", gap: 9,
+            marginBottom: 14, cursor: "pointer", userSelect: "none",
+          }}>
+            <input
+              type="checkbox"
+              checked={!!entry.append_unmatched_to_last}
+              onChange={e => set("append_unmatched_to_last", e.target.checked)}
+              style={{ accentColor: "var(--accent)", width: 14, height: 14, flexShrink: 0, cursor: "pointer" }}
+            />
+            <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--muted)" }}>
+              Append unmatched lines to last entry
+            </span>
+            <span style={{
+              fontFamily: "var(--font-mono)", fontSize: 10,
+              color: "var(--muted)", opacity: 0.55,
+            }}>
+              — folds continuation lines (e.g. stack traces) into the preceding matched entry
+            </span>
+          </label>}
+
           {/* ── Terminal Panel ── */}
           <div style={S.terminal}>
             {/* Tab bar */}
@@ -4199,16 +4222,17 @@ function configToBuilderState(config) {
 
   // ── log entries ──────────────────────────────────────────────────────────
   const entries = (config.log_file_configs || []).map(e => ({
-    _id:                   Math.random().toString(36).slice(2),
-    log_name:              e.log_name              || "",
-    log_file_cmd:          e.log_file_cmd          || "",
-    data_extraction_regex: e.data_extraction_regex || "",
-    log_activation_cmd:    e.log_activation_cmd    || "",
-    log_deactivation_cmd:  e.log_deactivation_cmd  || "",
-    custom_shell_prompt:   e.custom_shell_prompt   || "",
-    log_type:              e.log_type              || "text",
-    data_unit:             e.data_unit             || "",
-    description:           e.description           || "",
+    _id:                      Math.random().toString(36).slice(2),
+    log_name:                 e.log_name                 || "",
+    log_file_cmd:             e.log_file_cmd             || "",
+    data_extraction_regex:    e.data_extraction_regex    || "",
+    log_activation_cmd:       e.log_activation_cmd       || "",
+    log_deactivation_cmd:     e.log_deactivation_cmd     || "",
+    custom_shell_prompt:      e.custom_shell_prompt      || "",
+    log_type:                 e.log_type                 || "text",
+    data_unit:                e.data_unit                || "",
+    description:              e.description              || "",
+    append_unmatched_to_last: e.append_unmatched_to_last ?? false,
   }));
 
   // ── packet capture ───────────────────────────────────────────────────────
@@ -4316,9 +4340,10 @@ function ConfigBuilderModal({ open, onClose, onSave, initialDevice }) {
     const log_file_configs = entries.map(({ _id, ...rest }) => {
       // Drop optional keys that were left empty so they don't appear in the config
       const entry = { ...rest };
-      if (!entry.log_activation_cmd)   delete entry.log_activation_cmd;
-      if (!entry.log_deactivation_cmd) delete entry.log_deactivation_cmd;
-      if (!entry.custom_shell_prompt)  delete entry.custom_shell_prompt;
+      if (!entry.log_activation_cmd)       delete entry.log_activation_cmd;
+      if (!entry.log_deactivation_cmd)     delete entry.log_deactivation_cmd;
+      if (!entry.custom_shell_prompt)      delete entry.custom_shell_prompt;
+      if (!entry.append_unmatched_to_last) delete entry.append_unmatched_to_last;
       return entry;
     });
     const config = {
