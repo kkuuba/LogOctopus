@@ -292,7 +292,7 @@ function ChartContentView({ chartGroups, onShareChart }) {
                   onMouseEnter={e => { e.currentTarget.style.background = "rgba(129,140,248,0.2)"; }}
                   onMouseLeave={e => { e.currentTarget.style.background = "rgba(129,140,248,0.1)"; }}
                 >
-                  🔗 Share Chart
+                  🔗 Share 
                 </button>
               )}
             </div>
@@ -766,10 +766,19 @@ function MonacoLogViewer({ rows, colorMode, onPacketClick, highlightLine, onEdit
     return () => ro.disconnect();
   }, [ready]);
 
-  // Highlight and scroll to the shared line when highlightLine changes
+  // Highlight and scroll to the shared line when highlightLine changes.
+  // Also re-applies whenever `rows` changes after mount: model.setValue()
+  // (used to sync content when rows update, e.g. when a shared link's
+  // filters are re-applied right after the editor first mounts) fully
+  // replaces the buffer and drops any previously-set decorations, so
+  // without `rows` as a dependency here the highlight would silently
+  // disappear the moment that happens.
   useEffect(() => {
     const editor = editorRef.current;
-    if (!ready || !editor || !highlightLine) return;
+    const model  = modelRef.current;
+    if (!ready || !editor || !model || !highlightLine) return;
+    // The shared line may no longer exist in the current (e.g. filtered) view.
+    if (highlightLine > model.getLineCount()) return;
 
     // Ensure style element for the highlight class exists
     const styleId = "lo-share-highlight-style";
@@ -801,7 +810,7 @@ function MonacoLogViewer({ rows, colorMode, onPacketClick, highlightLine, onEdit
     // Scroll the highlighted line into view (center it)
     editor.revealLineInCenter(highlightLine);
     editor.setPosition({ lineNumber: highlightLine, column: 1 });
-  }, [ready, highlightLine]);
+  }, [ready, highlightLine, rows]);
 
   if (loadErr) {
     return (
@@ -5661,48 +5670,79 @@ export default function App() {
     fetchSnapshots(filterActive ? searchParam : "", filterActive ? searchValue : "", isChart);
   }, [isChart]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Auto-open a snapshot (and optionally jump to a line) when the URL
-  // contains ?open_snap=<id>&line=<N> (text) or ?open_snap=<id>&log_type=chart
-  // These params are written by the share-link feature; clean them from the URL
-  // after consuming them so refreshing doesn't re-trigger the open.
+  // Auto-open a snapshot view (and optionally jump to a line) when the URL
+  // contains ?open_snaps=<id1,id2,...>&log_type=chart|text, with optional
+  // &line=<N> (text, single snapshot) and &log_filters=<json> (text, the
+  // per-device regex filters that were active when the link was shared).
+  // The legacy singular ?open_snap=<id> is still accepted for old links.
+  // These params are written by the share-link feature; clean them from the
+  // URL after consuming them so refreshing doesn't re-trigger the open.
   const autoOpenHandledRef = useRef(false);
   useEffect(() => {
     if (autoOpenHandledRef.current || snapsLoading) return;
     const p = new URLSearchParams(window.location.search);
-    const snapId = p.get("open_snap");
-    if (!snapId) return;
+    const snapsParam = p.get("open_snaps") || p.get("open_snap");
+    if (!snapsParam) return;
     autoOpenHandledRef.current = true;
 
-    // Remove open_snap and line from the URL without a page reload
-    const lineParam = p.get("line");
+    const snapIds = [...new Set(snapsParam.split(",").map((s) => s.trim()).filter(Boolean))];
+    const lineParam    = p.get("line");
+    const filtersParam = p.get("log_filters");
+
+    // Remove share-link params from the URL without a page reload
     p.delete("open_snap");
+    p.delete("open_snaps");
     p.delete("line");
+    p.delete("log_filters");
     const newSearch = p.toString();
     window.history.replaceState(null, "", newSearch ? `?${newSearch}` : window.location.pathname);
 
-    // Find the snapshot in the current page; if not found, fetch all pages
+    // Find the snapshots in the current page; if any are missing, fetch the
+    // full list for the relevant log type to locate them (they may be on a
+    // different page, or excluded by the current list filter).
     const findAndOpen = async () => {
-      let target = snapshots.find(s => s.id === snapId);
-      if (!target) {
-        // Try fetching all snapshots to locate it (it may be on a different page)
+      let targets = snapshots.filter((s) => snapIds.includes(s.id));
+      if (targets.length < snapIds.length) {
         try {
           const logType = isChart ? "chart" : "text";
           const data = await apiFetch(`/api/snapshots?log_type=${logType}&page_size=9999`);
-          target = (data.items ?? []).find(s => s.id === snapId);
+          const all = data.items ?? [];
+          targets = snapIds.map((id) => all.find((s) => s.id === id)).filter(Boolean);
         } catch { /* ignore */ }
       }
-      if (!target) {
-        addToast("Shared snapshot not found.", "error");
+
+      if (targets.length === 0) {
+        addToast("Shared snapshot(s) not found.", "error");
         return;
       }
+      if (targets.length < snapIds.length) {
+        addToast(`Only found ${targets.length} of ${snapIds.length} shared snapshots.`, "error");
+      }
 
-      // Set highlight line before opening so it is available when Monaco mounts
+      // Set highlight line before opening so it is available when Monaco
+      // mounts. Safe even for multi-snapshot merged views: rows are always
+      // sorted by timestamp with a stable sort, and `targets` preserves the
+      // same snapshot order the link was shared with, so the merged row
+      // order — and therefore the line number — reproduces identically as
+      // long as the underlying snapshot content hasn't changed.
       if (lineParam) {
         const ln = parseInt(lineParam, 10);
         if (ln > 0) setHighlightLine(ln);
       }
 
-      openLogContent([target]);
+      // Parse the shared per-device regex filters (if any) and hand them to
+      // openLogContent directly so they land in the very first render of
+      // the modal's content, rather than one render later — see the note
+      // on openLogContent for why that ordering matters for share links.
+      let initialFilters;
+      if (filtersParam) {
+        try {
+          const parsed = JSON.parse(filtersParam);
+          if (parsed && typeof parsed === "object") initialFilters = parsed;
+        } catch { /* ignore malformed filter param */ }
+      }
+
+      await openLogContent(targets, { initialFilters });
     };
 
     findAndOpen();
@@ -5924,15 +5964,22 @@ export default function App() {
    * For chart mode: fetches each snapshot separately and builds chartGroups
    * so each snapshot gets its own Plotly panel inside the modal.
    * For text mode: merges all rows as before.
+   *
+   * `initialFilters`, when provided (e.g. by a shared-link URL), is applied
+   * in the same pass as the reset instead of being set in a follow-up call
+   * after this function returns — setting it a render later would mean the
+   * editor first mounts with the unfiltered content, then has its entire
+   * buffer replaced once the filters land, which clears any decoration
+   * (such as the shared-line highlight) applied in between.
    */
-  const openLogContent = async (snapsToView) => {
+  const openLogContent = async (snapsToView, { initialFilters } = {}) => {
     setLogModal(true);
     setLogRowsLoading(true);
     setLogRows([]);
     setChartGroups([]);
     setViewingSnaps(snapsToView);
     setLogLoadProgress({ done: 0, total: snapsToView.length });
-    setDeviceRegexFilters({});
+    setDeviceRegexFilters(initialFilters || {});
 
     try {
       let done = 0;
@@ -6006,43 +6053,62 @@ export default function App() {
   // ── share-link helpers ─────────────────────────────────────────────────────
 
   /**
-   * Copies a shareable URL for the current cursor line in the Monaco viewer.
-   * The URL includes ?open_snap=<id>&line=<N> so recipients land directly on
-   * the right snapshot, with that line highlighted.
+   * Builds a shareable URL that reproduces the currently open log/chart
+   * view: every snapshot in `snapsToShare` (via ?open_snaps=id1,id2,...),
+   * the active log_type, and — for text logs — any per-device regex filters
+   * currently applied (?log_filters=<json>). List-level filters
+   * (search_param/search_value) already live in the current URL and are
+   * carried over automatically since we start from the existing query
+   * string.
    */
-  const shareCurrentLine = () => {
-    const lineNumber = monacoEditorApiRef.current?.getCurrentLine?.() ?? 1;
-    // viewingSnaps contains all snapshots currently open; for multi-snap text
-    // logs the rows are merged, so we resolve the snap by matching the row.
-    const targetSnap = viewingSnaps[0]; // first (or only) snap in view
-    if (!targetSnap) return;
-
+  const buildShareUrl = (snapsToShare, { line } = {}) => {
     const p = new URLSearchParams(window.location.search);
-    p.set("open_snap", targetSnap.id);
-    p.set("line", String(lineNumber));
-    p.set("log_type", "text");
-    const url = `${window.location.origin}${window.location.pathname}?${p.toString()}`;
-    navigator.clipboard.writeText(url).then(() => {
-      setShareLinkCopied(true);
-      setTimeout(() => setShareLinkCopied(false), 2500);
-      addToast(`Link to line ${lineNumber} copied to clipboard.`, "success");
-    }).catch(() => addToast("Could not copy to clipboard.", "error"));
+    p.set("open_snaps", snapsToShare.map((s) => s.id).join(","));
+    p.delete("open_snap"); // legacy singular param, superseded by open_snaps
+    p.set("log_type", isChart ? "chart" : "text");
+
+    if (line) p.set("line", String(line));
+    else p.delete("line");
+
+    const activeFilters = isChart
+      ? {}
+      : Object.fromEntries(Object.entries(deviceRegexFilters).filter(([, v]) => v && v.trim()));
+    if (Object.keys(activeFilters).length > 0) p.set("log_filters", JSON.stringify(activeFilters));
+    else p.delete("log_filters");
+
+    return `${window.location.origin}${window.location.pathname}?${p.toString()}`;
+  };
+
+  const copyShareUrl = (url, successMessage) => {
+    navigator.clipboard.writeText(url)
+      .then(() => addToast(successMessage, "success"))
+      .catch(() => addToast("Could not copy to clipboard.", "error"));
   };
 
   /**
-   * Copies a shareable URL for a specific chart snapshot.
-   * The URL includes ?open_snap=<id>&log_type=chart.
+   * Copies a shareable URL for the current cursor line in the Monaco viewer.
+   * Includes every snapshot currently open (not just the first) plus any
+   * active per-device filters, so the recipient sees the exact same merged,
+   * filtered view before landing on the highlighted line.
+   */
+  const shareCurrentLine = () => {
+    if (viewingSnaps.length === 0) return;
+    const lineNumber = monacoEditorApiRef.current?.getCurrentLine?.() ?? 1;
+    const url = buildShareUrl(viewingSnaps, { line: lineNumber });
+    setShareLinkCopied(true);
+    setTimeout(() => setShareLinkCopied(false), 2500);
+    copyShareUrl(url, `Link to line ${lineNumber} copied to clipboard.`);
+  };
+
+  /**
+   * Copies a shareable URL for a single chart snapshot — used by the
+   * per-chart "🔗 Share Chart" button inside a multi-chart view.
    */
   const shareChart = (snapId) => {
-    const p = new URLSearchParams(window.location.search);
-    p.set("open_snap", snapId);
-    p.set("log_type", "chart");
-    // Clear unrelated params that could conflict
-    p.delete("line");
-    const url = `${window.location.origin}${window.location.pathname}?${p.toString()}`;
-    navigator.clipboard.writeText(url).then(() => {
-      addToast("Chart link copied to clipboard.", "success");
-    }).catch(() => addToast("Could not copy to clipboard.", "error"));
+    const target = viewingSnaps.find((s) => s.id === snapId);
+    if (!target) return;
+    const url = buildShareUrl([target]);
+    copyShareUrl(url, "Chart link copied to clipboard.");
   };
 
   const applyFilter = () => {
@@ -6962,9 +7028,9 @@ ${rowsHtml}
                 variant="subtle"
                 size="sm"
                 onClick={shareCurrentLine}
-                title="Copy a link to the currently selected line"
+                title="Copy a link to this view, with the currently selected line highlighted"
               >
-                {shareLinkCopied ? "✓ Copied!" : "🔗 Share Line"}
+                {shareLinkCopied ? "✓ Copied!" : "🔗 Share"}
               </Btn>
             )}
             {networkCaptureSnaps.map((s) => (
