@@ -2,6 +2,7 @@
 LogOctopus - Flask REST API backend
 """
 
+import glob
 import hashlib
 import json
 import os
@@ -10,13 +11,15 @@ import uuid
 from pathlib import Path
 
 import psutil
-from flask import Flask, jsonify, request, send_file
+from flask import Flask, jsonify, request, send_file, Response
 from flask_cors import CORS
 from paramiko_expect import SSHClientInteraction
 
 from backend.models.device import Device
 from backend.models.device_config import DeviceConfig
+from backend.models.log_snapshot import LogSnapshotMeta
 from backend.utils.log_snapshots_helper import LogSnapshotsHelper
+from backend.utils.log_snapshots_loader import LogSnapshotsLoader
 from backend.utils.device_config_loader import DeviceConfigLoader
 from backend.utils.pcap_decoder import DissectorRegistry, PcapDecoder
 from backend.utils.fabric_connection import build_nested_connection as _build_nested_connection
@@ -59,6 +62,39 @@ def get_target_device(device_id: str) -> Device | None:
         if device.device_config_id == device_id:
             return device
     return None
+
+
+def find_snapshot_by_id(snapshot_id: str):
+    """Resolve a single snapshot directly by ID, without loading or even
+    listing every other snapshot in the system.
+
+    Snapshot parquet files are named '{id}_{timestamp}.parquet' (see
+    LogSnapshot.create_parquet_data_file), so a single glob across device
+    directories locates the exact file. This replaces the previous pattern
+    used by the content/packets/pcap/delete endpoints of loading *every*
+    snapshot of a given type across *every* device just to pick out one by
+    ID - that scan is O(total snapshots) and, worse, was materializing full
+    row data for snapshots the request never uses.
+
+    Args:
+        snapshot_id (str): The snapshot ID to look up.
+
+    Returns:
+        LogSnapshotMeta | None
+    """
+    matches = glob.glob(str(PROJECT_ROOT / "data" / "*" / f"{snapshot_id}_*.parquet"))
+    if not matches:
+        return None
+
+    data_file_path = matches[0]
+    device_id = Path(data_file_path).parent.name
+    meta = LogSnapshotMeta.from_parquet_footer(device_id, data_file_path)
+    if meta is not None:
+        return meta
+
+    # Legacy file predating persisted listing metadata - fall back once.
+    loader = LogSnapshotsLoader(str(Path(data_file_path).parent))
+    return loader.load_log_snapshot_meta(Path(data_file_path))
 
 
 def device_to_dict(device: Device) -> dict:
@@ -286,6 +322,108 @@ def add_device():
 
     device_instance = Device(device_config_instance=device_config)
     return jsonify({"device": device_to_dict(device_instance)}), 201
+
+
+@app.put("/api/devices/<device_id>")
+def update_device(device_id: str):
+    """Replace the configuration of an existing device in-place.
+
+    The device_id (and its data directory) is preserved across the edit —
+    it is not re-derived from the new config content — so existing log
+    snapshots that reference this device_id stay linked to it. Runtime/
+    watchdog state (connection status, active session, pid, etc.) is also
+    preserved, and the watchdog process is restarted so it picks up the
+    new config.
+
+    PUT '/api/devices/<device_id>'
+
+    Path parameters:
+        - device_id (str) - The config ID of the device to update.
+
+    Request body (JSON):
+        - contents (str) - Base-64-encoded replacement config file content.
+          Optionally prefixed with a data-URI header; the prefix is stripped
+          automatically.
+
+    Returns:
+        200 OK:
+            JSON object containing the updated device:
+
+            - device (dict) - Serialised device (see :func:`device_to_dict`).
+
+        404 Not Found:
+            '{ "error": "not_found" }' - No device with the given ID exists.
+
+        422 Unprocessable Entity:
+            '{ "error": "invalid_config" }' - The decoded config failed
+            validation; the original config is left untouched.
+    """
+    import base64
+
+    device = get_target_device(device_id)
+    if not device:
+        return _bad("not_found", 404)
+
+    body = request.get_json(force=True)
+    contents = body.get("contents", "")
+
+    # Strip data-URI prefix if present
+    if "," in contents:
+        contents = contents.split(",", 1)[1]
+
+    try:
+        decoded_cfg = json.loads(base64.b64decode(contents).decode())
+    except Exception:
+        return _bad("invalid_config", 422)
+
+    if not isinstance(decoded_cfg, dict) or not decoded_cfg.get("device_name"):
+        return _bad("invalid_config", 422)
+
+    # Carry forward the live watchdog/runtime state (connection status,
+    # active session, pid, etc.). The config editor (frontend) only ever
+    # knows about connection + log-entry fields, so left to itself it would
+    # submit a payload missing these entirely — the next Device load would
+    # then crash with e.g. KeyError: 'connected'.
+    old_cfg = device.device_config or {}
+    existing_watchdog_data = {
+        key: old_cfg.get(key, default)
+        for key, default in DeviceConfig.WATCHDOG_DATA_DEFAULTS.items()
+    }
+
+    # Force a watchdog restart against the new config: terminate the
+    # process that was running against the old config, and mark the pid as
+    # gone so Device.__init__ spawns a fresh watchdog against the
+    # just-saved config next time this device is loaded (see the
+    # `if self.watchdog_process_pid == 0 or not self.is_process_active()`
+    # check there).
+    old_pid = existing_watchdog_data.get("watchdog_process_pid")
+    if old_pid:
+        try:
+            os.kill(old_pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        except Exception:
+            pass
+    existing_watchdog_data["watchdog_process_pid"] = 0
+
+    # Save via DeviceConfig, the same as add_device does, but pinning the
+    # ID to the existing one — DeviceConfig.get_device_config_id() derives
+    # an ID from the config *content*, which would otherwise change on
+    # every edit and orphan this device's directory and all its log
+    # snapshots (which reference it by device_id).
+    device_config = DeviceConfig(
+        contents,
+        existing_device_config_id=device_id,
+        existing_watchdog_data=existing_watchdog_data,
+    )
+    if not device_config.validate_device_config():
+        device_config.remove_device_config()
+        return _bad("invalid_config", 422)
+
+    updated_device = get_target_device(device_id)
+    if not updated_device:
+        return _bad("not_found", 404)
+    return jsonify({"device": device_to_dict(updated_device)})
 
 
 @app.delete("/api/devices/<device_id>")
@@ -532,16 +670,22 @@ def get_snapshot_content(snapshot_id: str):
             '{ "error": "not_found" }' - No snapshot with the given ID exists
             for the requested log type.
     """
-    is_chart  = request.args.get("log_type", "text") == "chart"
-    devices   = get_current_devices()
-    snapshots = LogSnapshotsHelper.get_log_snapshots_list(devices, is_chart)
+    is_chart = request.args.get("log_type", "text") == "chart"
+    target_log_type = "chart" if is_chart else "text"
 
-    target = next((s for s in snapshots if s.id == snapshot_id), None)
-    if not target:
+    target = find_snapshot_by_id(snapshot_id)
+    if not target or target.log_type != target_log_type:
         return _bad("not_found", 404)
 
-    rows = LogSnapshotsHelper.get_log_content_for_selected_snapshots([target]).to_dict(orient="records")
-    return jsonify({"rows": rows})
+    full_snapshot = target.load_full()
+    rows_df = LogSnapshotsHelper.get_log_content_for_selected_snapshots([full_snapshot])
+    # pandas' to_json is implemented in C and is significantly faster than
+    # to_dict(orient="records") + jsonify's json.dumps for large frames.
+    # Build the {"rows": [...]} envelope the frontend expects by wrapping
+    # the already-serialized records string directly, rather than parsing
+    # it back into Python objects just to re-serialize via jsonify.
+    records_json = rows_df.to_json(orient="records", date_format="iso")
+    return Response(f'{{"rows": {records_json}}}', mimetype="application/json")
 
 
 @app.get("/api/snapshots/<snapshot_id>/packets/<int:packet_number>")
@@ -576,21 +720,27 @@ def get_packet_details(snapshot_id: str, packet_number: int):
             installed on the server, or the session's pcap file is
             missing on disk.
     """
-    devices   = get_current_devices()
-    snapshots = LogSnapshotsHelper.get_log_snapshots_list(devices, log_type_chart=False)
-
-    target = next((s for s in snapshots if s.id == snapshot_id), None)
-    if not target or getattr(target, "log_name", "") != "network capture":
+    target = find_snapshot_by_id(snapshot_id)
+    if not target or target.log_type != "text" or getattr(target, "log_name", "") != "network capture":
         return _bad("not_found", 404)
+
+    # Resolve the device so we can read its optional custom decoder command.
+    snap_device = get_target_device(target.device_id)
+    decoder_cmd = (
+        snap_device.device_config.get("packets_capture_config", {}).get("decoder_cmd")
+        if snap_device
+        else None
+    )
 
     device_data_dir = os.path.join("data", target.device_id)
     try:
         details = PcapDecoder.get_session_packet_details(
             device_data_dir, target.session_id, packet_number,
             dissectors_dir=dissector_registry,
+            decoder_cmd=decoder_cmd,
         )
     except FileNotFoundError as exc:
-        return _bad(f"tshark not available: {exc}", 500)
+        return _bad(f"pcap decoder not available: {exc}", 500)
 
     if not details:
         return _bad("not_found", 404)
@@ -623,11 +773,8 @@ def download_snapshot_pcap(snapshot_id: str):
             exists, it isn't a "network capture" snapshot, or its pcap
             file is missing on disk.
     """
-    devices   = get_current_devices()
-    snapshots = LogSnapshotsHelper.get_log_snapshots_list(devices, log_type_chart=False)
-
-    target = next((s for s in snapshots if s.id == snapshot_id), None)
-    if not target or getattr(target, "log_name", "") != "network capture":
+    target = find_snapshot_by_id(snapshot_id)
+    if not target or target.log_type != "text" or getattr(target, "log_name", "") != "network capture":
         return _bad("not_found", 404)
 
     pcap_path = os.path.join(PROJECT_ROOT, "data", target.device_id, f"{target.session_id}.pcap")
@@ -681,18 +828,19 @@ def remove_snapshots():
     if not isinstance(snapshot_ids, list) or not snapshot_ids:
         return _bad("snapshot_ids must be a non-empty list")
 
-    devices   = get_current_devices()
-    snapshots = LogSnapshotsHelper.get_log_snapshots_list(devices, is_chart)
-    by_id     = {s.id: s for s in snapshots}
+    target_log_type = "chart" if is_chart else "text"
 
     removed   = []
     not_found = []
     for snapshot_id in snapshot_ids:
-        target = by_id.get(snapshot_id)
-        if not target:
+        target = find_snapshot_by_id(snapshot_id)
+        if not target or target.log_type != target_log_type:
             not_found.append(snapshot_id)
             continue
-        target.remove_log_snapshot()
+        # We already have the exact file path from the ID-based lookup, so
+        # remove it directly instead of re-deriving it via another glob.
+        if os.path.exists(target.data_file_name):
+            os.remove(target.data_file_name)
         removed.append(snapshot_id)
 
     return jsonify({"removed": removed, "not_found": not_found})
@@ -1185,6 +1333,64 @@ def delete_dissector(filename: str):
     """
     deleted = dissector_registry.delete(filename)
     return jsonify({"deleted": deleted})
+
+
+# ── device groups ─────────────────────────────────────────────────────────────
+
+@app.get("/api/settings/device-groups")
+def get_device_groups():
+    """Return the persisted device-group configuration.
+
+    Device groups are stored server-side so that every user/browser session
+    sees the same grouping without having to configure it independently.
+
+    GET '/api/settings/device-groups'
+
+    Returns:
+        200 OK:
+            JSON array of group objects.  Each element contains:
+
+            - id (str) - Stable group identifier.
+            - name (str) - Human-readable group name.
+            - deviceIds (list[str]) - Ordered list of device config IDs in this group.
+
+            Example::
+
+                [{"id": "abc", "name": "Core Routers", "deviceIds": ["d1", "d2"]}]
+    """
+    settings = _load_settings()
+    return jsonify(settings.get("device_groups", []))
+
+
+@app.put("/api/settings/device-groups")
+def save_device_groups():
+    """Persist the full device-group configuration.
+
+    Replaces the stored groups array atomically.  The frontend sends the
+    complete array on every mutation (create, rename, reorder, delete).
+
+    PUT '/api/settings/device-groups'
+
+    Request body (JSON):
+        - groups (list[dict]) - Full replacement groups array.
+          Each entry must have id (str), name (str), and deviceIds (list[str]).
+
+    Returns:
+        200 OK:
+            '{ "status": "ok" }'
+
+        400 Bad Request:
+            '{ "error": "groups must be a list" }'
+    """
+    body   = request.get_json(force=True)
+    groups = body.get("groups")
+    if not isinstance(groups, list):
+        return _bad("groups must be a list")
+
+    settings = _load_settings()
+    settings["device_groups"] = groups
+    _save_settings(settings)
+    return jsonify({"status": "ok"})
 
 
 # ── login ─────────────────────────────────────────────────────────────────────

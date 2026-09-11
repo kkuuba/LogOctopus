@@ -239,7 +239,7 @@ function PlotlyChart({ rows, title, index, dataUnit }) {
  * snapshot as its own titled Plotly panel inside the modal — side by side
  * (2-column grid) or stacked depending on count.
  */
-function ChartContentView({ chartGroups }) {
+function ChartContentView({ chartGroups, onShareChart }) {
   // chartGroups: [{ snapInfo, rows }]
   if (!chartGroups || chartGroups.length === 0)
     return <p style={{ color: "var(--muted)" }}>No chart data.</p>;
@@ -265,6 +265,7 @@ function ChartContentView({ chartGroups }) {
                 marginTop: -12,
                 marginBottom: 8,
                 paddingLeft: 4,
+                alignItems: "center",
               }}
             >
               <Badge color="cyan">{g.snapInfo.logName}</Badge>
@@ -272,6 +273,28 @@ function ChartContentView({ chartGroups }) {
               <Badge color="default">{g.rows.length} points</Badge>
               <Badge color="default">Session: {g.snapInfo.sessionId}</Badge>
               <Badge color="default">Data unit: {g.snapInfo.dataUnit}</Badge>
+              {onShareChart && (
+                <button
+                  onClick={() => onShareChart(g.snapInfo.id)}
+                  title="Copy shareable link to this chart"
+                  style={{
+                    marginLeft: "auto",
+                    display: "inline-flex", alignItems: "center", gap: 5,
+                    padding: "4px 10px",
+                    background: "rgba(129,140,248,0.1)",
+                    border: "1px solid rgba(129,140,248,0.3)",
+                    borderRadius: 7,
+                    color: "var(--accent)",
+                    fontFamily: "var(--font-mono)", fontSize: 11,
+                    cursor: "pointer",
+                    transition: "all 0.15s",
+                  }}
+                  onMouseEnter={e => { e.currentTarget.style.background = "rgba(129,140,248,0.2)"; }}
+                  onMouseLeave={e => { e.currentTarget.style.background = "rgba(129,140,248,0.1)"; }}
+                >
+                  🔗 Share 
+                </button>
+              )}
             </div>
           </div>
         );
@@ -511,12 +534,13 @@ function parsePacketNumber(content) {
  *                   Every other log line is untouched — the glyph margin
  *                   only ever gets a decoration for packet_capture rows.
  */
-function MonacoLogViewer({ rows, colorMode, onPacketClick }) {
+function MonacoLogViewer({ rows, colorMode, onPacketClick, highlightLine, onEditorReady }) {
   const containerRef      = useRef(null);
   const editorRef         = useRef(null);
   const modelRef          = useRef(null);
   const decorationsRef    = useRef([]); // current line-color decoration IDs
   const glyphDecorationsRef = useRef([]); // current packet-glyph decoration IDs
+  const shareDecorationsRef = useRef([]); // highlight for shared line
   const [ready, setReady] = useState(false);
   const [loadErr, setLoadErr] = useState(null);
 
@@ -678,6 +702,13 @@ function MonacoLogViewer({ rows, colorMode, onPacketClick }) {
           }
         });
 
+        // Expose a function the parent can call to get the current cursor line
+        if (onEditorReady) {
+          onEditorReady({
+            getCurrentLine: () => editor.getPosition()?.lineNumber ?? 1,
+          });
+        }
+
         setReady(true);
       })
       .catch((e) => {
@@ -692,6 +723,7 @@ function MonacoLogViewer({ rows, colorMode, onPacketClick }) {
       modelRef.current  = null;
       decorationsRef.current = [];
       glyphDecorationsRef.current = [];
+      shareDecorationsRef.current = [];
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -734,6 +766,52 @@ function MonacoLogViewer({ rows, colorMode, onPacketClick }) {
     return () => ro.disconnect();
   }, [ready]);
 
+  // Highlight and scroll to the shared line when highlightLine changes.
+  // Also re-applies whenever `rows` changes after mount: model.setValue()
+  // (used to sync content when rows update, e.g. when a shared link's
+  // filters are re-applied right after the editor first mounts) fully
+  // replaces the buffer and drops any previously-set decorations, so
+  // without `rows` as a dependency here the highlight would silently
+  // disappear the moment that happens.
+  useEffect(() => {
+    const editor = editorRef.current;
+    const model  = modelRef.current;
+    if (!ready || !editor || !model || !highlightLine) return;
+    // The shared line may no longer exist in the current (e.g. filtered) view.
+    if (highlightLine > model.getLineCount()) return;
+
+    // Ensure style element for the highlight class exists
+    const styleId = "lo-share-highlight-style";
+    if (!document.getElementById(styleId)) {
+      const el = document.createElement("style");
+      el.id = styleId;
+      el.textContent = `.lo-share-line { background: rgba(251,191,36,0.18) !important; border-left: 3px solid #fbbf24 !important; }
+        .lo-share-line-number { color: #fbbf24 !important; font-weight: 700 !important; }`;
+      document.head.appendChild(el);
+    }
+
+    shareDecorationsRef.current = editor.deltaDecorations(
+      shareDecorationsRef.current,
+      [{
+        range: {
+          startLineNumber: highlightLine,
+          startColumn: 1,
+          endLineNumber: highlightLine,
+          endColumn: 1,
+        },
+        options: {
+          isWholeLine: true,
+          className: "lo-share-line",
+          lineNumberClassName: "lo-share-line-number",
+        },
+      }]
+    );
+
+    // Scroll the highlighted line into view (center it)
+    editor.revealLineInCenter(highlightLine);
+    editor.setPosition({ lineNumber: highlightLine, column: 1 });
+  }, [ready, highlightLine, rows]);
+
   if (loadErr) {
     return (
       <div style={{
@@ -772,16 +850,425 @@ function MonacoLogViewer({ rows, colorMode, onPacketClick }) {
   );
 }
 
+// ── LOG FILTER BAR ────────────────────────────────────────────────────────────
+/**
+ * Filter bar with device+logName granularity.
+ *
+ * Filter key format: "deviceName\x00logName"  (null-byte separator, never
+ * appears in either field so it is safe to use as a delimiter).
+ *
+ * Layout:
+ *   - One collapsible device-group chip per unique device.
+ *   - Clicking a chip opens a popover that lists every log name for that
+ *     device, each with its own regex input field.
+ *   - Applying saves all per-(device, logName) regexes at once.
+ *
+ * Props:
+ *   logRows         – full (unfiltered) rows array
+ *   filters         – { ["device\x00logName"]: regexString }
+ *   onFiltersChange – (newFilters) => void
+ *   filteredCount   – rows after filtering
+ *   totalCount      – rows before filtering
+ */
+const FILTER_SEP = "\x00";
+const makeFilterKey = (device, logName) => `${device}${FILTER_SEP}${logName}`;
+
+const DEVICE_PALETTE = [
+  { accent: "#818cf8", bg: "rgba(129,140,248,0.12)", border: "rgba(129,140,248,0.32)" },
+  { accent: "#34d399", bg: "rgba(52,211,153,0.12)",  border: "rgba(52,211,153,0.32)"  },
+  { accent: "#fb923c", bg: "rgba(251,146,60,0.12)",  border: "rgba(251,146,60,0.32)"  },
+  { accent: "#f472b6", bg: "rgba(244,114,182,0.12)", border: "rgba(244,114,182,0.32)" },
+  { accent: "#60a5fa", bg: "rgba(96,165,250,0.12)",  border: "rgba(96,165,250,0.32)"  },
+  { accent: "#a78bfa", bg: "rgba(167,139,250,0.12)", border: "rgba(167,139,250,0.32)" },
+  { accent: "#facc15", bg: "rgba(250,204,21,0.12)",  border: "rgba(250,204,21,0.32)"  },
+  { accent: "#2dd4bf", bg: "rgba(45,212,191,0.12)",  border: "rgba(45,212,191,0.32)"  },
+];
+
+function LogFilterBar({ logRows, filters, onFiltersChange, filteredCount, totalCount }) {
+  // Build ordered map: deviceName → [logName, …]  (insertion order preserved)
+  const deviceLogMap = useMemo(() => {
+    const map = new Map(); // device → Set of logNames
+    for (const r of logRows) {
+      const dev = r.device_name ?? "";
+      const log = r.log_name   ?? "";
+      if (!map.has(dev)) map.set(dev, []);
+      if (!map.get(dev).includes(log)) map.get(dev).push(log);
+    }
+    return map;
+  }, [logRows]);
+
+  const deviceNames = useMemo(() => [...deviceLogMap.keys()], [deviceLogMap]);
+
+  // Draft state: same key format as `filters`
+  const [drafts, setDrafts] = useState(() => ({ ...filters }));
+
+  // Sync drafts when filters reset externally (modal re-open)
+  const prevFiltersRef = useRef(filters);
+  useEffect(() => {
+    if (prevFiltersRef.current !== filters) {
+      prevFiltersRef.current = filters;
+      setDrafts({ ...filters });
+    }
+  }, [filters]);
+
+  // Which device chip is expanded
+  const [expanded, setExpanded] = useState(null);
+
+  // Close popover when clicking outside
+  const popoverRef = useRef(null);
+  useEffect(() => {
+    if (!expanded) return;
+    const handler = (e) => {
+      if (popoverRef.current && !popoverRef.current.contains(e.target)) {
+        setExpanded(null);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [expanded]);
+
+  // Regex validity for all current drafts
+  const regexValid = useMemo(() => {
+    const v = {};
+    for (const [k, pat] of Object.entries(drafts)) {
+      if (!pat || !pat.trim()) { v[k] = true; continue; }
+      try { new RegExp(pat, "i"); v[k] = true; } catch { v[k] = false; }
+    }
+    return v;
+  }, [drafts]);
+
+  // Per-device helpers
+  const deviceHasFilter = (dev) =>
+    (deviceLogMap.get(dev) || []).some(log => {
+      const k = makeFilterKey(dev, log);
+      return (filters[k] ?? "").trim().length > 0;
+    });
+
+  const deviceActiveCount = (dev) =>
+    (deviceLogMap.get(dev) || []).filter(log => (filters[makeFilterKey(dev, log)] ?? "").trim()).length;
+
+  const allDraftsValid = Object.values(regexValid).every(Boolean);
+  const isFiltered = Object.values(filters).some(v => v && v.trim());
+
+  // Apply: push all drafts for the open device into applied filters
+  const applyDevice = (dev) => {
+    if (!allDraftsValid) return;
+    const next = { ...filters };
+    (deviceLogMap.get(dev) || []).forEach(log => {
+      const k = makeFilterKey(dev, log);
+      const val = drafts[k] ?? "";
+      if (val.trim()) next[k] = val; else delete next[k];
+    });
+    onFiltersChange(next);
+    setExpanded(null);
+  };
+
+  const clearDevice = (dev, e) => {
+    e.stopPropagation();
+    const next = { ...filters };
+    (deviceLogMap.get(dev) || []).forEach(log => delete next[makeFilterKey(dev, log)]);
+    const nextDrafts = { ...drafts };
+    (deviceLogMap.get(dev) || []).forEach(log => { nextDrafts[makeFilterKey(dev, log)] = ""; });
+    setDrafts(nextDrafts);
+    onFiltersChange(next);
+  };
+
+  const clearAll = () => {
+    setDrafts({});
+    onFiltersChange({});
+  };
+
+  return (
+    <div style={{
+      padding: "10px 16px",
+      borderBottom: "1px solid var(--border)",
+      background: "rgba(0,0,0,0.18)",
+      display: "flex",
+      alignItems: "center",
+      gap: 8,
+      flexWrap: "wrap",
+      flexShrink: 0,
+    }}>
+      {/* Label */}
+      <span style={{
+        fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--muted)",
+        textTransform: "uppercase", letterSpacing: "0.1em", flexShrink: 0,
+      }}>
+        Filter
+      </span>
+
+      {/* One chip per device */}
+      {deviceNames.map((dev, i) => {
+        const palette  = DEVICE_PALETTE[i % DEVICE_PALETTE.length];
+        const filtered = deviceHasFilter(dev);
+        const count    = deviceActiveCount(dev);
+        const isOpen   = expanded === dev;
+        const logNames = deviceLogMap.get(dev) || [];
+
+        return (
+          <div key={dev} style={{ position: "relative", display: "inline-flex" }} ref={isOpen ? popoverRef : null}>
+            {/* Chip button */}
+            <button
+              onClick={() => setExpanded(isOpen ? null : dev)}
+              style={{
+                display: "inline-flex", alignItems: "center", gap: 6,
+                padding: "4px 10px 4px 9px",
+                borderRadius: isOpen ? "10px 10px 0 0" : 20,
+                border: `1px solid ${isOpen || filtered ? palette.border : "var(--border)"}`,
+                borderBottom: isOpen ? "1px solid transparent" : undefined,
+                background: isOpen ? palette.bg : filtered ? palette.bg : "rgba(255,255,255,0.04)",
+                color: filtered || isOpen ? palette.accent : "var(--muted)",
+                fontFamily: "var(--font-mono)", fontSize: 11, fontWeight: filtered ? 700 : 500,
+                cursor: "pointer", transition: "all 0.15s", whiteSpace: "nowrap",
+                position: "relative", zIndex: isOpen ? 11 : 1,
+              }}
+            >
+              <span style={{
+                width: 6, height: 6, borderRadius: "50%", background: palette.accent,
+                flexShrink: 0, opacity: filtered || isOpen ? 1 : 0.4,
+                boxShadow: filtered ? `0 0 5px ${palette.accent}` : "none",
+                transition: "all 0.15s",
+              }} />
+              {dev}
+              {filtered && (
+                <>
+                  <span style={{
+                    display: "inline-flex", alignItems: "center", justifyContent: "center",
+                    minWidth: 16, height: 16, borderRadius: 8, padding: "0 4px",
+                    background: palette.accent, color: "#06061a",
+                    fontSize: 9, fontWeight: 800, flexShrink: 0,
+                  }}>
+                    {count}
+                  </span>
+                  {/* Clear-device × button */}
+                  <span
+                    onClick={(e) => clearDevice(dev, e)}
+                    title="Clear filters for this device"
+                    style={{
+                      display: "inline-flex", alignItems: "center", justifyContent: "center",
+                      width: 14, height: 14, borderRadius: "50%",
+                      background: "rgba(255,255,255,0.12)",
+                      color: palette.accent, fontSize: 10, lineHeight: 1,
+                      flexShrink: 0, cursor: "pointer",
+                    }}
+                  >×</span>
+                </>
+              )}
+              <span style={{ fontSize: 9, opacity: 0.55, marginLeft: 1 }}>{isOpen ? "▲" : "▼"}</span>
+            </button>
+
+            {/* Popover — per-logName rows */}
+            {isOpen && (
+              <div style={{
+                position: "absolute", top: "100%", left: 0,
+                background: "var(--modal-bg)",
+                border: `1px solid ${palette.border}`,
+                borderTop: "none",
+                borderRadius: "0 12px 12px 12px",
+                padding: "14px 16px 12px",
+                zIndex: 200,
+                minWidth: 340,
+                boxShadow: `0 10px 40px rgba(0,0,0,0.55), 0 0 0 1px ${palette.border}`,
+              }}>
+                {/* Popover header */}
+                <div style={{
+                  display: "flex", alignItems: "center", justifyContent: "space-between",
+                  marginBottom: 12,
+                }}>
+                  <div style={{
+                    fontFamily: "var(--font-mono)", fontSize: 10,
+                    color: palette.accent,
+                    textTransform: "uppercase", letterSpacing: "0.08em",
+                    display: "flex", alignItems: "center", gap: 6,
+                  }}>
+                    <span style={{
+                      width: 7, height: 7, borderRadius: "50%", background: palette.accent,
+                      display: "inline-block",
+                    }} />
+                    {dev}
+                  </div>
+                  <span style={{
+                    fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--muted)",
+                  }}>
+                    regex per log — case-insensitive
+                  </span>
+                </div>
+
+                {/* One row per logName */}
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  {logNames.map((log, li) => {
+                    const k       = makeFilterKey(dev, log);
+                    const draft   = drafts[k] ?? "";
+                    const valid   = regexValid[k] ?? true;
+                    const applied = (filters[k] ?? "").trim().length > 0;
+
+                    return (
+                      <div key={log}>
+                        {/* Log name label */}
+                        <div style={{
+                          display: "flex", alignItems: "center", gap: 6, marginBottom: 5,
+                        }}>
+                          <span style={{
+                            fontFamily: "var(--font-mono)", fontSize: 10,
+                            color: applied ? "#22d3ee" : "var(--muted)",
+                            background: applied ? "rgba(34,211,238,0.10)" : "rgba(255,255,255,0.05)",
+                            border: `1px solid ${applied ? "rgba(34,211,238,0.28)" : "var(--border)"}`,
+                            borderRadius: 12, padding: "2px 9px",
+                            fontWeight: applied ? 700 : 400,
+                            transition: "all 0.15s",
+                          }}>
+                            {log}
+                          </span>
+                          {applied && (
+                            <span style={{
+                              fontFamily: "var(--font-mono)", fontSize: 9,
+                              color: "#4ade80",
+                            }}>active</span>
+                          )}
+                        </div>
+
+                        {/* Regex input */}
+                        <div style={{ position: "relative" }}>
+                          <input
+                            autoFocus={li === 0}
+                            value={draft}
+                            onChange={e => setDrafts(prev => ({ ...prev, [k]: e.target.value }))}
+                            onKeyDown={e => {
+                              if (e.key === "Enter") applyDevice(dev);
+                              if (e.key === "Escape") setExpanded(null);
+                            }}
+                            placeholder={`e.g. ERROR|WARN`}
+                            style={{
+                              width: "100%",
+                              background: "var(--card-bg)",
+                              border: `1px solid ${!valid ? "#f87171" : draft ? palette.border : "var(--border)"}`,
+                              borderRadius: 7,
+                              color: "var(--text)",
+                              fontFamily: "var(--font-mono)", fontSize: 12,
+                              padding: "7px 30px 7px 10px",
+                              outline: "none", boxSizing: "border-box",
+                              transition: "border-color 0.15s",
+                            }}
+                          />
+                          {draft && (
+                            <button
+                              onClick={() => setDrafts(prev => ({ ...prev, [k]: "" }))}
+                              style={{
+                                position: "absolute", right: 8, top: "50%",
+                                transform: "translateY(-50%)",
+                                background: "none", border: "none", color: "var(--muted)",
+                                cursor: "pointer", fontSize: 14, lineHeight: 1, padding: 0,
+                              }}
+                            >×</button>
+                          )}
+                        </div>
+                        {!valid && (
+                          <div style={{ marginTop: 3, fontFamily: "var(--font-mono)", fontSize: 10, color: "#f87171" }}>
+                            ⚠ Invalid regular expression
+                          </div>
+                        )}
+                        {/* Divider between log entries */}
+                        {li < logNames.length - 1 && (
+                          <div style={{ height: 1, background: "var(--border)", marginTop: 8 }} />
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* Footer actions */}
+                <div style={{
+                  display: "flex", gap: 6, marginTop: 14,
+                  justifyContent: "space-between", alignItems: "center",
+                }}>
+                  <button
+                    onClick={(e) => clearDevice(dev, e)}
+                    style={{
+                      background: "transparent", border: "1px solid var(--border)",
+                      borderRadius: 6, color: "var(--muted)",
+                      fontFamily: "var(--font-mono)", fontSize: 11,
+                      padding: "5px 11px", cursor: "pointer",
+                    }}
+                  >Clear</button>
+                  <div style={{ display: "flex", gap: 6 }}>
+                    <button
+                      onClick={() => setExpanded(null)}
+                      style={{
+                        background: "transparent", border: "1px solid var(--border)",
+                        borderRadius: 6, color: "var(--muted)",
+                        fontFamily: "var(--font-mono)", fontSize: 11,
+                        padding: "5px 11px", cursor: "pointer",
+                      }}
+                    >Cancel</button>
+                    <button
+                      onClick={() => applyDevice(dev)}
+                      disabled={!allDraftsValid}
+                      style={{
+                        background: palette.bg, border: `1px solid ${palette.border}`,
+                        borderRadius: 6, color: palette.accent,
+                        fontFamily: "var(--font-mono)", fontSize: 11, fontWeight: 700,
+                        padding: "5px 16px",
+                        cursor: allDraftsValid ? "pointer" : "not-allowed",
+                        opacity: allDraftsValid ? 1 : 0.5, transition: "all 0.15s",
+                      }}
+                    >Apply ↵</button>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })}
+
+      {/* Spacer */}
+      <div style={{ flex: 1 }} />
+
+      {/* Row count + clear all */}
+      {isFiltered ? (
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
+          <span style={{
+            fontFamily: "var(--font-mono)", fontSize: 11,
+            color: filteredCount === 0 ? "#f87171" : "#4ade80",
+          }}>
+            {filteredCount.toLocaleString()} / {totalCount.toLocaleString()} rows
+          </span>
+          <button
+            onClick={clearAll}
+            style={{
+              background: "rgba(248,113,113,0.10)", border: "1px solid rgba(248,113,113,0.30)",
+              borderRadius: 6, color: "#f87171",
+              fontFamily: "var(--font-mono)", fontSize: 10, fontWeight: 700,
+              padding: "3px 10px", cursor: "pointer", transition: "all 0.15s", whiteSpace: "nowrap",
+            }}
+            onMouseEnter={e => e.currentTarget.style.background = "rgba(248,113,113,0.18)"}
+            onMouseLeave={e => e.currentTarget.style.background = "rgba(248,113,113,0.10)"}
+          >✕ Clear all</button>
+        </div>
+      ) : (
+        <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--muted)", flexShrink: 0 }}>
+          {totalCount.toLocaleString()} rows
+        </span>
+      )}
+    </div>
+  );
+}
+
 // ── LOG CONTENT VIEW ──────────────────────────────────────────────────────────
-function LogContentView({ rows, isChart, colorMode, chartGroups, onPacketClick }) {
-  if (isChart) return <ChartContentView chartGroups={chartGroups} />;
+function LogContentView({ rows, isChart, colorMode, chartGroups, onPacketClick, onShareChart, onEditorReady, highlightLine }) {
+  if (isChart) return <ChartContentView chartGroups={chartGroups} onShareChart={onShareChart} />;
 
   if (!rows || rows.length === 0)
     return <p style={{ color: "var(--muted)" }}>No data.</p>;
 
   return (
     <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
-      <MonacoLogViewer rows={rows} colorMode={colorMode} onPacketClick={onPacketClick} />
+      <MonacoLogViewer
+        rows={rows}
+        colorMode={colorMode}
+        onPacketClick={onPacketClick}
+        onEditorReady={onEditorReady}
+        highlightLine={highlightLine}
+      />
     </div>
   );
 }
@@ -2734,16 +3221,58 @@ requests.post(f"{BASE}/api/stop-logs-collection",
 }
 
 // ── DEVICE DETAILS ────────────────────────────────────────────────────────────
-function DeviceDetails({ device, isAdmin, onRequestLogin }) {
+// Small pill used in the device header to show a boolean status at a glance.
+function StatusPill({ label, ok, onLabel, offLabel, pulse }) {
+  return (
+    <div
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 7,
+        background: ok ? "rgba(74,222,128,0.10)" : "rgba(248,113,113,0.08)",
+        border: `1px solid ${ok ? "rgba(74,222,128,0.28)" : "rgba(248,113,113,0.22)"}`,
+        borderRadius: 20,
+        padding: "5px 12px 5px 10px",
+        fontFamily: "var(--font-mono)",
+        fontSize: 11.5,
+        whiteSpace: "nowrap",
+      }}
+    >
+      <span
+        style={{
+          width: 6,
+          height: 6,
+          borderRadius: "50%",
+          background: ok ? "#4ade80" : "#f87171",
+          animation: pulse ? "pulse 1.6s ease-in-out infinite" : "none",
+          flexShrink: 0,
+        }}
+      />
+      <span style={{ color: "var(--muted)" }}>{label}</span>
+      <span style={{ color: ok ? "#4ade80" : "#f87171", fontWeight: 700 }}>{ok ? onLabel : offLabel}</span>
+    </div>
+  );
+}
+
+function DeviceDetails({ device, isAdmin, onRequestLogin, onEdit }) {
   const [configVisible, setConfigVisible] = useState(false);
   const [errors, setErrors] = useState(null);
   const [errorsLoading, setErrorsLoading] = useState(false);
   const [errorsLoadError, setErrorsLoadError] = useState(null);
   const [errorsVisible, setErrorsVisible] = useState(false);
+  const [idCopied, setIdCopied] = useState(false);
 
   const handleShowConfig = () => {
     if (!isAdmin) { onRequestLogin(); return; }
     setConfigVisible((v) => !v);
+  };
+
+  const copyConfigId = () => {
+    if (!device.id) return;
+    navigator.clipboard.writeText(String(device.id)).then(() => {
+      setIdCopied(true);
+      setTimeout(() => setIdCopied(false), 1600);
+    });
   };
 
   const fetchErrors = async () => {
@@ -2772,41 +3301,122 @@ function DeviceDetails({ device, isAdmin, onRequestLogin }) {
 
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
-      <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
-        {[
-          ["Name",       device.name],
-          ["Connection", device.connection ? "✅ Online" : "❌ Offline"],
-          ["Log Access", device.logAccess  ? "✅ Yes"    : "❌ No"],
-          ["Collecting", device.collecting ? "🟢 Active" : "🟡 Idle"],
-        ].map(([k, v]) => (
-          <div
-            key={k}
+    <div style={{ display: "flex", flexDirection: "column", gap: 22 }}>
+      {/* Header card — device identity, live status pills, and the config id */}
+      <div
+        style={{
+          background: "linear-gradient(135deg, rgba(129,140,248,0.09), rgba(167,139,250,0.03))",
+          border: "1px solid var(--border)",
+          borderRadius: 12,
+          padding: "18px 20px",
+          display: "flex",
+          flexDirection: "column",
+          gap: 16,
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
+            <span
+              title={device.connection ? "Online" : "Offline"}
+              style={{
+                width: 10,
+                height: 10,
+                borderRadius: "50%",
+                background: device.connection ? "#4ade80" : "#f87171",
+                boxShadow: device.connection ? "0 0 8px rgba(74,222,128,0.7)" : "0 0 8px rgba(248,113,113,0.6)",
+                flexShrink: 0,
+              }}
+            />
+            <span
+              style={{
+                fontFamily: "var(--font-display)",
+                fontSize: 18,
+                fontWeight: 700,
+                color: "var(--text)",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {device.name}
+            </span>
+          </div>
+
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <StatusPill label="Connection" ok={device.connection} onLabel="Online" offLabel="Offline" />
+            <StatusPill label="Log Access" ok={device.logAccess} onLabel="Yes" offLabel="No" />
+            <StatusPill label="Collecting" ok={device.collecting} onLabel="Active" offLabel="Idle" pulse={device.collecting} />
+          </div>
+        </div>
+
+        {/* Device Config ID — copyable */}
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 12,
+            background: "rgba(0,0,0,0.28)",
+            border: "1px solid var(--border)",
+            borderRadius: 8,
+            padding: "10px 10px 10px 14px",
+          }}
+        >
+          <span
             style={{
-              background: "var(--card-bg)",
-              border: "1px solid var(--border)",
-              borderRadius: 8,
-              padding: "12px 18px",
-              minWidth: 140,
+              fontSize: 10,
+              color: "var(--muted)",
+              textTransform: "uppercase",
+              letterSpacing: "0.07em",
+              fontFamily: "var(--font-display)",
+              fontWeight: 600,
+              whiteSpace: "nowrap",
+              flexShrink: 0,
             }}
           >
-            <div style={{ fontSize: 10, color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>{k}</div>
-            <div style={{ fontFamily: "var(--font-mono)", fontSize: 14, color: "var(--text)" }}>{v}</div>
-          </div>
-        ))}
+            Device ID
+          </span>
+          <code
+            title={device.id ? String(device.id) : undefined}
+            style={{
+              flex: 1,
+              minWidth: 0,
+              fontFamily: "var(--font-mono)",
+              fontSize: 12.5,
+              color: "#a5b4fc",
+              overflowX: "auto",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {device.id || "—"}
+          </code>
+          <Btn
+            size="sm"
+            variant={idCopied ? "success" : "subtle"}
+            onClick={copyConfigId}
+            disabled={!device.id}
+            style={{ flexShrink: 0 }}
+          >
+            {idCopied ? "✓ Copied" : "⧉ Copy"}
+          </Btn>
+        </div>
       </div>
 
       {/* Config section — guarded by admin role */}
-      <div>
+      <div style={{ borderTop: "1px solid var(--border)", paddingTop: 18 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 10 }}>
-          <h4 style={{ fontFamily: "var(--font-display)", fontSize: 13, color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.08em", margin: 0 }}>
-            JSON Configuration
+          <h4 style={{ fontFamily: "var(--font-display)", fontSize: 13, color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.08em", margin: 0, display: "flex", alignItems: "center", gap: 7 }}>
+            <span style={{ fontSize: 13 }}>🛠️</span> JSON Configuration
           </h4>
           <Btn size="sm" variant={isAdmin ? "subtle" : "admin"} onClick={handleShowConfig}>
             {isAdmin
-              ? configVisible ? "🙈 Hide" : "👁 Show"
+              ? configVisible ? "Hide" : "Show"
               : "🔐 Admin only"}
           </Btn>
+          {isAdmin && (
+            <Btn size="sm" variant="primary" onClick={() => onEdit(device)}>
+              ✏️ Edit Config
+            </Btn>
+          )}
         </div>
 
         {!isAdmin && (
@@ -2859,10 +3469,10 @@ function DeviceDetails({ device, isAdmin, onRequestLogin }) {
       </div>
 
       {/* Error Logs section */}
-      <div>
+      <div style={{ borderTop: "1px solid var(--border)", paddingTop: 18 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 10 }}>
-          <h4 style={{ fontFamily: "var(--font-display)", fontSize: 13, color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.08em", margin: 0 }}>
-            Error Logs
+          <h4 style={{ fontFamily: "var(--font-display)", fontSize: 13, color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.08em", margin: 0, display: "flex", alignItems: "center", gap: 7 }}>
+            <span style={{ fontSize: 13 }}>⚠️</span> Error Logs
           </h4>
           {errors !== null && errors.length > 0 && (
             <span style={{
@@ -2956,6 +3566,7 @@ const EMPTY_LOG_ENTRY = () => ({
   log_type: "text",
   data_unit: "",
   description: "",
+  append_unmatched_to_last: false,
 });
 
 const FIELD_LABEL = {
@@ -3385,6 +3996,28 @@ function LogEntryEditor({ entry, conn, index, onChange, onRemove, onDuplicate })
               style={{ ...inputStyle, fontSize: 11, padding: "7px 12px", background: "rgba(255,255,255,0.02)" }} />
           </div>
 
+          {/* ── Append unmatched lines (text logs only) ── */}
+          {entry.log_type === "text" && <label style={{
+            display: "inline-flex", alignItems: "center", gap: 9,
+            marginBottom: 14, cursor: "pointer", userSelect: "none",
+          }}>
+            <input
+              type="checkbox"
+              checked={!!entry.append_unmatched_to_last}
+              onChange={e => set("append_unmatched_to_last", e.target.checked)}
+              style={{ accentColor: "var(--accent)", width: 14, height: 14, flexShrink: 0, cursor: "pointer" }}
+            />
+            <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--muted)" }}>
+              Append unmatched lines to last entry
+            </span>
+            <span style={{
+              fontFamily: "var(--font-mono)", fontSize: 10,
+              color: "var(--muted)", opacity: 0.55,
+            }}>
+              — folds continuation lines (e.g. stack traces) into the preceding matched entry
+            </span>
+          </label>}
+
           {/* ── Terminal Panel ── */}
           <div style={S.terminal}>
             {/* Tab bar */}
@@ -3561,27 +4194,120 @@ function LogEntryEditor({ entry, conn, index, onChange, onRemove, onDuplicate })
 }
 
 // ── CONFIG BUILDER WIZARD ──────────────────────────────────────────────────────
-function ConfigBuilderModal({ open, onClose, onSave }) {
+// ── CONFIG → BUILDER STATE ───────────────────────────────────────────────────
+// Converts a raw device.config object (as returned by the API) into the
+// conn / entries / packetCapture shapes that ConfigBuilderModal uses.
+// Called when the user clicks "Edit Config" on an existing device.
+function configToBuilderState(config) {
+  // ── connection fields ────────────────────────────────────────────────────
+  // Flatten the nested gateway chain back into the flat gateways[] array
+  // that the builder uses internally.
+  const flatGateways = [];
+  let hop = config.gateway;
+  while (hop) {
+    flatGateways.push({
+      _id: Math.random().toString(36).slice(2),
+      ip_address: hop.ip_address || "",
+      port: hop.port ?? 22,
+      user: hop.user || "",
+      password: hop.password || "",
+      ssh_key_string: hop.ssh_key_string || "",
+      authMode: hop.ssh_key_string ? "key" : "password",
+    });
+    hop = hop.gateway;
+  }
+
+  const conn = {
+    device_name:         config.device_name || "",
+    ip_address:          config.ip_address  || "",
+    port:                config.port        ?? 22,
+    user:                config.user        || "pi",
+    password:            config.password    || "",
+    ssh_key_string:      config.ssh_key_string || "",
+    authMode:            config.ssh_key_string ? "key" : "password",
+    collection_interval: config.collection_interval ?? 30,
+    gateways:            flatGateways,
+  };
+
+  // ── log entries ──────────────────────────────────────────────────────────
+  const entries = (config.log_file_configs || []).map(e => ({
+    _id:                      Math.random().toString(36).slice(2),
+    log_name:                 e.log_name                 || "",
+    log_file_cmd:             e.log_file_cmd             || "",
+    data_extraction_regex:    e.data_extraction_regex    || "",
+    log_activation_cmd:       e.log_activation_cmd       || "",
+    log_deactivation_cmd:     e.log_deactivation_cmd     || "",
+    custom_shell_prompt:      e.custom_shell_prompt      || "",
+    log_type:                 e.log_type                 || "text",
+    data_unit:                e.data_unit                || "",
+    description:              e.description              || "",
+    append_unmatched_to_last: e.append_unmatched_to_last ?? false,
+  }));
+
+  // ── packet capture ───────────────────────────────────────────────────────
+  const pcc = config.packets_capture_config;
+  const packetCapture = pcc
+    ? {
+        enabled:             true,
+        capture_start_cmd:   pcc.capture_start_cmd   || "tcpdump -i any",
+        capture_stop_cmd:    pcc.capture_stop_cmd     || "pkill -INT -f 'tcpdump -i any'",
+        capture_description: pcc.capture_description || "Network packet capture",
+        max_pcap_size_mb:    pcc.max_pcap_size_mb != null ? String(pcc.max_pcap_size_mb) : "",
+        decoder_cmd:         pcc.decoder_cmd          || "",
+      }
+    : {
+        enabled:             false,
+        capture_start_cmd:   "tcpdump -i any",
+        capture_stop_cmd:    "pkill -INT -f 'tcpdump -i any'",
+        capture_description: "Network packet capture",
+        max_pcap_size_mb:    "",
+        decoder_cmd:         "",
+      };
+
+  return { conn, entries, packetCapture };
+}
+
+function ConfigBuilderModal({ open, onClose, onSave, initialDevice }) {
   const [step, setStep] = useState(1); // 1=connection, 2=log entries
   const EMPTY_CONN = () => ({
     device_name: "", ip_address: "", port: 22,
     user: "pi", password: "", ssh_key_string: "", authMode: "password", collection_interval: 30,
     gateways: [],
   });
-  const [conn, setConn] = useState(EMPTY_CONN);
-  const [entries, setEntries] = useState([EMPTY_LOG_ENTRY()]);
-  const [connStatus, setConnStatus] = useState(null); // null | "testing" | {success, message}
-  const [saving, setSaving] = useState(false);
-
   const EMPTY_PACKET_CAPTURE = () => ({
     enabled: false,
     capture_start_cmd: "tcpdump -i any",
     capture_stop_cmd: "pkill -INT -f 'tcpdump -i any'",
     capture_description: "Network packet capture",
     max_pcap_size_mb: "",
+    decoder_cmd: "",
   });
+
+  const [conn, setConn] = useState(EMPTY_CONN);
+  const [entries, setEntries] = useState([EMPTY_LOG_ENTRY()]);
+  const [connStatus, setConnStatus] = useState(null); // null | "testing" | {success, message}
+  const [saving, setSaving] = useState(false);
   const [packetCapture, setPacketCapture] = useState(EMPTY_PACKET_CAPTURE);
   const setPC = (k, v) => setPacketCapture(prev => ({ ...prev, [k]: v }));
+
+  // When the modal opens for editing an existing device, pre-populate all
+  // fields from the device's current config.  When it opens for a new device
+  // (initialDevice is null/undefined) reset everything to blank.
+  useEffect(() => {
+    if (!open) return;
+    if (initialDevice?.config) {
+      const { conn: c, entries: e, packetCapture: pc } = configToBuilderState(initialDevice.config);
+      setConn(c);
+      setEntries(e.length > 0 ? e : [EMPTY_LOG_ENTRY()]);
+      setPacketCapture(pc);
+    } else {
+      setConn(EMPTY_CONN());
+      setEntries([EMPTY_LOG_ENTRY()]);
+      setPacketCapture(EMPTY_PACKET_CAPTURE());
+    }
+    setStep(1);
+    setConnStatus(null);
+  }, [open, initialDevice]);
 
   const setC = (k, v) => setConn(prev => ({ ...prev, [k]: v }));
 
@@ -3623,9 +4349,10 @@ function ConfigBuilderModal({ open, onClose, onSave }) {
     const log_file_configs = entries.map(({ _id, ...rest }) => {
       // Drop optional keys that were left empty so they don't appear in the config
       const entry = { ...rest };
-      if (!entry.log_activation_cmd)   delete entry.log_activation_cmd;
-      if (!entry.log_deactivation_cmd) delete entry.log_deactivation_cmd;
-      if (!entry.custom_shell_prompt)  delete entry.custom_shell_prompt;
+      if (!entry.log_activation_cmd)       delete entry.log_activation_cmd;
+      if (!entry.log_deactivation_cmd)     delete entry.log_deactivation_cmd;
+      if (!entry.custom_shell_prompt)      delete entry.custom_shell_prompt;
+      if (!entry.append_unmatched_to_last) delete entry.append_unmatched_to_last;
       return entry;
     });
     const config = {
@@ -3672,6 +4399,10 @@ function ConfigBuilderModal({ open, onClose, onSave }) {
       if (packetCapture.max_pcap_size_mb !== "" && packetCapture.max_pcap_size_mb != null) {
         pcc.max_pcap_size_mb = Number(packetCapture.max_pcap_size_mb);
       }
+      // Omit when blank so the backend falls back to the default tshark binary.
+      if (packetCapture.decoder_cmd && packetCapture.decoder_cmd.trim()) {
+        pcc.decoder_cmd = packetCapture.decoder_cmd.trim();
+      }
       config.packets_capture_config = pcc;
     }
 
@@ -3682,15 +4413,16 @@ function ConfigBuilderModal({ open, onClose, onSave }) {
     setSaving(true);
     try {
       const config = buildConfig();
-      const b64 = btoa(JSON.stringify(config, null, 2));
-      await onSave(`data:application/json;base64,${b64}`);
+      const b64 = btoa(unescape(encodeURIComponent(JSON.stringify(config, null, 2))));
+      const contents = `data:application/json;base64,${b64}`;
+      if (initialDevice) {
+        // Edit mode: update the existing device in-place via PUT
+        await onSave(contents, initialDevice.id);
+      } else {
+        // Create mode: add a new device via POST
+        await onSave(contents, null);
+      }
       onClose();
-      // Reset
-      setStep(1);
-      setConn(EMPTY_CONN());
-      setEntries([EMPTY_LOG_ENTRY()]);
-      setPacketCapture(EMPTY_PACKET_CAPTURE());
-      setConnStatus(null);
     } finally {
       setSaving(false);
     }
@@ -3742,8 +4474,12 @@ function ConfigBuilderModal({ open, onClose, onSave }) {
               🛠
             </div>
             <div>
-              <div style={{ fontFamily: "var(--font-display)", fontWeight: 800, fontSize: 17, color: "var(--text)", letterSpacing: "0.02em" }}>Device Config Builder</div>
-              <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--muted)", marginTop: 2 }}>Build and test your configuration interactively</div>
+              <div style={{ fontFamily: "var(--font-display)", fontWeight: 800, fontSize: 17, color: "var(--text)", letterSpacing: "0.02em" }}>
+                {initialDevice ? `Edit Config — ${initialDevice.name}` : "Device Config Builder"}
+              </div>
+              <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--muted)", marginTop: 2 }}>
+                {initialDevice ? "Modify the device configuration. Changes take effect on the next collection cycle." : "Build and test your configuration interactively"}
+              </div>
             </div>
           </div>
           <button onClick={onClose} style={{ background: "rgba(255,255,255,0.06)", border: "1px solid var(--border)", borderRadius: 8, color: "var(--muted)", cursor: "pointer", fontSize: 18, lineHeight: 1, padding: "5px 9px", transition: "all 0.15s" }}
@@ -4134,6 +4870,18 @@ function ConfigBuilderModal({ open, onClose, onSave }) {
                         </div>
                       </div>
                     </div>
+                    <div style={{ marginTop: 12 }}>
+                      <div style={FIELD_LABEL}>Custom PCAP Decoder Command</div>
+                      <input
+                        value={packetCapture.decoder_cmd}
+                        onChange={e => setPC("decoder_cmd", e.target.value)}
+                        placeholder="Default: tshark"
+                        style={{ ...inputStyle, fontFamily: "var(--font-mono)" }}
+                      />
+                      <div style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--muted)", marginTop: 4 }}>
+                        Optional. Override the local binary used to decode pcap files. The command must accept the pcap file path as its last argument and write tab-separated lines in tshark field order to stdout. Leave blank to use the default <span style={{ color: "var(--text)" }}>tshark</span>.
+                      </div>
+                    </div>
                   </>
                 )}
               </div>
@@ -4163,7 +4911,7 @@ function ConfigBuilderModal({ open, onClose, onSave }) {
               <>
                 <Btn variant="ghost" onClick={() => setStep(1)}>← Back</Btn>
                 <Btn variant="success" onClick={handleSave} disabled={saving || !step2Valid}>
-                  {saving ? "Saving…" : "💾 Save Device"}
+                  {saving ? "Saving…" : initialDevice ? "💾 Save Changes" : "💾 Save Device"}
                 </Btn>
               </>
             )}
@@ -4658,9 +5406,10 @@ export default function App() {
   const [systemStats,     setSystemStats]     = useState(null);
   const [selectedDevices, setSelectedDevices] = useState([]);
   // Device groups: { id, name, deviceIds[] }
-  const [groups, setGroups] = useState(() => {
-    try { return JSON.parse(localStorage.getItem("lo_device_groups") || "[]"); } catch { return []; }
-  });
+  // Loaded from the server so all users share the same grouping configuration.
+  const [groups, setGroups] = useState([]);
+  // Collapsed state is intentionally kept local — it is a UI preference, not
+  // shared data, so each user can expand/collapse independently.
   const [collapsedGroups, setCollapsedGroups] = useState(() => {
     try { return new Set(JSON.parse(localStorage.getItem("lo_collapsed_groups") || "[]")); } catch { return new Set(); }
   });
@@ -4676,10 +5425,17 @@ export default function App() {
   });
   const [snapsLoading,    setSnapsLoading]    = useState(true);
   const [selectedSnaps,   setSelectedSnaps]   = useState([]);
-  const [isChart,         setIsChart]         = useState(false);
-  const [searchParam,     setSearchParam]     = useState("");
-  const [searchValue,     setSearchValue]     = useState("");
-  const [filterActive,    setFilterActive]    = useState(false);
+  // Initialise filter state directly from the URL so the correct values are
+  // available before the first render and before any fetch fires.  This
+  // eliminates all races: no effect needs to read the URL and set state after
+  // mount, so there is no window where the wrong (empty) filter is visible.
+  const [isChart,      setIsChart]      = useState(() => new URLSearchParams(window.location.search).get("log_type") === "chart");
+  const [searchParam,  setSearchParam]  = useState(() => new URLSearchParams(window.location.search).get("search_param") || "");
+  const [searchValue,  setSearchValue]  = useState(() => new URLSearchParams(window.location.search).get("search_value")  || "");
+  const [filterActive, setFilterActive] = useState(() => {
+    const p = new URLSearchParams(window.location.search);
+    return !!(p.get("search_param") || p.get("search_value"));
+  });
 
   // stop-collection loading overlay
   const [stoppingCollection, setStoppingCollection] = useState(false);
@@ -4693,6 +5449,8 @@ export default function App() {
   const [viewingSnaps,    setViewingSnaps]    = useState([]); // snapshots currently open in the log modal
   const [logLoadProgress, setLogLoadProgress] = useState({ done: 0, total: 0 });
   const [colorMode,       setColorMode]       = useState(false);
+  // Per-device regex filter: Map<deviceName, regexString>
+  const [deviceRegexFilters, setDeviceRegexFilters] = useState({});
 
   // packet_capture "view packet details" modal
   const [packetModal,        setPacketModal]        = useState(false);
@@ -4703,6 +5461,7 @@ export default function App() {
   const [sessionModal,    setSessionModal]    = useState(null);
   const [apiModal,        setApiModal]        = useState(false);
   const [builderModal,    setBuilderModal]    = useState(false);
+  const [editBuilderDevice, setEditBuilderDevice] = useState(null); // Device being edited, or null for new
   const [loginModal,              setLoginModal]              = useState(false);
   const [settingsModal,           setSettingsModal]           = useState(false);
   const [scenarioModal,           setScenarioModal]           = useState(false);
@@ -4715,6 +5474,12 @@ export default function App() {
   const [removingDevices,         setRemovingDevices]         = useState(false);
   const [confirmRemoveSnaps,      setConfirmRemoveSnaps]      = useState(false);
   const [removingSnaps,           setRemovingSnaps]           = useState(false);
+
+  // share-link feature: ref to Monaco's getCurrentLine helper, and the
+  // highlighted line number injected when opening via a shared URL
+  const monacoEditorApiRef  = useRef(null); // { getCurrentLine: () => number }
+  const [shareLinkCopied,   setShareLinkCopied]   = useState(false);
+  const [highlightLine,     setHighlightLine]      = useState(null); // line number to highlight on open
 
   // toasts
   const [toasts, setToasts] = useState([]);
@@ -4759,8 +5524,33 @@ export default function App() {
     }
   }, [addToast, pageSize]);
 
+  // Load groups from the server once on mount so all users share the same
+  // device-group configuration.
   useEffect(() => {
-    localStorage.setItem("lo_device_groups", JSON.stringify(groups));
+    apiFetch("/api/settings/device-groups")
+      .then((data) => { if (Array.isArray(data)) setGroups(data); })
+      .catch(() => {}); // non-critical — fall back to empty groups
+  }, []);
+
+  // Persist the full groups array to the server whenever it changes.
+  // We skip the first render (empty initial state) by checking length, but
+  // still save when the user explicitly empties all groups.
+  const groupsRef = useRef(null);
+  useEffect(() => {
+    // Don't save the uninitialised empty array that exists before the server
+    // fetch completes — only save after the first real server response has
+    // set groupsRef.current to a non-null value.
+    if (groupsRef.current === null) {
+      // Mark that we have now received the server state; subsequent changes
+      // (including user-driven deletions down to []) will be persisted.
+      groupsRef.current = groups;
+      return;
+    }
+    groupsRef.current = groups;
+    apiFetch("/api/settings/device-groups", {
+      method: "PUT",
+      body: JSON.stringify({ groups }),
+    }).catch(() => {}); // best-effort
   }, [groups]);
 
   useEffect(() => {
@@ -4851,7 +5641,14 @@ export default function App() {
   );
 
   useEffect(() => { fetchDevices(); }, [fetchDevices]);
-  useEffect(() => { fetchSnapshots("", "", false); }, [fetchSnapshots]);
+
+  // On mount, filter state is already correct (initialised from URL params via
+  // lazy useState), so we just fire the fetch directly with those values.
+  // No URL-reading or setState needed here — that's what prevents the flicker.
+  useEffect(() => {
+    fetchSnapshots(filterActive ? searchParam : "", filterActive ? searchValue : "", isChart);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
   useEffect(() => { fetchSystemStats(); }, [fetchSystemStats]);
 
   useEffect(() => {
@@ -4864,23 +5661,92 @@ export default function App() {
     return () => clearInterval(id);
   }, [fetchSystemStats]);
 
-  // FIX: this effect previously had no dependency array, causing it to run
-  // after every render and rely on a manual ref comparison to detect changes.
-  // Using [isChart] as the dependency array is correct and idiomatic.
+  // Re-fetch when the user manually toggles text/chart.
+  // isChart is stable on mount (set from URL before first render) so this
+  // effect only fires on genuine user-driven toggles, never on initial load.
+  const isMountedRef = useRef(false);
   useEffect(() => {
+    if (!isMountedRef.current) { isMountedRef.current = true; return; }
     fetchSnapshots(filterActive ? searchParam : "", filterActive ? searchValue : "", isChart);
   }, [isChart]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Auto-open a snapshot view (and optionally jump to a line) when the URL
+  // contains ?open_snaps=<id1,id2,...>&log_type=chart|text, with optional
+  // &line=<N> (text, single snapshot) and &log_filters=<json> (text, the
+  // per-device regex filters that were active when the link was shared).
+  // The legacy singular ?open_snap=<id> is still accepted for old links.
+  // These params are written by the share-link feature; clean them from the
+  // URL after consuming them so refreshing doesn't re-trigger the open.
+  const autoOpenHandledRef = useRef(false);
   useEffect(() => {
+    if (autoOpenHandledRef.current || snapsLoading) return;
     const p = new URLSearchParams(window.location.search);
-    const sp = p.get("search_param") || "";
-    const sv = p.get("search_value")  || "";
-    const lt = p.get("log_type") === "chart";
-    if (sp || sv) {
-      setSearchParam(sp); setSearchValue(sv); setIsChart(lt); setFilterActive(true);
-      fetchSnapshots(sp, sv, lt);
-    }
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+    const snapsParam = p.get("open_snaps") || p.get("open_snap");
+    if (!snapsParam) return;
+    autoOpenHandledRef.current = true;
+
+    const snapIds = [...new Set(snapsParam.split(",").map((s) => s.trim()).filter(Boolean))];
+    const lineParam    = p.get("line");
+    const filtersParam = p.get("log_filters");
+
+    // Remove share-link params from the URL without a page reload
+    p.delete("open_snap");
+    p.delete("open_snaps");
+    p.delete("line");
+    p.delete("log_filters");
+    const newSearch = p.toString();
+    window.history.replaceState(null, "", newSearch ? `?${newSearch}` : window.location.pathname);
+
+    // Find the snapshots in the current page; if any are missing, fetch the
+    // full list for the relevant log type to locate them (they may be on a
+    // different page, or excluded by the current list filter).
+    const findAndOpen = async () => {
+      let targets = snapshots.filter((s) => snapIds.includes(s.id));
+      if (targets.length < snapIds.length) {
+        try {
+          const logType = isChart ? "chart" : "text";
+          const data = await apiFetch(`/api/snapshots?log_type=${logType}&page_size=9999`);
+          const all = data.items ?? [];
+          targets = snapIds.map((id) => all.find((s) => s.id === id)).filter(Boolean);
+        } catch { /* ignore */ }
+      }
+
+      if (targets.length === 0) {
+        addToast("Shared snapshot(s) not found.", "error");
+        return;
+      }
+      if (targets.length < snapIds.length) {
+        addToast(`Only found ${targets.length} of ${snapIds.length} shared snapshots.`, "error");
+      }
+
+      // Set highlight line before opening so it is available when Monaco
+      // mounts. Safe even for multi-snapshot merged views: rows are always
+      // sorted by timestamp with a stable sort, and `targets` preserves the
+      // same snapshot order the link was shared with, so the merged row
+      // order — and therefore the line number — reproduces identically as
+      // long as the underlying snapshot content hasn't changed.
+      if (lineParam) {
+        const ln = parseInt(lineParam, 10);
+        if (ln > 0) setHighlightLine(ln);
+      }
+
+      // Parse the shared per-device regex filters (if any) and hand them to
+      // openLogContent directly so they land in the very first render of
+      // the modal's content, rather than one render later — see the note
+      // on openLogContent for why that ordering matters for share links.
+      let initialFilters;
+      if (filtersParam) {
+        try {
+          const parsed = JSON.parse(filtersParam);
+          if (parsed && typeof parsed === "object") initialFilters = parsed;
+        } catch { /* ignore malformed filter param */ }
+      }
+
+      await openLogContent(targets, { initialFilters });
+    };
+
+    findAndOpen();
+  }, [snapsLoading]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── handlers ───────────────────────────────────────────────────────────────
   const uploadOne = async (contents) => {
@@ -4891,7 +5757,25 @@ export default function App() {
     setDevices((prev) => [...prev, device]);
   };
 
-  const handleUpload = async (contents) => {
+  // handleUpload is called by ConfigBuilderModal.onSave with (contents, deviceId).
+  // When deviceId is set it is an edit (PUT); otherwise it is a new device (POST).
+  const handleUpload = async (contents, deviceId = null) => {
+    if (deviceId) {
+      // ── Edit existing device ────────────────────────────────────────────
+      try {
+        const { device } = await apiFetch(`/api/devices/${encodeURIComponent(deviceId)}`, {
+          method: "PUT",
+          body: JSON.stringify({ contents }),
+        });
+        setDevices(prev => prev.map(d => d.id === deviceId ? device : d));
+        addToast(`Device "${device.name}" updated successfully.`, "success");
+      } catch (e) {
+        addToast(e.status === 422 ? "Invalid configuration — could not update device." : `Update failed: ${e.message}`);
+      }
+      return;
+    }
+
+    // ── Add new device ────────────────────────────────────────────────────
     // Single file: keep the original behaviour/messages unchanged.
     if (!Array.isArray(contents)) {
       try {
@@ -5080,14 +5964,22 @@ export default function App() {
    * For chart mode: fetches each snapshot separately and builds chartGroups
    * so each snapshot gets its own Plotly panel inside the modal.
    * For text mode: merges all rows as before.
+   *
+   * `initialFilters`, when provided (e.g. by a shared-link URL), is applied
+   * in the same pass as the reset instead of being set in a follow-up call
+   * after this function returns — setting it a render later would mean the
+   * editor first mounts with the unfiltered content, then has its entire
+   * buffer replaced once the filters land, which clears any decoration
+   * (such as the shared-line highlight) applied in between.
    */
-  const openLogContent = async (snapsToView) => {
+  const openLogContent = async (snapsToView, { initialFilters } = {}) => {
     setLogModal(true);
     setLogRowsLoading(true);
     setLogRows([]);
     setChartGroups([]);
     setViewingSnaps(snapsToView);
     setLogLoadProgress({ done: 0, total: snapsToView.length });
+    setDeviceRegexFilters(initialFilters || {});
 
     try {
       let done = 0;
@@ -5156,6 +6048,67 @@ export default function App() {
     } finally {
       setPacketModalLoading(false);
     }
+  };
+
+  // ── share-link helpers ─────────────────────────────────────────────────────
+
+  /**
+   * Builds a shareable URL that reproduces the currently open log/chart
+   * view: every snapshot in `snapsToShare` (via ?open_snaps=id1,id2,...),
+   * the active log_type, and — for text logs — any per-device regex filters
+   * currently applied (?log_filters=<json>). List-level filters
+   * (search_param/search_value) already live in the current URL and are
+   * carried over automatically since we start from the existing query
+   * string.
+   */
+  const buildShareUrl = (snapsToShare, { line } = {}) => {
+    const p = new URLSearchParams(window.location.search);
+    p.set("open_snaps", snapsToShare.map((s) => s.id).join(","));
+    p.delete("open_snap"); // legacy singular param, superseded by open_snaps
+    p.set("log_type", isChart ? "chart" : "text");
+
+    if (line) p.set("line", String(line));
+    else p.delete("line");
+
+    const activeFilters = isChart
+      ? {}
+      : Object.fromEntries(Object.entries(deviceRegexFilters).filter(([, v]) => v && v.trim()));
+    if (Object.keys(activeFilters).length > 0) p.set("log_filters", JSON.stringify(activeFilters));
+    else p.delete("log_filters");
+
+    return `${window.location.origin}${window.location.pathname}?${p.toString()}`;
+  };
+
+  const copyShareUrl = (url, successMessage) => {
+    navigator.clipboard.writeText(url)
+      .then(() => addToast(successMessage, "success"))
+      .catch(() => addToast("Could not copy to clipboard.", "error"));
+  };
+
+  /**
+   * Copies a shareable URL for the current cursor line in the Monaco viewer.
+   * Includes every snapshot currently open (not just the first) plus any
+   * active per-device filters, so the recipient sees the exact same merged,
+   * filtered view before landing on the highlighted line.
+   */
+  const shareCurrentLine = () => {
+    if (viewingSnaps.length === 0) return;
+    const lineNumber = monacoEditorApiRef.current?.getCurrentLine?.() ?? 1;
+    const url = buildShareUrl(viewingSnaps, { line: lineNumber });
+    setShareLinkCopied(true);
+    setTimeout(() => setShareLinkCopied(false), 2500);
+    copyShareUrl(url, `Link to line ${lineNumber} copied to clipboard.`);
+  };
+
+  /**
+   * Copies a shareable URL for a single chart snapshot — used by the
+   * per-chart "🔗 Share Chart" button inside a multi-chart view.
+   */
+  const shareChart = (snapId) => {
+    const target = viewingSnaps.find((s) => s.id === snapId);
+    if (!target) return;
+    const url = buildShareUrl([target]);
+    copyShareUrl(url, "Chart link copied to clipboard.");
   };
 
   const applyFilter = () => {
@@ -5606,6 +6559,28 @@ ${rowsHtml}
     }
   };
 
+  // Apply per-(device, logName) regex filters to the full log rows.
+  // Filter keys use the same FILTER_SEP-delimited format as LogFilterBar.
+  const filteredLogRows = useMemo(() => {
+    if (!logRows || logRows.length === 0) return logRows;
+    const hasFilter = Object.values(deviceRegexFilters).some(v => v && v.trim());
+    if (!hasFilter) return logRows;
+    return logRows.filter(row => {
+      const deviceName = row.device_name ?? "";
+      const logName    = row.log_name    ?? "";
+      const key        = `${deviceName}\x00${logName}`;
+      const pattern    = deviceRegexFilters[key];
+      if (!pattern || !pattern.trim()) return true; // no filter for this pair → keep row
+      try {
+        const re   = new RegExp(pattern, "i");
+        const line = `[${row.time ?? ""}] [${deviceName}] [${logName}]  ${row.content ?? ""}`;
+        return re.test(line);
+      } catch {
+        return true; // invalid regex → keep row (safe fallback)
+      }
+    });
+  }, [logRows, deviceRegexFilters]);
+
   // Modal title with chart count info
   const logModalTitle = isChart && chartGroups.length > 0
     ? `Chart Data — ${chartGroups.length} snapshot${chartGroups.length > 1 ? "s" : ""}`
@@ -5934,11 +6909,12 @@ ${rowsHtml}
 
       {/* MODALS */}
 
-      {/* Config Builder Modal */}
+      {/* Config Builder Modal — used for both creating new devices and editing existing ones */}
       <ConfigBuilderModal
         open={builderModal}
-        onClose={() => setBuilderModal(false)}
+        onClose={() => { setBuilderModal(false); setEditBuilderDevice(null); }}
         onSave={handleUpload}
+        initialDevice={editBuilderDevice}
       />
 
       {/* Session scenario modal — shown when the user clicks ▶ Start Collection */}
@@ -6041,19 +7017,29 @@ ${rowsHtml}
 
       <Modal
         open={logModal}
-        onClose={() => setLogModal(false)}
+        onClose={() => { setLogModal(false); setHighlightLine(null); monacoEditorApiRef.current = null; setShareLinkCopied(false); }}
         title={logModalTitle}
         size="full"
         footer={
           <>
             {!isChart && <Toggle checked={colorMode} onChange={setColorMode} labelLeft="Raw" labelRight="Color mode" />}
+            {!isChart && !logRowsLoading && filteredLogRows.length > 0 && (
+              <Btn
+                variant="subtle"
+                size="sm"
+                onClick={shareCurrentLine}
+                title="Copy a link to this view, with the currently selected line highlighted"
+              >
+                {shareLinkCopied ? "✓ Copied!" : "🔗 Share"}
+              </Btn>
+            )}
             {networkCaptureSnaps.map((s) => (
               <Btn key={s.id} size="sm" variant="subtle" onClick={() => downloadRawPcap(s)}>
                 ⬇ Raw PCAP{networkCaptureSnaps.length > 1 ? `: ${s.deviceName}` : ""}
               </Btn>
             ))}
             <DownloadMenu onDownload={downloadLogs} isChart={isChart} />
-            <Btn variant="ghost" onClick={() => setLogModal(false)}>Close</Btn>
+            <Btn variant="ghost" onClick={() => { setLogModal(false); setHighlightLine(null); monacoEditorApiRef.current = null; setShareLinkCopied(false); }}>Close</Btn>
           </>
         }
       >
@@ -6061,12 +7047,24 @@ ${rowsHtml}
           <LogLoadProgressBar done={logLoadProgress.done} total={logLoadProgress.total} />
         ) : (
           <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
+            {!isChart && logRows.length > 0 && (
+              <LogFilterBar
+                logRows={logRows}
+                filters={deviceRegexFilters}
+                onFiltersChange={setDeviceRegexFilters}
+                filteredCount={filteredLogRows.length}
+                totalCount={logRows.length}
+              />
+            )}
             <LogContentView
-              rows={logRows}
+              rows={filteredLogRows}
               isChart={isChart}
               colorMode={colorMode}
               chartGroups={chartGroups}
               onPacketClick={openPacketDetails}
+              onShareChart={shareChart}
+              onEditorReady={(api) => { monacoEditorApiRef.current = api; }}
+              highlightLine={highlightLine}
             />
           </div>
         )}
@@ -6105,6 +7103,11 @@ ${rowsHtml}
             device={deviceModal}
             isAdmin={auth.isAdmin}
             onRequestLogin={() => setLoginModal(true)}
+            onEdit={(device) => {
+              setEditBuilderDevice(device);
+              setBuilderModal(true);
+              setDeviceModal(null);
+            }}
           />
         )}
       </Modal>

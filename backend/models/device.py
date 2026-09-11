@@ -20,7 +20,19 @@ class Device:
         self.watchdog_process_pid = self.device_config["watchdog_process_pid"]
         self.auto_collection_enabled = self.device_config["auto_collection_enabled"]
         self.auto_collection_interval = self.device_config["auto_collection_interval"]
-        self.log_snapshots = LogSnapshotsLoader(os.path.join("data", self.device_config_id)).load_all_log_snapshots()
+        # Metadata only (device_name, log_name, timestamps, duration, size,
+        # etc.) - NOT full row data. This attribute is read by
+        # LogSnapshotsHelper.get_log_snapshots_list/get_filtered_log_snapshots_list,
+        # which only ever touch those metadata fields, so a LogSnapshotMeta
+        # here is a drop-in for what used to be a full LogSnapshot. Every
+        # endpoint that calls get_current_devices() - i.e. nearly every
+        # request - reconstructs every Device from scratch, so eagerly
+        # loading full log content here would mean re-reading and
+        # decompressing every snapshot's entire dataset on every request.
+        # Callers that need actual log content (the /content, /packets,
+        # /pcap endpoints) look the target snapshot up directly by ID and
+        # call `.load_full()` on it instead of going through this list.
+        self.log_snapshots = LogSnapshotsLoader(os.path.join("data", self.device_config_id)).load_all_log_snapshot_metas()
         self.errors = pd.DataFrame({"time": [], "error_info": []})
         if  self.watchdog_process_pid == 0 or not self.is_process_active():
             watchdog_process = subprocess.Popen(["python", "-m", "backend.services.device_watchdog", self.device_config_instance.device_config_path])
