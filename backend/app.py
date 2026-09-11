@@ -2,6 +2,7 @@
 LogOctopus - Flask REST API backend
 """
 
+import glob
 import hashlib
 import json
 import os
@@ -10,13 +11,15 @@ import uuid
 from pathlib import Path
 
 import psutil
-from flask import Flask, jsonify, request, send_file
+from flask import Flask, jsonify, request, send_file, Response
 from flask_cors import CORS
 from paramiko_expect import SSHClientInteraction
 
 from backend.models.device import Device
 from backend.models.device_config import DeviceConfig
+from backend.models.log_snapshot import LogSnapshotMeta
 from backend.utils.log_snapshots_helper import LogSnapshotsHelper
+from backend.utils.log_snapshots_loader import LogSnapshotsLoader
 from backend.utils.device_config_loader import DeviceConfigLoader
 from backend.utils.pcap_decoder import DissectorRegistry, PcapDecoder
 from backend.utils.fabric_connection import build_nested_connection as _build_nested_connection
@@ -59,6 +62,39 @@ def get_target_device(device_id: str) -> Device | None:
         if device.device_config_id == device_id:
             return device
     return None
+
+
+def find_snapshot_by_id(snapshot_id: str):
+    """Resolve a single snapshot directly by ID, without loading or even
+    listing every other snapshot in the system.
+
+    Snapshot parquet files are named '{id}_{timestamp}.parquet' (see
+    LogSnapshot.create_parquet_data_file), so a single glob across device
+    directories locates the exact file. This replaces the previous pattern
+    used by the content/packets/pcap/delete endpoints of loading *every*
+    snapshot of a given type across *every* device just to pick out one by
+    ID - that scan is O(total snapshots) and, worse, was materializing full
+    row data for snapshots the request never uses.
+
+    Args:
+        snapshot_id (str): The snapshot ID to look up.
+
+    Returns:
+        LogSnapshotMeta | None
+    """
+    matches = glob.glob(str(PROJECT_ROOT / "data" / "*" / f"{snapshot_id}_*.parquet"))
+    if not matches:
+        return None
+
+    data_file_path = matches[0]
+    device_id = Path(data_file_path).parent.name
+    meta = LogSnapshotMeta.from_parquet_footer(device_id, data_file_path)
+    if meta is not None:
+        return meta
+
+    # Legacy file predating persisted listing metadata - fall back once.
+    loader = LogSnapshotsLoader(str(Path(data_file_path).parent))
+    return loader.load_log_snapshot_meta(Path(data_file_path))
 
 
 def device_to_dict(device: Device) -> dict:
@@ -634,16 +670,22 @@ def get_snapshot_content(snapshot_id: str):
             '{ "error": "not_found" }' - No snapshot with the given ID exists
             for the requested log type.
     """
-    is_chart  = request.args.get("log_type", "text") == "chart"
-    devices   = get_current_devices()
-    snapshots = LogSnapshotsHelper.get_log_snapshots_list(devices, is_chart)
+    is_chart = request.args.get("log_type", "text") == "chart"
+    target_log_type = "chart" if is_chart else "text"
 
-    target = next((s for s in snapshots if s.id == snapshot_id), None)
-    if not target:
+    target = find_snapshot_by_id(snapshot_id)
+    if not target or target.log_type != target_log_type:
         return _bad("not_found", 404)
 
-    rows = LogSnapshotsHelper.get_log_content_for_selected_snapshots([target]).to_dict(orient="records")
-    return jsonify({"rows": rows})
+    full_snapshot = target.load_full()
+    rows_df = LogSnapshotsHelper.get_log_content_for_selected_snapshots([full_snapshot])
+    # pandas' to_json is implemented in C and is significantly faster than
+    # to_dict(orient="records") + jsonify's json.dumps for large frames.
+    # Build the {"rows": [...]} envelope the frontend expects by wrapping
+    # the already-serialized records string directly, rather than parsing
+    # it back into Python objects just to re-serialize via jsonify.
+    records_json = rows_df.to_json(orient="records", date_format="iso")
+    return Response(f'{{"rows": {records_json}}}', mimetype="application/json")
 
 
 @app.get("/api/snapshots/<snapshot_id>/packets/<int:packet_number>")
@@ -678,11 +720,8 @@ def get_packet_details(snapshot_id: str, packet_number: int):
             installed on the server, or the session's pcap file is
             missing on disk.
     """
-    devices   = get_current_devices()
-    snapshots = LogSnapshotsHelper.get_log_snapshots_list(devices, log_type_chart=False)
-
-    target = next((s for s in snapshots if s.id == snapshot_id), None)
-    if not target or getattr(target, "log_name", "") != "network capture":
+    target = find_snapshot_by_id(snapshot_id)
+    if not target or target.log_type != "text" or getattr(target, "log_name", "") != "network capture":
         return _bad("not_found", 404)
 
     # Resolve the device so we can read its optional custom decoder command.
@@ -734,11 +773,8 @@ def download_snapshot_pcap(snapshot_id: str):
             exists, it isn't a "network capture" snapshot, or its pcap
             file is missing on disk.
     """
-    devices   = get_current_devices()
-    snapshots = LogSnapshotsHelper.get_log_snapshots_list(devices, log_type_chart=False)
-
-    target = next((s for s in snapshots if s.id == snapshot_id), None)
-    if not target or getattr(target, "log_name", "") != "network capture":
+    target = find_snapshot_by_id(snapshot_id)
+    if not target or target.log_type != "text" or getattr(target, "log_name", "") != "network capture":
         return _bad("not_found", 404)
 
     pcap_path = os.path.join(PROJECT_ROOT, "data", target.device_id, f"{target.session_id}.pcap")
@@ -792,18 +828,19 @@ def remove_snapshots():
     if not isinstance(snapshot_ids, list) or not snapshot_ids:
         return _bad("snapshot_ids must be a non-empty list")
 
-    devices   = get_current_devices()
-    snapshots = LogSnapshotsHelper.get_log_snapshots_list(devices, is_chart)
-    by_id     = {s.id: s for s in snapshots}
+    target_log_type = "chart" if is_chart else "text"
 
     removed   = []
     not_found = []
     for snapshot_id in snapshot_ids:
-        target = by_id.get(snapshot_id)
-        if not target:
+        target = find_snapshot_by_id(snapshot_id)
+        if not target or target.log_type != target_log_type:
             not_found.append(snapshot_id)
             continue
-        target.remove_log_snapshot()
+        # We already have the exact file path from the ID-based lookup, so
+        # remove it directly instead of re-deriving it via another glob.
+        if os.path.exists(target.data_file_name):
+            os.remove(target.data_file_name)
         removed.append(snapshot_id)
 
     return jsonify({"removed": removed, "not_found": not_found})
