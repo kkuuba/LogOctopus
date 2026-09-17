@@ -4,6 +4,7 @@ import time
 import subprocess
 import pandas as pd
 from backend.utils.log_snapshots_loader import LogSnapshotsLoader
+from backend.utils import snapshot_index
 
 class Device:
     """
@@ -20,23 +21,43 @@ class Device:
         self.watchdog_process_pid = self.device_config["watchdog_process_pid"]
         self.auto_collection_enabled = self.device_config["auto_collection_enabled"]
         self.auto_collection_interval = self.device_config["auto_collection_interval"]
-        # Metadata only (device_name, log_name, timestamps, duration, size,
-        # etc.) - NOT full row data. This attribute is read by
-        # LogSnapshotsHelper.get_log_snapshots_list/get_filtered_log_snapshots_list,
-        # which only ever touch those metadata fields, so a LogSnapshotMeta
-        # here is a drop-in for what used to be a full LogSnapshot. Every
-        # endpoint that calls get_current_devices() - i.e. nearly every
-        # request - reconstructs every Device from scratch, so eagerly
-        # loading full log content here would mean re-reading and
-        # decompressing every snapshot's entire dataset on every request.
-        # Callers that need actual log content (the /content, /packets,
-        # /pcap endpoints) look the target snapshot up directly by ID and
-        # call `.load_full()` on it instead of going through this list.
-        self.log_snapshots = LogSnapshotsLoader(os.path.join("data", self.device_config_id)).load_all_log_snapshot_metas()
+        # Lazily-loaded metadata (device_name, log_name, timestamps,
+        # duration, size, etc.) - NOT full row data. See the `log_snapshots`
+        # property below for why this is no longer populated eagerly here.
+        self._log_snapshots = None
         self.errors = pd.DataFrame({"time": [], "error_info": []})
         if  self.watchdog_process_pid == 0 or not self.is_process_active():
             watchdog_process = subprocess.Popen(["python", "-m", "backend.services.device_watchdog", self.device_config_instance.device_config_path])
             self.device_config_instance.update_runtime_parameter("watchdog_process_pid", watchdog_process.pid)
+
+    @property
+    def log_snapshots(self):
+        """
+        Metadata (not full row data) for every log snapshot belonging to
+        this device, read from the parquet footers on first access and
+        cached on the instance afterwards.
+
+        This is loaded lazily rather than in __init__ because
+        get_current_devices() - and therefore this constructor - runs on
+        nearly every API request, but only GET /api/snapshots (via
+        LogSnapshotsHelper.get_log_snapshots_list/get_filtered_log_snapshots_list)
+        actually needs it; every other endpoint (device list, connection
+        tests, etc.) was previously paying the cost of scanning every
+        snapshot file for every device on every single request. Note that
+        GET /api/snapshots itself now reads straight from
+        backend.utils.snapshot_index instead of going through this
+        property at all (see app.py::list_snapshots) - this remains here
+        for any other caller that still wants a live, per-device metadata
+        list built straight from the parquet footers.
+
+        Returns:
+            list[LogSnapshotMeta]
+        """
+        if self._log_snapshots is None:
+            self._log_snapshots = LogSnapshotsLoader(
+                os.path.join("data", self.device_config_id)
+            ).load_all_log_snapshot_metas()
+        return self._log_snapshots
 
     def get_device_error_log(self):
         """
@@ -71,6 +92,9 @@ class Device:
         """
         device_directory_path = f"data/{self.device_config_id}"
         shutil.rmtree(device_directory_path)
+        # Drop this device's rows from the listing index so its deleted
+        # snapshots stop appearing in GET /api/snapshots.
+        snapshot_index.remove_for_device(self.device_config_id)
 
     def is_process_active(self):
         """

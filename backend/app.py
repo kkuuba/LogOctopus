@@ -23,6 +23,7 @@ from backend.utils.log_snapshots_loader import LogSnapshotsLoader
 from backend.utils.device_config_loader import DeviceConfigLoader
 from backend.utils.pcap_decoder import DissectorRegistry, PcapDecoder
 from backend.utils.fabric_connection import build_nested_connection as _build_nested_connection
+from backend.utils import snapshot_index
 
 
 SETTINGS_FILE   = Path("settings.json")
@@ -68,13 +69,13 @@ def find_snapshot_by_id(snapshot_id: str):
     """Resolve a single snapshot directly by ID, without loading or even
     listing every other snapshot in the system.
 
-    Snapshot parquet files are named '{id}_{timestamp}.parquet' (see
-    LogSnapshot.create_parquet_data_file), so a single glob across device
-    directories locates the exact file. This replaces the previous pattern
-    used by the content/packets/pcap/delete endpoints of loading *every*
-    snapshot of a given type across *every* device just to pick out one by
-    ID - that scan is O(total snapshots) and, worse, was materializing full
-    row data for snapshots the request never uses.
+    Tries the SQLite snapshot index first - a single indexed primary-key
+    lookup, no filesystem scan at all. Falls back to the old glob-based
+    lookup (snapshot parquet files are named '{id}_{timestamp}.parquet',
+    see LogSnapshot.create_parquet_data_file) for the rare case the index
+    hasn't been backfilled yet or doesn't have this row for some reason -
+    that fallback remains O(1) filesystem-wise (a single glob), it just
+    also has to open the file to read its footer.
 
     Args:
         snapshot_id (str): The snapshot ID to look up.
@@ -82,6 +83,24 @@ def find_snapshot_by_id(snapshot_id: str):
     Returns:
         LogSnapshotMeta | None
     """
+    row = snapshot_index.find_by_id(snapshot_id)
+    if row is not None:
+        return LogSnapshotMeta(
+            device_id=row["device_id"],
+            device_name=row["device_name"],
+            log_name=row["log_name"],
+            log_description=row["log_description"],
+            session_id=row["session_id"],
+            session_scenario=row["session_scenario"],
+            data_unit=row["data_unit"],
+            log_type=row["log_type"],
+            start_time=row["start_time"],
+            finish_time=row["finish_time"],
+            logs_collection_duration=row["logs_collection_duration"],
+            size_in_bytes=row["size_in_bytes"],
+            data_file_name=row["data_file_name"],
+        )
+
     matches = glob.glob(str(PROJECT_ROOT / "data" / "*" / f"{snapshot_id}_*.parquet"))
     if not matches:
         return None
@@ -90,11 +109,15 @@ def find_snapshot_by_id(snapshot_id: str):
     device_id = Path(data_file_path).parent.name
     meta = LogSnapshotMeta.from_parquet_footer(device_id, data_file_path)
     if meta is not None:
+        snapshot_index.upsert(meta)  # backfill the index for next time
         return meta
 
     # Legacy file predating persisted listing metadata - fall back once.
     loader = LogSnapshotsLoader(str(Path(data_file_path).parent))
-    return loader.load_log_snapshot_meta(Path(data_file_path))
+    meta = loader.load_log_snapshot_meta(Path(data_file_path))
+    if meta is not None:
+        snapshot_index.upsert(meta)
+    return meta
 
 
 def device_to_dict(device: Device) -> dict:
@@ -157,6 +180,33 @@ def snapshot_to_dict(snapshot) -> dict:
         "sessionScenario": getattr(snapshot, "session_scenario", ""),
         "isChart":         snapshot.log_type,
         "dataUnit":        getattr(snapshot, "data_unit", ""),
+    }
+
+
+def index_row_to_dict(row) -> dict:
+    """Serialise a snapshot_index.query()/find_by_id() sqlite3.Row into the
+    same JSON shape as snapshot_to_dict(), so GET /api/snapshots's response
+    is unchanged for the frontend even though it's now built from the
+    index instead of from LogSnapshot(Meta) objects.
+
+    Args:
+        row (sqlite3.Row): One row from the `snapshots` index table.
+
+    Returns:
+        dict: Same shape as snapshot_to_dict().
+    """
+    return {
+        "id":              row["id"],
+        "deviceName":      row["device_name"],
+        "logName":         row["log_name"],
+        "startTime":       str(row["start_time"]),
+        "finishTime":      str(row["finish_time"]),
+        "duration":        row["logs_collection_duration"],
+        "sizeKb":          int(row["size_in_bytes"] / 1000),
+        "sessionId":       row["session_id"],
+        "sessionScenario": row["session_scenario"],
+        "isChart":         row["log_type"],
+        "dataUnit":        row["data_unit"],
     }
 
 
@@ -622,23 +672,30 @@ def list_snapshots():
     except (TypeError, ValueError):
         return _bad("page and page_size must be integers")
 
-    devices = get_current_devices()
+    # Served straight from the SQLite snapshot index (backend/utils/snapshot_index.py)
+    # instead of get_current_devices() + LogSnapshotsHelper: filtering, counting
+    # and pagination all happen in one indexed SQL query, so this no longer
+    # scales with the total number of snapshots on disk (previously every
+    # call here re-read the parquet footer of every snapshot for every
+    # device just to throw away all but page_size of them).
+    page_rows, total = snapshot_index.query(
+        is_chart, search_param, search_value, page=page, page_size=page_size
+    )
 
-    if search_param and search_value:
-        snapshots = LogSnapshotsHelper.get_filtered_log_snapshots_list(
-            devices, search_param, search_value, is_chart
+    total_pages   = max(1, -(-total // page_size))   # ceiling division
+    clamped_page  = min(page, total_pages)
+    if clamped_page != page:
+        # Requested page was past the last page (e.g. stale pagination
+        # state after items were deleted) - re-fetch at the clamped page so
+        # the response's "page" and "items" stay consistent, matching the
+        # previous slice-the-full-list-then-clamp behaviour.
+        page_rows, total = snapshot_index.query(
+            is_chart, search_param, search_value, page=clamped_page, page_size=page_size
         )
-    else:
-        snapshots = LogSnapshotsHelper.get_log_snapshots_list(devices, is_chart)
-
-    total       = len(snapshots)
-    total_pages = max(1, -(-total // page_size))   # ceiling division
-    page        = min(page, total_pages)            # clamp to valid range
-    start       = (page - 1) * page_size
-    page_items  = snapshots[start : start + page_size]
+    page = clamped_page
 
     return jsonify({
-        "items":       [snapshot_to_dict(s) for s in page_items],
+        "items":       [index_row_to_dict(r) for r in page_rows],
         "total":       total,
         "page":        page,
         "page_size":   page_size,

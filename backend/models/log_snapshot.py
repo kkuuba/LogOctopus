@@ -7,6 +7,8 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import hashlib
 
+from backend.utils import snapshot_index
+
 # Keys we persist into the parquet file's key/value metadata so that listing
 # and filtering never have to read/decompress the actual row data.
 _META_KEYS = (
@@ -197,6 +199,10 @@ class LogSnapshot:
                 logging.info("Log snapshot data file -> '%s' was successfuly deleted", log_snapshot_parquet_file)
             else:
                 logging.error("Log snapshot data file -> '%s' not exists ", log_snapshot_parquet_file)
+        # Keep the listing index in sync so a deleted snapshot disappears
+        # from GET /api/snapshots immediately instead of only after a
+        # manual reindex.
+        snapshot_index.remove(self.id)
 
     def create_parquet_data_file(self):
         """
@@ -233,5 +239,11 @@ class LogSnapshot:
 
         data_file_path = f"data/{self.device_id}/{self.id}_{self.creation_time.strftime('%Y%m%d_%H%M%S')}.parquet"
         pq.write_table(collected_data_table_with_metadata, data_file_path)
+
+        # self.data_file_name isn't set yet at this point in __init__ (this
+        # method's return value is what sets it), so point the index write
+        # at the path we just computed rather than at self.
+        self.data_file_name = data_file_path
+        snapshot_index.upsert(self)
 
         return data_file_path
