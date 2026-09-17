@@ -230,6 +230,8 @@ class DeviceWatchdog:
         if lock is None:
             return
 
+        append_unmatched = log_config.get("append_unmatched_to_last", False)
+
         with lock:
             existing: list[dict] = self.collected_data[log_name]
             last_ts: datetime | None = existing[-1]["time"] if existing else None
@@ -237,6 +239,12 @@ class DeviceWatchdog:
             for line in raw.splitlines():
                 m = pattern.search(line)
                 if not m:
+                    if append_unmatched and new_entries:
+                        # Append unmatched line to the last new entry's content
+                        new_entries[-1]["content"] += "\n" + line
+                    elif append_unmatched and existing:
+                        # No new entries yet — fold into the last persisted entry
+                        existing[-1]["content"] += "\n" + line
                     continue
                 ts = parser.parse(m.group("TIME"))
                 if last_ts is None or ts > last_ts:
