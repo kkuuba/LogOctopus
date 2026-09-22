@@ -896,8 +896,15 @@ def remove_snapshots():
             continue
         # We already have the exact file path from the ID-based lookup, so
         # remove it directly instead of re-deriving it via another glob.
+        # `target` here is a LogSnapshotMeta (not a full LogSnapshot), so
+        # it doesn't have LogSnapshot.remove_log_snapshot()'s built-in
+        # index cleanup - drop the index row ourselves so a deleted
+        # snapshot doesn't linger as a phantom row in GET /api/snapshots.
+        # Removed unconditionally (even if the file was already missing)
+        # so a stale index row can't survive a delete either.
         if os.path.exists(target.data_file_name):
             os.remove(target.data_file_name)
+        snapshot_index.remove(snapshot_id)
         removed.append(snapshot_id)
 
     return jsonify({"removed": removed, "not_found": not_found})

@@ -2895,7 +2895,72 @@ function trimFractionalSeconds(ts) {
   return ts.split(".")[0];
 }
 
-function SnapshotsTable({ snapshots, selected, onSelect, onView }) {
+// Small icon button shown in the snapshots list for "network capture"
+// snapshots — lets the user grab the raw .pcap straight from the list,
+// without opening the log content modal first. Tracks its own loading
+// state so a slow download only spins the one row's button.
+function PcapDownloadButton({ snap, onDownloadPcap }) {
+  const [downloading, setDownloading] = useState(false);
+
+  const handleClick = async (e) => {
+    e.stopPropagation();
+    if (downloading) return;
+    setDownloading(true);
+    try {
+      await onDownloadPcap(snap);
+    } finally {
+      setDownloading(false);
+    }
+  };
+
+  return (
+    <button
+      onClick={handleClick}
+      disabled={downloading}
+      title="Download raw .pcap file"
+      aria-label="Download raw .pcap file"
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 5,
+        height: 28,
+        padding: "0 10px 0 8px",
+        borderRadius: 7,
+        border: "1px solid rgba(129,140,248,0.3)",
+        background: "rgba(129,140,248,0.1)",
+        color: "#818cf8",
+        fontFamily: "var(--font-mono)",
+        fontSize: 10,
+        fontWeight: 700,
+        letterSpacing: "0.04em",
+        lineHeight: 1,
+        cursor: downloading ? "not-allowed" : "pointer",
+        opacity: downloading ? 0.65 : 1,
+        transition: "background 0.15s, border-color 0.15s, transform 0.1s",
+      }}
+      onMouseEnter={(e) => { if (!downloading) { e.currentTarget.style.background = "rgba(129,140,248,0.22)"; e.currentTarget.style.borderColor = "rgba(129,140,248,0.5)"; } }}
+      onMouseLeave={(e) => { e.currentTarget.style.background = "rgba(129,140,248,0.1)"; e.currentTarget.style.borderColor = "rgba(129,140,248,0.3)"; }}
+      onMouseDown={(e) => { if (!downloading) e.currentTarget.style.transform = "scale(0.95)"; }}
+      onMouseUp={(e) => { e.currentTarget.style.transform = "scale(1)"; }}
+    >
+      {downloading ? (
+        <svg width="12" height="12" viewBox="0 0 16 16" style={{ animation: "spin 1s linear infinite", flexShrink: 0 }}>
+          <circle cx="8" cy="8" r="6" fill="none" stroke="#818cf8" strokeWidth="2" strokeDasharray="20" strokeDashoffset="10" />
+        </svg>
+      ) : (
+        // Download-tray glyph, drawn to match the app's line-icon style
+        // rather than relying on emoji rendering across platforms.
+        <svg width="13" height="13" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0 }}>
+          <path d="M8 1.5v8.5M8 10l-3-3M8 10l3-3" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+          <path d="M2.5 11.5v1.5a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1v-1.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      )}
+      <span>PCAP</span>
+    </button>
+  );
+}
+
+function SnapshotsTable({ snapshots, selected, onSelect, onView, onDownloadPcap }) {
   if (snapshots.length === 0) {
     return (
       <div style={{ padding: "40px 0", textAlign: "center", color: "var(--muted)", fontFamily: "var(--font-mono)", fontSize: 13 }}>
@@ -2964,7 +3029,12 @@ function SnapshotsTable({ snapshots, selected, onSelect, onView }) {
                 )}
               </td>
               <td style={{ padding: "10px 14px" }}>
-                <Btn size="sm" variant="subtle" onClick={() => onView([s])}>View</Btn>
+                <div style={{ display: "flex", gap: 6, justifyContent: "flex-end", alignItems: "center" }}>
+                  {onDownloadPcap && s.logName === "network capture" && (
+                    <PcapDownloadButton snap={s} onDownloadPcap={onDownloadPcap} />
+                  )}
+                  <Btn size="sm" variant="subtle" onClick={() => onView([s])}>View</Btn>
+                </div>
               </td>
             </tr>
           ))}
@@ -5413,6 +5483,18 @@ export default function App() {
   const [collapsedGroups, setCollapsedGroups] = useState(() => {
     try { return new Set(JSON.parse(localStorage.getItem("lo_collapsed_groups") || "[]")); } catch { return new Set(); }
   });
+  // Whether the page was opened via a link to the snapshots list — i.e. the
+  // URL already carries list-level params (log_type from a share/filter
+  // link, or an active search_param/search_value filter), filtered or not.
+  // Captured once at initial mount. When true, every device group is force-
+  // collapsed as soon as the group list loads (below), so a shared list link
+  // opens focused on the snapshots rather than on expanded device groups. A
+  // bare URL with no params leaves the user's own saved collapse preference
+  // untouched.
+  const openedViaListLinkRef = useRef((() => {
+    const p = new URLSearchParams(window.location.search);
+    return !!(p.get("log_type") || p.get("search_param") || p.get("search_value"));
+  })());
   const [newGroupName, setNewGroupName] = useState("");
   const [creatingGroup, setCreatingGroup] = useState(false);
   const [snapshots,       setSnapshots]       = useState([]);
@@ -5528,7 +5610,15 @@ export default function App() {
   // device-group configuration.
   useEffect(() => {
     apiFetch("/api/settings/device-groups")
-      .then((data) => { if (Array.isArray(data)) setGroups(data); })
+      .then((data) => {
+        if (!Array.isArray(data)) return;
+        setGroups(data);
+        // Force-collapse every group when this page load came from a link
+        // to the snapshots list (see openedViaListLinkRef above).
+        if (openedViaListLinkRef.current) {
+          setCollapsedGroups(new Set(data.map((g) => g.id)));
+        }
+      })
       .catch(() => {}); // non-critical — fall back to empty groups
   }, []);
 
@@ -5672,8 +5762,9 @@ export default function App() {
 
   // Auto-open a snapshot view (and optionally jump to a line) when the URL
   // contains ?open_snaps=<id1,id2,...>&log_type=chart|text, with optional
-  // &line=<N> (text, single snapshot) and &log_filters=<json> (text, the
-  // per-device regex filters that were active when the link was shared).
+  // &line=<N> (text, single snapshot), &log_filters=<json> (text, the
+  // per-device regex filters that were active when the link was shared),
+  // and &color_mode=1 (text, whether color mode was on when shared).
   // The legacy singular ?open_snap=<id> is still accepted for old links.
   // These params are written by the share-link feature; clean them from the
   // URL after consuming them so refreshing doesn't re-trigger the open.
@@ -5686,14 +5777,16 @@ export default function App() {
     autoOpenHandledRef.current = true;
 
     const snapIds = [...new Set(snapsParam.split(",").map((s) => s.trim()).filter(Boolean))];
-    const lineParam    = p.get("line");
-    const filtersParam = p.get("log_filters");
+    const lineParam      = p.get("line");
+    const filtersParam   = p.get("log_filters");
+    const colorModeParam = p.get("color_mode");
 
     // Remove share-link params from the URL without a page reload
     p.delete("open_snap");
     p.delete("open_snaps");
     p.delete("line");
     p.delete("log_filters");
+    p.delete("color_mode");
     const newSearch = p.toString();
     window.history.replaceState(null, "", newSearch ? `?${newSearch}` : window.location.pathname);
 
@@ -5729,6 +5822,11 @@ export default function App() {
         const ln = parseInt(lineParam, 10);
         if (ln > 0) setHighlightLine(ln);
       }
+
+      // Color mode has no meaning for chart views (the toggle is only shown
+      // for text logs) — only honor it when the shared link's log_type was
+      // "text", so a stray/old color_mode param on a chart link is a no-op.
+      if (colorModeParam === "1" && !isChart) setColorMode(true);
 
       // Parse the shared per-device regex filters (if any) and hand them to
       // openLogContent directly so they land in the very first render of
@@ -6055,11 +6153,12 @@ export default function App() {
   /**
    * Builds a shareable URL that reproduces the currently open log/chart
    * view: every snapshot in `snapsToShare` (via ?open_snaps=id1,id2,...),
-   * the active log_type, and — for text logs — any per-device regex filters
-   * currently applied (?log_filters=<json>). List-level filters
-   * (search_param/search_value) already live in the current URL and are
-   * carried over automatically since we start from the existing query
-   * string.
+   * the active log_type, — for text logs — any per-device regex filters
+   * currently applied (?log_filters=<json>), and — also text logs only,
+   * since chart views have no color mode — whether color mode is on
+   * (?color_mode=1). List-level filters (search_param/search_value)
+   * already live in the current URL and are carried over automatically
+   * since we start from the existing query string.
    */
   const buildShareUrl = (snapsToShare, { line } = {}) => {
     const p = new URLSearchParams(window.location.search);
@@ -6075,6 +6174,9 @@ export default function App() {
       : Object.fromEntries(Object.entries(deviceRegexFilters).filter(([, v]) => v && v.trim()));
     if (Object.keys(activeFilters).length > 0) p.set("log_filters", JSON.stringify(activeFilters));
     else p.delete("log_filters");
+
+    if (!isChart && colorMode) p.set("color_mode", "1");
+    else p.delete("color_mode");
 
     return `${window.location.origin}${window.location.pathname}?${p.toString()}`;
   };
@@ -6889,6 +6991,7 @@ ${rowsHtml}
                 selected={selectedSnaps}
                 onSelect={toggleSnap}
                 onView={openLogContent}
+                onDownloadPcap={downloadRawPcap}
               />
             )}
             {!snapsLoading && snapsTotalPages > 1 && (
