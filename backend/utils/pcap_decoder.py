@@ -163,16 +163,37 @@ class DissectorRegistry:
 
 class PcapDecoder:
     """
-    Decodes a pcap file using tshark and exposes the packets both as
-    PacketInfo objects and as a "time" + "content" DataFrame. Custom dissectors
-    will be used to support extra protocol fields.
+    Decodes a pcap file using tshark (default) or a custom binary/command
+    configured per-device, and exposes the packets both as PacketInfo objects
+    and as a "time" + "content" DataFrame.
+
+    Two decoding modes are supported:
+
+    * **tshark mode** (``decoder_cmd`` is ``None`` or ``"tshark"``): the full
+      tshark field-extraction pipeline is used, custom dissectors are loaded,
+      and ``get_packet_details`` returns a rich JSON protocol tree.
+
+    * **custom-binary mode** (``decoder_cmd`` is any other non-empty string):
+      the command is treated as an opaque shell command that must accept a pcap
+      file path as its last argument and write tab-separated lines whose columns
+      match the order of ``_TSHARK_FIELDS`` to stdout.  Dissector plugins are
+      **not** applied (they are tshark-specific), and ``get_packet_details``
+      returns an empty dict because the JSON protocol-tree output format is
+      tshark-specific.  The first token of ``decoder_cmd`` is checked for
+      existence on PATH before the command is run.
     """
 
     TSHARK_BIN = "tshark"
 
-    def __init__(self, pcap_file: str, dissectors_dir: str | os.PathLike | DissectorRegistry | None = None):
+    def __init__(
+        self,
+        pcap_file: str,
+        dissectors_dir: str | os.PathLike | DissectorRegistry | None = None,
+        decoder_cmd: str | None = None,
+    ):
         self.pcap_file = pcap_file
         self.packets: list[PacketInfo] = []
+
         if isinstance(dissectors_dir, DissectorRegistry):
             self._registry: DissectorRegistry | None = dissectors_dir
         elif dissectors_dir is not None:
@@ -180,8 +201,62 @@ class PcapDecoder:
         else:
             self._registry = None
 
+        # Normalise: treat None / empty / "tshark" as the default tshark path.
+        raw = (decoder_cmd or "").strip()
+        self._custom_cmd: str | None = raw if raw and raw != self.TSHARK_BIN else None
+
+    # ── helpers ───────────────────────────────────────────────────────────────
+
+    @property
+    def _is_custom(self) -> bool:
+        """True when a non-tshark decoder command has been configured."""
+        return self._custom_cmd is not None
+
+    @property
+    def _decoder_bin(self) -> str:
+        """The binary name/path actually used for decoding."""
+        if self._is_custom:
+            # First whitespace-separated token is the executable.
+            return self._custom_cmd.split()[0]
+        return self.TSHARK_BIN
+
+    def _check_decoder(self) -> None:
+        """
+        Raise FileNotFoundError if the configured decoder binary is not on PATH.
+        """
+        bin_name = self._decoder_bin
+        if shutil.which(bin_name) is None:
+            if self._is_custom:
+                raise FileNotFoundError(
+                    f"Custom pcap decoder '{bin_name}' not found on PATH. "
+                    f"Check the 'decoder_cmd' setting for this device."
+                )
+            raise FileNotFoundError(
+                f"'{bin_name}' not found on PATH; install Wireshark/tshark to decode pcaps."
+            )
+
+    def _plugin_args(self) -> list[str]:
+        """
+        Return extra tshark args for custom dissectors (empty list if none or
+        if a custom decoder is in use, since dissectors are tshark-specific).
+
+        Returns:
+            (list): Extra tshark args for custom dissectors.
+        """
+        if self._is_custom or self._registry is None:
+            return []
+        return self._registry.get_plugin_args()
+
+    # ── class-method constructors ─────────────────────────────────────────────
+
     @classmethod
-    def for_session(cls, device_data_dir: str, session_id: str, dissectors_dir: str | os.PathLike | DissectorRegistry | None = None) -> PcapDecoder:
+    def for_session(
+        cls,
+        device_data_dir: str,
+        session_id: str,
+        dissectors_dir: str | os.PathLike | DissectorRegistry | None = None,
+        decoder_cmd: str | None = None,
+    ) -> "PcapDecoder":
         """
         Build a PcapDecoder for a session's saved pcap file, i.e.
         <device_data_dir>/<session_id>.pcap -- the naming convention used by
@@ -191,14 +266,27 @@ class PcapDecoder:
             device_data_dir (str): Per-device data directory.
             session_id (str): Session whose pcap should be decoded.
             dissectors_dir (str): Optional custom dissectors directory or registry.
+            decoder_cmd (str | None): Optional custom decoder command.  When
+                ``None`` or ``"tshark"``, the standard tshark pipeline is used.
 
         Returns:
             (PcapDecoder): PcapDecoder class object.
         """
-        return cls(os.path.join(device_data_dir, f"{session_id}.pcap"), dissectors_dir=dissectors_dir)
+        return cls(
+            os.path.join(device_data_dir, f"{session_id}.pcap"),
+            dissectors_dir=dissectors_dir,
+            decoder_cmd=decoder_cmd,
+        )
 
     @classmethod
-    def get_session_packet_details(cls, device_data_dir: str, session_id: str, packet_number: int, dissectors_dir: str | os.PathLike | DissectorRegistry | None = None) -> dict:
+    def get_session_packet_details(
+        cls,
+        device_data_dir: str,
+        session_id: str,
+        packet_number: int,
+        dissectors_dir: str | os.PathLike | DissectorRegistry | None = None,
+        decoder_cmd: str | None = None,
+    ) -> dict:
         """
         Convenience one-shot: resolve a session's pcap path and decode a
         single packet's full field detail from it.
@@ -208,74 +296,68 @@ class PcapDecoder:
             session_id (str): Session whose pcap to decode.
             packet_number (int): 1-based frame number.
             dissectors_dir (str): Optional custom dissectors directory or registry.
+            decoder_cmd (str | None): Optional custom decoder command.  Packet
+                detail is only available in tshark mode; a custom decoder
+                returns an empty dict.
 
         Returns:
-            (dict): Single packet detaile extraced with tshark in dict format.
+            (dict): Single packet details extracted with tshark in dict format,
+                or an empty dict when a custom decoder is configured.
 
         Raises:
-            FileNotFoundError: tshark is not installed / not on PATH.
+            FileNotFoundError: The configured decoder is not installed / not on PATH.
         """
-        decoder = cls.for_session(device_data_dir, session_id, dissectors_dir=dissectors_dir)
+        decoder = cls.for_session(
+            device_data_dir,
+            session_id,
+            dissectors_dir=dissectors_dir,
+            decoder_cmd=decoder_cmd,
+        )
         if not os.path.exists(decoder.pcap_file):
             return {}
         return decoder.get_packet_details(packet_number)
 
-
-    def _plugin_args(self) -> list[str]:
-        """
-        Return extra tshark args for custom dissectors (empty list if none).
-
-        Returns:
-            (list): Extra tshark args for custom dissectors.
-        """
-        if self._registry is None:
-            return []
-        return self._registry.get_plugin_args()
-
-    def _check_tshark(self) -> None:
-        """
-        Raise FileNotFoundError if tshark is not on PATH
-        """
-        if shutil.which(self.TSHARK_BIN) is None:
-            raise FileNotFoundError(
-                f"'{self.TSHARK_BIN}' not found on PATH; install Wireshark/tshark to decode pcaps."
-            )
+    # ── decoding ──────────────────────────────────────────────────────────────
 
     def decode(self) -> list[PacketInfo]:
         """
-        Run tshark over the pcap file and populate self.packets.
+        Run the configured decoder over the pcap file and populate self.packets.
 
-        Parses whatever tshark writes to stdout on a best-effort basis;
-        a non-zero tshark exit status is not treated as fatal (tshark can
-        exit non-zero while still having emitted usable lines, e.g. for
-        warnings on link-layer types or a still-growing capture file).
+        In **tshark mode** the standard field-extraction pipeline is used and
+        custom dissectors are loaded automatically.
 
-        Custom dissectors registered in ``dissectors_dir`` are loaded
-        automatically; they do *not* affect the flat summary fields decoded
-        here but do enrich ``get_packet_details()`` output.
+        In **custom-binary mode** the ``decoder_cmd`` is split on whitespace,
+        the pcap file path is appended as the final argument, and the process
+        is expected to write tab-separated lines matching ``_TSHARK_FIELDS``
+        order to stdout.  A non-zero exit status is not treated as fatal
+        (matching the existing tshark behaviour).
 
         Returns:
             (list): The decoded list of PacketInfo objects (also stored on self.packets).
 
         Raises:
-            FileNotFoundError: tshark is not installed / not on PATH, or no pcap_file path was given.
+            FileNotFoundError: The decoder binary is not on PATH, or no
+                ``pcap_file`` path was given.
         """
         if not self.pcap_file:
             raise FileNotFoundError("PcapDecoder was given no pcap_file path to decode.")
 
-        self._check_tshark()
+        self._check_decoder()
 
-        cmd = [
-            self.TSHARK_BIN,
-            "-r", self.pcap_file,
-            "-T", "fields",
-            "-E", "separator=\t",
-            "-E", "quote=n",
-            "-E", "occurrence=f",
-        ] + self._plugin_args()
-
-        for f in _TSHARK_FIELDS:
-            cmd += ["-e", f]
+        if self._is_custom:
+            cmd = self._custom_cmd.split() + [self.pcap_file]
+            logger.debug("Custom pcap decoder command: %s", cmd)
+        else:
+            cmd = [
+                self.TSHARK_BIN,
+                "-r", self.pcap_file,
+                "-T", "fields",
+                "-E", "separator=\t",
+                "-E", "quote=n",
+                "-E", "occurrence=f",
+            ] + self._plugin_args()
+            for f in _TSHARK_FIELDS:
+                cmd += ["-e", f]
 
         result = subprocess.run(cmd, capture_output=True, text=True)
 
@@ -288,16 +370,20 @@ class PcapDecoder:
 
     def _parse_line(self, line: str) -> PacketInfo | None:
         """
-        Parse a single tab-separated tshark output line into a PacketInfo.
-    
+        Parse a single tab-separated decoder output line into a PacketInfo.
+
+        The expected column order is defined by ``_TSHARK_FIELDS``.  Both the
+        built-in tshark pipeline and any custom decoder must produce output in
+        this format.
+
         Args:
-            line (str): Single tab-separated tshark output line.        
+            line (str): Single tab-separated decoder output line.
 
         Returns:
-            (PacketInfo): PacketInfo object.
+            (PacketInfo | None): PacketInfo object, or None if the line is malformed.
         """
         fields = line.split("\t")
-        # Pad in case trailing empty fields were stripped by tshark.
+        # Pad in case trailing empty fields were stripped by the decoder.
         fields += [""] * (len(_TSHARK_FIELDS) - len(fields))
         (
             time_epoch, number, length, protocols,
@@ -330,23 +416,38 @@ class PcapDecoder:
         """
         Decode a single packet's full field detail into a nested dict.
 
+        This method is only meaningful in **tshark mode**.  When a custom
+        decoder is configured it returns an empty dict immediately, because the
+        JSON protocol-tree output format (``tshark -T json``) is tshark-specific
+        and cannot be emulated by an arbitrary binary.
+
         When custom dissectors are registered via ``dissectors_dir``, tshark
         loads them before parsing so their protocol trees appear alongside the
         standard layers in the returned dict.
 
         Args:
-            packet_number (int): Frame number ("packet index" shown in the "content" column).
+            packet_number (int): Frame number ("packet index" shown in the
+                "content" column).
 
         Returns:
-            (dict): Nested dict of every layer/field tshark parsed for that packet.
+            (dict): Nested dict of every layer/field tshark parsed for that
+                packet, or an empty dict in custom-decoder mode.
 
         Raises:
-            FileNotFoundError: tshark is not installed / not on PATH, or the pcap file doesn't exist.
+            FileNotFoundError: tshark is not installed / not on PATH, or the
+                pcap file doesn't exist (tshark mode only).
         """
+        if self._is_custom:
+            logger.debug(
+                "get_packet_details is not supported for custom decoder '%s'; returning empty dict.",
+                self._custom_cmd,
+            )
+            return {}
+
         if not self.pcap_file or not os.path.exists(self.pcap_file):
             raise FileNotFoundError(f"pcap file not found: {self.pcap_file}")
 
-        self._check_tshark()
+        self._check_decoder()
 
         cmd = [
             self.TSHARK_BIN,

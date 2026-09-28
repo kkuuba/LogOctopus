@@ -22,7 +22,17 @@ class DeviceConfigLoader():
             config_content = base64.b64encode(config_file.read())
             config_file.close()
         if config_content:
-            device_config = DeviceConfig(config_content)
+            # A device's config lives at data/<device_config_id>/<device_config_id>.json
+            # (see DeviceConfig.validate_device_config), so the parent
+            # directory name *is* the device's ID. Passing it in here stops
+            # DeviceConfig from re-deriving an ID by hashing the file's
+            # current content on every load — which would silently produce
+            # a different ID any time the config is edited, since the hash
+            # depends on the (now-changed) content. That drift breaks
+            # lookups by ID, device-group membership, and the link between
+            # a device and its historical log snapshots.
+            device_config_id = Path(config_path).parent.name
+            device_config = DeviceConfig(config_content, existing_device_config_id=device_config_id)
             device_config.device_config_path = config_path
             return Device(device_config_instance=device_config)
         else:

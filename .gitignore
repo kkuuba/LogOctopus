@@ -16,7 +16,7 @@ venv/
 env/
 .venv/
 ENV/
-
+data/
 # Pytest / coverage
 .pytest_cache/
 .coverage
