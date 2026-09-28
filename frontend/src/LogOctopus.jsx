@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import React, { useState, useEffect, useCallback, useRef, useMemo } from "react";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const API_BASE = (import.meta.env.VITE_API_BASE) || "http://localhost:8050"
@@ -516,6 +516,166 @@ function parsePacketNumber(content) {
   return Number.isNaN(n) ? null : n;
 }
 
+// ── LARGE-LOG SAFETY LIMITS ───────────────────────────────────────────────────
+// Hard cap on how many lines are pushed into the Monaco model at once. Building
+// one giant string for millions of lines can exceed V8's max string length
+// (RangeError: Invalid string length) which, thrown during render, blanks the
+// whole app. Raise it if you know your browsers can take more.
+const MAX_VIEW_LINES = 500_000;
+// Per-line colour decorations are the most expensive thing Monaco is asked to
+// do here, so in colour mode only the first N lines get tinted (applied in
+// small batches so the UI stays responsive while they land).
+const COLOR_DECORATION_LIMIT = 200_000;
+const COLOR_DECORATION_BATCH = 5_000;
+
+// ── NON-BLOCKING REGEX ROW FILTER ─────────────────────────────────────────────
+// Compile each (device, logName) regex ONCE. Invalid patterns are skipped, so
+// rows for that pair are kept (same "safe fallback" as before).
+function compileRowFilters(filters) {
+  const compiled = new Map();
+  for (const [key, pat] of Object.entries(filters || {})) {
+    if (!pat || !pat.trim()) continue;
+    try { compiled.set(key, new RegExp(pat, "i")); } catch { /* invalid → keep rows */ }
+  }
+  return compiled;
+}
+
+const NO_ROWS = [];
+
+/**
+ * Filters `rows` with the per-(device, logName) regexes in `filters`
+ * WITHOUT freezing the tab: work is split into ~12 ms slices that yield back
+ * to the browser between slices, and is cancelled/restarted if the inputs
+ * change mid-way.
+ *
+ * Returns { rows, filtering, progress }
+ *   rows      – filtered rows. While a new filter run is in progress this is
+ *               the previous finished result for the same data (or an empty
+ *               array if there is none yet), so the viewer never renders
+ *               half-filtered data.
+ *   filtering – true while a run is in progress
+ *   progress  – 0..1 (updated ~every 150 ms)
+ */
+function useChunkedRowFilter(rows, filters) {
+  const compiled = useMemo(() => compileRowFilters(filters), [filters]);
+  const [done, setDone]         = useState(null); // { src, compiled, out }
+  const [progress, setProgress] = useState(0);
+
+  const active = !!rows && rows.length > 0 && compiled.size > 0;
+
+  useEffect(() => {
+    if (!active) return undefined;
+
+    let cancelled = false;
+    let timer = null;
+    let lastProgressAt = 0;
+    const out = [];
+    const n = rows.length;
+    let i = 0;
+    setProgress(0);
+
+    const SLICE_MS = 12;
+    const CHECK_EVERY = 2048; // rows between clock checks
+
+    const step = () => {
+      if (cancelled) return;
+      try {
+        const deadline = performance.now() + SLICE_MS;
+        while (i < n) {
+          const end = Math.min(n, i + CHECK_EVERY);
+          for (; i < end; i++) {
+            const row = rows[i];
+            const dev = row.device_name ?? "";
+            const log = row.log_name ?? "";
+            const re  = compiled.get(`${dev}${FILTER_SEP}${log}`);
+            // Rows of pairs with no filter are kept without building the line.
+            if (!re || re.test(`[${row.time ?? ""}] [${dev}] [${log}]  ${row.content ?? ""}`)) {
+              out.push(row);
+            }
+          }
+          if (performance.now() >= deadline) break;
+        }
+      } catch (e) {
+        console.error("Row filtering failed, showing unfiltered rows:", e);
+        if (!cancelled) setDone({ src: rows, compiled, out: rows });
+        return;
+      }
+
+      if (i >= n) {
+        setDone({ src: rows, compiled, out });
+        return;
+      }
+      const now = performance.now();
+      if (now - lastProgressAt > 150) {
+        lastProgressAt = now;
+        setProgress(i / n);
+      }
+      timer = setTimeout(step, 0);
+    };
+
+    timer = setTimeout(step, 0);
+    return () => { cancelled = true; if (timer) clearTimeout(timer); };
+  }, [active, rows, compiled]);
+
+  if (!active) return { rows, filtering: false, progress: 1 };
+  if (done && done.src === rows && done.compiled === compiled) {
+    return { rows: done.out, filtering: false, progress: 1 };
+  }
+  const stale = done && done.src === rows ? done.out : NO_ROWS;
+  return { rows: stale, filtering: true, progress };
+}
+
+// ── ERROR BOUNDARY ────────────────────────────────────────────────────────────
+// Without this, any exception thrown while rendering the log viewer unmounts
+// the whole React tree (= white screen). Now only the viewer is replaced by an
+// error message and the filter bar stays usable. `resetKey` changing (e.g. the
+// user applies a different filter) automatically clears the error.
+class LogViewErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { error: null };
+  }
+  static getDerivedStateFromError(error) {
+    return { error };
+  }
+  componentDidCatch(error, info) {
+    console.error("Log viewer crashed:", error, info?.componentStack);
+  }
+  componentDidUpdate(prevProps) {
+    if (this.state.error && prevProps.resetKey !== this.props.resetKey) {
+      this.setState({ error: null });
+    }
+  }
+  render() {
+    if (!this.state.error) return this.props.children;
+    return (
+      <div style={{
+        margin: 16, padding: 20, fontFamily: "var(--font-mono)", fontSize: 12,
+        color: "#f87171", background: "rgba(248,113,113,0.06)",
+        border: "1px solid rgba(248,113,113,0.2)", borderRadius: 8,
+      }}>
+        <div style={{ fontWeight: 700, marginBottom: 8 }}>
+          The log viewer could not display this many lines.
+        </div>
+        <div style={{ color: "var(--muted)", marginBottom: 12, whiteSpace: "pre-wrap" }}>
+          {String(this.state.error?.message || this.state.error)}
+        </div>
+        <div style={{ color: "var(--text)", marginBottom: 12 }}>
+          Try a more specific filter, then apply it again.
+        </div>
+        <button
+          onClick={() => this.setState({ error: null })}
+          style={{
+            background: "rgba(248,113,113,0.10)", border: "1px solid rgba(248,113,113,0.30)",
+            borderRadius: 6, color: "#f87171", fontFamily: "var(--font-mono)",
+            fontSize: 11, fontWeight: 700, padding: "4px 12px", cursor: "pointer",
+          }}
+        >Retry</button>
+      </div>
+    );
+  }
+}
+
 // ── MONACO LOG VIEWER ─────────────────────────────────────────────────────────
 /**
  * Renders log rows inside a Monaco Editor instance (read-only).
@@ -541,6 +701,8 @@ function MonacoLogViewer({ rows, colorMode, onPacketClick, highlightLine, onEdit
   const decorationsRef    = useRef([]); // current line-color decoration IDs
   const glyphDecorationsRef = useRef([]); // current packet-glyph decoration IDs
   const shareDecorationsRef = useRef([]); // highlight for shared line
+  const colorJobRef    = useRef(null);  // in-flight batched colour-decoration job
+  const appliedTextRef = useRef("");    // text currently loaded in the Monaco model
   const [ready, setReady] = useState(false);
   const [loadErr, setLoadErr] = useState(null);
 
@@ -569,46 +731,53 @@ function MonacoLogViewer({ rows, colorMode, onPacketClick, highlightLine, onEdit
   logText.current = logTextValue;
 
   // ── Apply / clear line-number decorations ────────────────────────────────
+  // Colour decorations are created in small batches (and capped at
+  // COLOR_DECORATION_LIMIT lines) so a huge log never builds hundreds of
+  // thousands of decoration objects in a single blocking call.
   const applyLineNumberDecorations = useCallback((rowsData, isColor) => {
     const editor = editorRef.current;
     if (!editor) return;
 
-    if (!isColor) {
-      // Clear all decorations in raw mode
-      decorationsRef.current = editor.deltaDecorations(decorationsRef.current, []);
-      return;
-    }
+    // Cancel any batch job still running for the previous rows.
+    if (colorJobRef.current) colorJobRef.current.cancelled = true;
+    colorJobRef.current = null;
+
+    // Always start from a clean slate.
+    decorationsRef.current = editor.deltaDecorations(decorationsRef.current, []);
+    if (!isColor || !rowsData || rowsData.length === 0) return;
 
     ensureLnStyleEl();
     const pairColorMap = buildPairColorMap(rowsData);
+    const total = Math.min(rowsData.length, COLOR_DECORATION_LIMIT);
+    const job = { cancelled: false };
+    colorJobRef.current = job;
+    let i = 0;
 
-    const newDecorations = (rowsData ?? []).map((r, lineIndex) => {
-      const key = `${r.device_name ?? ""}|${r.log_name ?? ""}`;
-      const colorIndex = pairColorMap.get(key) ?? 0;
-      return {
-        range: {
-          startLineNumber: lineIndex + 1,
-          startColumn: 1,
-          endLineNumber: lineIndex + 1,
-          endColumn: 1,
-        },
-        options: {
-          // isWholeLine stretches the decoration div across the full editor
-          // width so the background tint covers the entire line, not just tokens.
-          isWholeLine:               true,
-          className:                `lo-ln-${colorIndex}`,
-          // Color the line number to match the line's accent color
-          lineNumberClassName:      `lo-ln-num-${colorIndex}`,
-          // Separate class for the gutter strip (left of line numbers)
-          linesDecorationsClassName: `lo-ln-gutter-${colorIndex}`,
-        },
-      };
-    });
-
-    decorationsRef.current = editor.deltaDecorations(
-      decorationsRef.current,
-      newDecorations
-    );
+    const step = () => {
+      if (job.cancelled || editorRef.current !== editor) return;
+      const end = Math.min(total, i + COLOR_DECORATION_BATCH);
+      const batch = [];
+      for (; i < end; i++) {
+        const r = rowsData[i];
+        const colorIndex = pairColorMap.get(`${r.device_name ?? ""}|${r.log_name ?? ""}`) ?? 0;
+        batch.push({
+          range: { startLineNumber: i + 1, startColumn: 1, endLineNumber: i + 1, endColumn: 1 },
+          options: {
+            // isWholeLine stretches the decoration div across the full editor
+            // width so the background tint covers the entire line.
+            isWholeLine:               true,
+            className:                `lo-ln-${colorIndex}`,
+            lineNumberClassName:      `lo-ln-num-${colorIndex}`,
+            linesDecorationsClassName: `lo-ln-gutter-${colorIndex}`,
+          },
+        });
+      }
+      const ids = editor.deltaDecorations([], batch);
+      for (let k = 0; k < ids.length; k++) decorationsRef.current.push(ids[k]);
+      if (i < total) setTimeout(step, 0);
+      else colorJobRef.current = null;
+    };
+    step();
   }, []);
 
   // ── Apply glyph-margin "view packet details" buttons ─────────────────────
@@ -620,21 +789,24 @@ function MonacoLogViewer({ rows, colorMode, onPacketClick, highlightLine, onEdit
 
     ensurePacketGlyphStyleEl();
 
-    const newDecorations = (rowsData ?? [])
-      .map((r, lineIndex) => ({ r, lineIndex }))
-      .filter(({ r }) => r.log_name === "network capture")
-      .map(({ lineIndex }) => ({
-        range: {
-          startLineNumber: lineIndex + 1,
-          startColumn: 1,
-          endLineNumber: lineIndex + 1,
-          endColumn: 1,
-        },
-        options: {
-          glyphMarginClassName: "lo-packet-glyph",
-          glyphMarginHoverMessage: { value: "Click to view packet details" },
-        },
-      }));
+    const newDecorations = [];
+    if (rowsData) {
+      for (let lineIndex = 0; lineIndex < rowsData.length; lineIndex++) {
+        if (rowsData[lineIndex].log_name !== "network capture") continue;
+        newDecorations.push({
+          range: {
+            startLineNumber: lineIndex + 1,
+            startColumn: 1,
+            endLineNumber: lineIndex + 1,
+            endColumn: 1,
+          },
+          options: {
+            glyphMarginClassName: "lo-packet-glyph",
+            glyphMarginHoverMessage: { value: "Click to view packet details" },
+          },
+        });
+      }
+    }
 
     glyphDecorationsRef.current = editor.deltaDecorations(
       glyphDecorationsRef.current,
@@ -650,6 +822,7 @@ function MonacoLogViewer({ rows, colorMode, onPacketClick, highlightLine, onEdit
         if (cancelled || !containerRef.current) return;
 
         const model = monaco.editor.createModel(logText.current, "logoctopus");
+        appliedTextRef.current = logText.current;
         modelRef.current = model;
 
         const editor = monaco.editor.create(containerRef.current, {
@@ -717,6 +890,8 @@ function MonacoLogViewer({ rows, colorMode, onPacketClick, highlightLine, onEdit
 
     return () => {
       cancelled = true;
+      if (colorJobRef.current) colorJobRef.current.cancelled = true;
+      colorJobRef.current = null;
       editorRef.current?.dispose();
       modelRef.current?.dispose();
       editorRef.current = null;
@@ -732,7 +907,10 @@ function MonacoLogViewer({ rows, colorMode, onPacketClick, highlightLine, onEdit
     if (!modelRef.current) return;
     const model = modelRef.current;
     const newText = logText.current;
-    if (model.getValue() !== newText) {
+    // Compare against the text we last loaded instead of model.getValue(),
+    // which would materialise a full extra copy of a potentially huge buffer.
+    if (appliedTextRef.current !== newText) {
+      appliedTextRef.current = newText;
       model.setValue(newText);
       // Jump to last line for live-appended logs
       editorRef.current?.revealLine(model.getLineCount());
@@ -884,7 +1062,7 @@ const DEVICE_PALETTE = [
   { accent: "#2dd4bf", bg: "rgba(45,212,191,0.12)",  border: "rgba(45,212,191,0.32)"  },
 ];
 
-function LogFilterBar({ logRows, filters, onFiltersChange, filteredCount, totalCount }) {
+function LogFilterBar({ logRows, filters, onFiltersChange, filteredCount, totalCount, filtering = false, progress = 0 }) {
   // Build ordered map: deviceName → [logName, …]  (insertion order preserved)
   const deviceLogMap = useMemo(() => {
     const map = new Map(); // device → Set of logNames
@@ -1228,9 +1406,11 @@ function LogFilterBar({ logRows, filters, onFiltersChange, filteredCount, totalC
         <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
           <span style={{
             fontFamily: "var(--font-mono)", fontSize: 11,
-            color: filteredCount === 0 ? "#f87171" : "#4ade80",
+            color: filtering ? "var(--muted)" : filteredCount === 0 ? "#f87171" : "#4ade80",
           }}>
-            {filteredCount.toLocaleString()} / {totalCount.toLocaleString()} rows
+            {filtering
+              ? `Filtering… ${Math.round(progress * 100)}%`
+              : `${filteredCount.toLocaleString()} / ${totalCount.toLocaleString()} rows`}
           </span>
           <button
             onClick={clearAll}
@@ -1254,16 +1434,46 @@ function LogFilterBar({ logRows, filters, onFiltersChange, filteredCount, totalC
 }
 
 // ── LOG CONTENT VIEW ──────────────────────────────────────────────────────────
-function LogContentView({ rows, isChart, colorMode, chartGroups, onPacketClick, onShareChart, onEditorReady, highlightLine }) {
+function LogContentView({ rows, isChart, colorMode, chartGroups, onPacketClick, onShareChart, onEditorReady, highlightLine, filtering = false }) {
+  // Hooks must run before any early return.
+  const truncated = !isChart && !!rows && rows.length > MAX_VIEW_LINES;
+  const shownRows = useMemo(
+    () => (truncated ? rows.slice(0, MAX_VIEW_LINES) : rows),
+    [rows, truncated]
+  );
+
   if (isChart) return <ChartContentView chartGroups={chartGroups} onShareChart={onShareChart} />;
 
   if (!rows || rows.length === 0)
-    return <p style={{ color: "var(--muted)" }}>No data.</p>;
+    return (
+      <p style={{ color: "var(--muted)", padding: 16 }}>
+        {filtering ? "Applying filter…" : "No data."}
+      </p>
+    );
 
   return (
-    <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
+    <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", position: "relative" }}>
+      {truncated && (
+        <div style={{
+          padding: "6px 16px", fontFamily: "var(--font-mono)", fontSize: 11,
+          color: "#fbbf24", background: "rgba(251,191,36,0.08)",
+          borderBottom: "1px solid rgba(251,191,36,0.25)", flexShrink: 0,
+        }}>
+          Showing the first {MAX_VIEW_LINES.toLocaleString()} of {rows.length.toLocaleString()} matching
+          lines — narrow the filter to see the rest. Downloads still include everything.
+        </div>
+      )}
+      {filtering && (
+        <div style={{
+          position: "absolute", top: 8, right: 24, zIndex: 5,
+          padding: "3px 10px", borderRadius: 6, fontFamily: "var(--font-mono)", fontSize: 11,
+          color: "var(--text)", background: "rgba(0,0,0,0.65)", border: "1px solid var(--border)",
+        }}>
+          Applying filter…
+        </div>
+      )}
       <MonacoLogViewer
-        rows={rows}
+        rows={shownRows}
         colorMode={colorMode}
         onPacketClick={onPacketClick}
         onEditorReady={onEditorReady}
@@ -6897,25 +7107,13 @@ ${rowsHtml}
 
   // Apply per-(device, logName) regex filters to the full log rows.
   // Filter keys use the same FILTER_SEP-delimited format as LogFilterBar.
-  const filteredLogRows = useMemo(() => {
-    if (!logRows || logRows.length === 0) return logRows;
-    const hasFilter = Object.values(deviceRegexFilters).some(v => v && v.trim());
-    if (!hasFilter) return logRows;
-    return logRows.filter(row => {
-      const deviceName = row.device_name ?? "";
-      const logName    = row.log_name    ?? "";
-      const key        = `${deviceName}\x00${logName}`;
-      const pattern    = deviceRegexFilters[key];
-      if (!pattern || !pattern.trim()) return true; // no filter for this pair → keep row
-      try {
-        const re   = new RegExp(pattern, "i");
-        const line = `[${row.time ?? ""}] [${deviceName}] [${logName}]  ${row.content ?? ""}`;
-        return re.test(line);
-      } catch {
-        return true; // invalid regex → keep row (safe fallback)
-      }
-    });
-  }, [logRows, deviceRegexFilters]);
+  // Runs in time-sliced chunks (see useChunkedRowFilter) so very large logs
+  // no longer freeze the tab while the regexes are evaluated.
+  const {
+    rows:      filteredLogRows,
+    filtering: logsFiltering,
+    progress:  logsFilterProgress,
+  } = useChunkedRowFilter(logRows, deviceRegexFilters);
 
   // Modal title with chart count info
   const logModalTitle = isChart && chartGroups.length > 0
@@ -7411,18 +7609,23 @@ ${rowsHtml}
                 onFiltersChange={setDeviceRegexFilters}
                 filteredCount={filteredLogRows.length}
                 totalCount={logRows.length}
+                filtering={logsFiltering}
+                progress={logsFilterProgress}
               />
             )}
-            <LogContentView
-              rows={filteredLogRows}
-              isChart={isChart}
-              colorMode={colorMode}
-              chartGroups={chartGroups}
-              onPacketClick={openPacketDetails}
-              onShareChart={shareChart}
-              onEditorReady={(api) => { monacoEditorApiRef.current = api; }}
-              highlightLine={highlightLine}
-            />
+            <LogViewErrorBoundary resetKey={deviceRegexFilters}>
+              <LogContentView
+                rows={filteredLogRows}
+                isChart={isChart}
+                colorMode={colorMode}
+                chartGroups={chartGroups}
+                onPacketClick={openPacketDetails}
+                onShareChart={shareChart}
+                onEditorReady={(api) => { monacoEditorApiRef.current = api; }}
+                highlightLine={highlightLine}
+                filtering={logsFiltering}
+              />
+            </LogViewErrorBoundary>
           </div>
         )}
       </Modal>
