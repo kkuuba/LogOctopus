@@ -292,7 +292,7 @@ function ChartContentView({ chartGroups, onShareChart }) {
                   onMouseEnter={e => { e.currentTarget.style.background = "rgba(129,140,248,0.2)"; }}
                   onMouseLeave={e => { e.currentTarget.style.background = "rgba(129,140,248,0.1)"; }}
                 >
-                  🔗 Share 
+                  <Icon name="link" size={12} style={{ marginRight: 6 }} />Share
                 </button>
               )}
             </div>
@@ -819,7 +819,7 @@ function MonacoLogViewer({ rows, colorMode, onPacketClick, highlightLine, onEdit
         color: "#f87171", background: "rgba(248,113,113,0.06)",
         border: "1px solid rgba(248,113,113,0.2)", borderRadius: 8,
       }}>
-        ⚠ Monaco failed to load: {loadErr}
+        <Icon name="warn" size={12} style={{ marginRight: 6 }} />Monaco failed to load: {loadErr}
       </div>
     );
   }
@@ -1051,10 +1051,10 @@ function LogFilterBar({ logRows, filters, onFiltersChange, filteredCount, totalC
                       color: palette.accent, fontSize: 10, lineHeight: 1,
                       flexShrink: 0, cursor: "pointer",
                     }}
-                  >×</span>
+                  ><Icon name="close" size={9} stroke={1.8} /></span>
                 </>
               )}
-              <span style={{ fontSize: 9, opacity: 0.55, marginLeft: 1 }}>{isOpen ? "▲" : "▼"}</span>
+              <span style={{ opacity: 0.55, marginLeft: 1, display: "inline-flex" }}><Icon name={isOpen ? "chevUp" : "chevDown"} size={10} /></span>
             </button>
 
             {/* Popover — per-logName rows */}
@@ -1159,12 +1159,12 @@ function LogFilterBar({ logRows, filters, onFiltersChange, filteredCount, totalC
                                 background: "none", border: "none", color: "var(--muted)",
                                 cursor: "pointer", fontSize: 14, lineHeight: 1, padding: 0,
                               }}
-                            >×</button>
+                            ><Icon name="close" size={12} /></button>
                           )}
                         </div>
                         {!valid && (
                           <div style={{ marginTop: 3, fontFamily: "var(--font-mono)", fontSize: 10, color: "#f87171" }}>
-                            ⚠ Invalid regular expression
+                            <Icon name="warn" size={11} style={{ marginRight: 5 }} />Invalid regular expression
                           </div>
                         )}
                         {/* Divider between log entries */}
@@ -1211,7 +1211,7 @@ function LogFilterBar({ logRows, filters, onFiltersChange, filteredCount, totalC
                         cursor: allDraftsValid ? "pointer" : "not-allowed",
                         opacity: allDraftsValid ? 1 : 0.5, transition: "all 0.15s",
                       }}
-                    >Apply ↵</button>
+                    >Apply <Icon name="enter" size={12} /></button>
                   </div>
                 </div>
               </div>
@@ -1242,7 +1242,7 @@ function LogFilterBar({ logRows, filters, onFiltersChange, filteredCount, totalC
             }}
             onMouseEnter={e => e.currentTarget.style.background = "rgba(248,113,113,0.18)"}
             onMouseLeave={e => e.currentTarget.style.background = "rgba(248,113,113,0.10)"}
-          >✕ Clear all</button>
+          ><Icon name="close" size={11} style={{ marginRight: 5 }} />Clear all</button>
         </div>
       ) : (
         <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--muted)", flexShrink: 0 }}>
@@ -1349,10 +1349,10 @@ function PacketFieldTree({ data, depth = 0 }) {
 
 // ── DOWNLOAD FORMATS ──────────────────────────────────────────────────────────
 const DOWNLOAD_FORMATS = [
-  { id: "csv",        label: "CSV",  icon: "📊", desc: "Spreadsheet-compatible" },
-  { id: "txt",        label: "TXT",  icon: "📄", desc: "Plain text, one row per line" },
-  { id: "json",       label: "JSON", icon: "🗂",  desc: "Structured JSON array" },
-  { id: "html-color", label: "HTML", icon: "🌐", desc: "Styled HTML with per-source color stripes" },
+  { id: "csv",        label: "CSV",  icon: "table", desc: "Spreadsheet-compatible" },
+  { id: "txt",        label: "TXT",  icon: "file", desc: "Plain text, one row per line" },
+  { id: "json",       label: "JSON", icon: "braces",  desc: "Structured JSON array" },
+  { id: "html-color", label: "HTML", icon: "globe", desc: "Styled HTML with per-source color stripes" },
 ];
 
 // ── DOWNLOAD MENU ─────────────────────────────────────────────────────────────
@@ -1369,8 +1369,8 @@ function DownloadMenu({ onDownload, disabled = false, loading = false, isChart =
   // Chart mode: JSON + HTML; text mode: all formats
   const formats = isChart
     ? [
-        { id: "json",       label: "JSON", icon: "🗂",  desc: "Structured JSON array" },
-        { id: "html-color", label: "HTML", icon: "🌐", desc: "Interactive charts in a standalone page" },
+        { id: "json",       label: "JSON", icon: "braces",  desc: "Structured JSON array" },
+        { id: "html-color", label: "HTML", icon: "globe", desc: "Interactive charts in a standalone page" },
       ]
     : DOWNLOAD_FORMATS;
 
@@ -1390,8 +1390,8 @@ function DownloadMenu({ onDownload, disabled = false, loading = false, isChart =
           transition: "all 0.15s",
         }}
       >
-        {loading ? "⏳ Fetching…" : "⬇ Download"}
-        {!loading && <span style={{ fontSize: 9, marginLeft: 2, opacity: 0.7 }}>{open ? "▲" : "▼"}</span>}
+        {loading ? <><Icon name="hourglass" size={13} />Fetching…</> : <><Icon name="download" size={13} />Download</>}
+        {!loading && <span style={{ marginLeft: 2, opacity: 0.7, display: "inline-flex" }}><Icon name={open ? "chevUp" : "chevDown"} size={11} /></span>}
       </button>
 
       {open && (
@@ -1416,7 +1416,7 @@ function DownloadMenu({ onDownload, disabled = false, loading = false, isChart =
               onMouseEnter={(e) => e.currentTarget.style.background = "rgba(129,140,248,0.08)"}
               onMouseLeave={(e) => e.currentTarget.style.background = "transparent"}
             >
-              <span style={{ fontSize: 16 }}>{f.icon}</span>
+              <span style={{ display: "inline-flex", color: "var(--accent)" }}><Icon name={f.icon} size={16} /></span>
               <div>
                 <div style={{ fontFamily: "var(--font-mono)", fontSize: 12, fontWeight: 600, color: "var(--text)" }}>{f.label}</div>
                 <div style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--muted)" }}>{f.desc}</div>
@@ -1449,8 +1449,8 @@ function DownloadSelectedBtn({ onDownload, disabled = false, loading = false, is
 
   const formats = isChart
     ? [
-        { id: "json",       label: "JSON", icon: "🗂",  desc: "Structured JSON array" },
-        { id: "html-color", label: "HTML", icon: "🌐", desc: "Interactive charts in a standalone page" },
+        { id: "json",       label: "JSON", icon: "braces",  desc: "Structured JSON array" },
+        { id: "html-color", label: "HTML", icon: "globe", desc: "Interactive charts in a standalone page" },
       ]
     : DOWNLOAD_FORMATS;
 
@@ -1513,8 +1513,8 @@ function DownloadSelectedBtn({ onDownload, disabled = false, loading = false, is
         onMouseLeave={e => { e.currentTarget.style.background = isOff ? "rgba(255,255,255,0.04)" : "var(--accent-dim)"; }}
       >
         {loading
-          ? <><span style={{ fontSize: 13 }}>⏳</span> Fetching…</>
-          : <><span style={{ fontSize: 13 }}>⬇</span> Download {currentFmtLabel}</>
+          ? <><Icon name="hourglass" size={13} style={{ marginRight: 4 }} /> Fetching…</>
+          : <><Icon name="download" size={13} style={{ marginRight: 4 }} /> Download {currentFmtLabel}</>
         }
       </button>
 
@@ -1532,7 +1532,7 @@ function DownloadSelectedBtn({ onDownload, disabled = false, loading = false, is
         onMouseEnter={e => { if (!isOff) e.currentTarget.style.background = "rgba(129,140,248,0.22)"; }}
         onMouseLeave={e => { e.currentTarget.style.background = isOff ? "rgba(255,255,255,0.04)" : "var(--accent-dim)"; }}
       >
-        {open ? "▲" : "▼"}
+        <Icon name={open ? "chevUp" : "chevDown"} size={12} />
       </button>
 
       {/* ── Dropdown ── */}
@@ -1572,7 +1572,7 @@ function DownloadSelectedBtn({ onDownload, disabled = false, loading = false, is
                 onMouseEnter={e => { if (!isActive) e.currentTarget.style.background = "rgba(129,140,248,0.08)"; }}
                 onMouseLeave={e => { e.currentTarget.style.background = isActive ? "rgba(129,140,248,0.1)" : "transparent"; }}
               >
-                <span style={{ fontSize: 15 }}>{f.icon}</span>
+                <span style={{ display: "inline-flex", color: "var(--accent)" }}><Icon name={f.icon} size={15} /></span>
                 <div style={{ flex: 1 }}>
                   <div style={{
                     fontFamily: "var(--font-mono)", fontSize: 12, fontWeight: 600,
@@ -1581,7 +1581,7 @@ function DownloadSelectedBtn({ onDownload, disabled = false, loading = false, is
                   <div style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--muted)" }}>{f.desc}</div>
                 </div>
                 {isActive && (
-                  <span style={{ fontSize: 10, color: accentColor, marginLeft: "auto" }}>✓</span>
+                  <span style={{ display: "inline-flex", color: accentColor, marginLeft: "auto" }}><Icon name="check" size={13} stroke={1.8} /></span>
                 )}
               </button>
             );
@@ -1724,17 +1724,20 @@ function SettingsModal({ open, onClose, isAdmin, onRequestLogin, auth, addToast,
         {/* Header */}
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "18px 24px", borderBottom: "1px solid var(--border)", flexShrink: 0 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-            <span style={{ fontSize: 20 }}>⚙️</span>
+            <span style={{ display: "inline-flex", color: "var(--accent)" }}><IconGear size={18} /></span>
             <h3 style={{ margin: 0, fontFamily: "var(--font-display)", fontSize: 16, fontWeight: 800, color: "var(--text)", letterSpacing: "0.04em" }}>Settings</h3>
           </div>
-          <button onClick={onClose} style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer", fontSize: 20, lineHeight: 1, padding: "2px 6px" }}>×</button>
+          <button onClick={onClose} style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer", fontSize: 20, lineHeight: 1, padding: "2px 6px" }}><Icon name="close" size={16} /></button>
         </div>
 
         {/* Tabs */}
         <div style={{ display: "flex", gap: 4, padding: "12px 20px 0", borderBottom: "1px solid var(--border)", flexShrink: 0 }}>
-          <button style={tabStyle(tab === "display")} onClick={() => setTab("display")}>🖥 Display</button>
-          <button style={tabStyle(tab === "security")} onClick={() => setTab("security")}>🔐 Security</button>
-          <button style={tabStyle(tab === "dissectors")} onClick={() => setTab("dissectors")}> 🌐 Network Capture</button>
+          <button style={tabStyle(tab === "display")} onClick={() => setTab("display")}><Icon name="monitor" size={13} style={{ marginRight: 6 }} />Display</button>
+          <button style={tabStyle(tab === "security")} onClick={() => setTab("security")}>
+            <span style={{ display: "inline-flex", verticalAlign: "-2px", marginRight: 6 }}><IconLock size={12} /></span>
+            Security
+          </button>
+          <button style={tabStyle(tab === "dissectors")} onClick={() => setTab("dissectors")}><Icon name="globe" size={13} style={{ marginRight: 6 }} />Network Capture</button>
         </div>
 
         {/* Body */}
@@ -1793,10 +1796,10 @@ function SettingsModal({ open, onClose, isAdmin, onRequestLogin, auth, addToast,
                   borderRadius: 8, padding: "24px 20px", textAlign: "center",
                   fontFamily: "var(--font-mono)", fontSize: 12, color: "#a78bfa",
                 }}>
-                  <div style={{ fontSize: 28, marginBottom: 12 }}>🔒</div>
+                  <div style={{ display: "flex", justifyContent: "center", color: "#a78bfa", marginBottom: 12 }}><IconLock size={26} /></div>
                   <div style={{ fontWeight: 600, marginBottom: 6 }}>Admin login required</div>
                   <div style={{ color: "var(--muted)", marginBottom: 16 }}>Sign in as admin to manage security settings.</div>
-                  <Btn variant="admin" onClick={onRequestLogin}>🔐 Sign In</Btn>
+                  <Btn variant="admin" onClick={onRequestLogin} style={{ display: "inline-flex", alignItems: "center", gap: 8 }}><IconLock size={12} /> Sign In</Btn>
                 </div>
               ) : (
                 <div style={{ animation: pwShake ? "shake 0.4s ease" : "none" }}>
@@ -1822,7 +1825,7 @@ function SettingsModal({ open, onClose, isAdmin, onRequestLogin, auth, addToast,
                       </div>
                       {pwError && (
                         <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "#f87171", background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.2)", borderRadius: 6, padding: "7px 12px" }}>
-                          ⚠ {pwError}
+                          <Icon name="warn" size={12} style={{ marginRight: 6 }} />{pwError}
                         </div>
                       )}
                       <Btn variant="primary" onClick={submitPasswordChange} style={{ justifyContent: "center", marginTop: 4 }}>
@@ -1851,7 +1854,7 @@ function SettingsModal({ open, onClose, isAdmin, onRequestLogin, auth, addToast,
               {/* Info card */}
               <div style={card}>
                 <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
-                  <span style={{ fontSize: 22 }}>🌐</span>
+                  <span style={{ display: "inline-flex", color: "var(--accent)" }}><Icon name="globe" size={22} /></span>
                   <div style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 14, color: "var(--text)" }}>Custom Dissectors</div>
                 </div>
                 <div style={{ fontFamily: "var(--font-mono)", fontSize: 12, color: "var(--muted)", lineHeight: 1.7, marginBottom: 0 }}>
@@ -1894,7 +1897,7 @@ function SettingsModal({ open, onClose, isAdmin, onRequestLogin, auth, addToast,
                     </div>
                   ) : (
                     <>
-                      <div style={{ fontSize: 24, marginBottom: 6 }}>📂</div>
+                      <div style={{ display: "flex", justifyContent: "center", marginBottom: 8, color: "var(--accent)" }}><Icon name="folder" size={26} /></div>
                       <div style={{ fontFamily: "var(--font-mono)", fontSize: 12, color: "var(--muted)" }}>
                         Click to upload <span style={{ color: "#22d3ee" }}>.lua</span>, <span style={{ color: "#22d3ee" }}>.so</span>, or <span style={{ color: "#22d3ee" }}>.dll</span> files
                       </div>
@@ -1906,7 +1909,7 @@ function SettingsModal({ open, onClose, isAdmin, onRequestLogin, auth, addToast,
                 </div>
                 {dissectorError && (
                   <div style={{ marginTop: 10, fontFamily: "var(--font-mono)", fontSize: 11, color: "#f87171", background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.2)", borderRadius: 6, padding: "7px 12px" }}>
-                    ⚠ {dissectorError}
+                    <Icon name="warn" size={12} style={{ marginRight: 6 }} />{dissectorError}
                   </div>
                 )}
               </div>
@@ -1920,7 +1923,7 @@ function SettingsModal({ open, onClose, isAdmin, onRequestLogin, auth, addToast,
                     disabled={dissectorsLoading}
                     style={{ background: "none", border: "none", cursor: "pointer", color: "var(--muted)", fontSize: 13, padding: "2px 6px", opacity: dissectorsLoading ? 0.4 : 1 }}
                     title="Refresh list"
-                  >↻</button>
+                  ><Icon name="refresh" size={13} /></button>
                 </div>
 
                 {dissectorsLoading ? (
@@ -1977,7 +1980,7 @@ function SettingsModal({ open, onClose, isAdmin, onRequestLogin, auth, addToast,
                           style={{ flexShrink: 0, background: "none", border: "none", color: "#f87171", cursor: "pointer", fontSize: 15, padding: "2px 4px", opacity: 0.7, lineHeight: 1 }}
                           onMouseEnter={e => e.currentTarget.style.opacity = "1"}
                           onMouseLeave={e => e.currentTarget.style.opacity = "0.7"}
-                        >×</button>
+                        ><Icon name="close" size={13} /></button>
                       </div>
                     ))}
                   </div>
@@ -1995,19 +1998,28 @@ function SettingsModal({ open, onClose, isAdmin, onRequestLogin, auth, addToast,
 function LoginModal({ open, onClose, onLogin }) {
   const [user, setUser] = useState("");
   const [pass, setPass] = useState("");
+  const [showPass, setShowPass] = useState(false);
   const [error, setError] = useState("");
   const [shaking, setShaking] = useState(false);
   const [loading, setLoading] = useState(false);
 
+  // Close on Escape, like every other modal in the app.
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e) => { if (e.key === "Escape") onClose(); };
+    document.addEventListener("keydown", handler);
+    return () => document.removeEventListener("keydown", handler);
+  }, [open, onClose]);
+
   // FIX: onLogin is now async (calls /api/auth/login).  Handle the Promise and
   // surface network errors rather than silently showing "Invalid credentials".
   const attempt = async () => {
-    if (loading) return;
+    if (loading || !user || !pass) return;
     setLoading(true);
     try {
       const ok = await onLogin(user, pass);
       if (ok) {
-        setUser(""); setPass(""); setError(""); onClose();
+        setUser(""); setPass(""); setError(""); setShowPass(false); onClose();
       } else {
         setError("Invalid credentials");
         setShaking(true);
@@ -2024,105 +2036,172 @@ function LoginModal({ open, onClose, onLogin }) {
 
   if (!open) return null;
 
+  const labelStyle = {
+    display: "block", marginBottom: 6,
+    fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--muted)",
+    textTransform: "uppercase", letterSpacing: "0.09em",
+  };
+  const canSubmit = !!user && !!pass && !loading;
+
   return (
     <div
-      style={{
-        position: "fixed",
-        inset: 0,
-        zIndex: 2000,
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-      }}
+      style={{ position: "fixed", inset: 0, zIndex: 2000, display: "flex", alignItems: "center", justifyContent: "center" }}
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
+      <style>{`
+        @keyframes shake { 0%,100%{transform:translateX(0)} 25%{transform:translateX(-8px)} 75%{transform:translateX(8px)} }
+        @keyframes lo-login-in { from{opacity:0;transform:translateY(10px) scale(0.985)} to{opacity:1;transform:translateY(0) scale(1)} }
+        .lo-login-field {
+          display: flex; align-items: center; gap: 10px;
+          background: rgba(255,255,255,0.04); border: 1px solid var(--border);
+          border-radius: 10px; padding: 0 12px;
+          transition: border-color 0.15s, box-shadow 0.15s, background 0.15s;
+        }
+        .lo-login-field:hover { border-color: rgba(129,140,248,0.25); }
+        .lo-login-field:focus-within {
+          border-color: rgba(129,140,248,0.55); background: rgba(129,140,248,0.05);
+          box-shadow: 0 0 0 3px rgba(129,140,248,0.12);
+        }
+        .lo-login-field.lo-err, .lo-login-field.lo-err:focus-within {
+          border-color: rgba(248,113,113,0.5); box-shadow: 0 0 0 3px rgba(248,113,113,0.10);
+        }
+        .lo-login-field .lo-login-ic { display: inline-flex; color: var(--muted); transition: color 0.15s; }
+        .lo-login-field:focus-within .lo-login-ic { color: var(--accent); }
+        .lo-login-field input {
+          flex: 1; min-width: 0; background: transparent; border: none; outline: none;
+          color: var(--text); font-family: var(--font-mono); font-size: 13px; padding: 12px 0;
+        }
+        .lo-login-field input::placeholder { color: rgba(107,114,128,0.75); }
+        .lo-login-eye {
+          display: inline-flex; background: none; border: none; padding: 4px; margin-right: -4px;
+          border-radius: 6px; color: var(--muted); cursor: pointer; transition: color 0.15s, background 0.15s;
+        }
+        .lo-login-eye:hover { color: var(--text); background: rgba(255,255,255,0.06); }
+        .lo-login-close {
+          position: absolute; top: 14px; right: 14px; display: inline-flex; padding: 6px;
+          background: none; border: none; border-radius: 8px; color: var(--muted); cursor: pointer;
+          transition: color 0.15s, background 0.15s;
+        }
+        .lo-login-close:hover { color: var(--text); background: rgba(255,255,255,0.06); }
+        .lo-login-cancel {
+          background: none; border: none; cursor: pointer; padding: 6px 10px; border-radius: 6px;
+          font-family: var(--font-mono); font-size: 11px; color: var(--muted); transition: color 0.15s;
+        }
+        .lo-login-cancel:hover { color: var(--text); }
+      `}</style>
+
       <div style={{ position: "absolute", inset: 0, background: "rgba(0,0,0,0.8)", backdropFilter: "blur(6px)" }} />
+
       <div
         style={{
-          position: "relative",
-          zIndex: 1,
-          background: "var(--modal-bg)",
-          border: "1px solid var(--border)",
-          borderRadius: 14,
-          padding: "36px 40px",
-          width: 380,
-          boxShadow: "0 24px 80px rgba(129,140,248,0.08), 0 0 0 1px rgba(129,140,248,0.08)",
-          animation: shaking ? "shake 0.4s ease" : "none",
+          position: "relative", zIndex: 1, width: 400, maxWidth: "calc(100vw - 32px)",
+          background: "radial-gradient(120% 60% at 50% 0%, rgba(129,140,248,0.11), transparent 62%), var(--modal-bg)",
+          border: "1px solid var(--border)", borderRadius: 16, padding: "38px 36px 26px",
+          boxShadow: "0 24px 80px rgba(0,0,0,0.55), 0 0 0 1px rgba(129,140,248,0.08)",
+          animation: shaking ? "shake 0.4s ease" : "lo-login-in 0.22s ease-out",
         }}
       >
-        <style>{`@keyframes shake { 0%,100%{transform:translateX(0)} 25%{transform:translateX(-8px)} 75%{transform:translateX(8px)} }`}</style>
+        <button className="lo-login-close" onClick={onClose} title="Close" aria-label="Close">
+          <Icon name="close" size={15} />
+        </button>
+
+        {/* Identity */}
         <div style={{ textAlign: "center", marginBottom: 28 }}>
           <div
             style={{
-              width: 48,
-              height: 48,
-              borderRadius: "50%",
-              background: "rgba(129,140,248,0.12)",
-              border: "1px solid rgba(129,140,248,0.3)",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              margin: "0 auto 16px",
-              fontSize: 22,
+              width: 56, height: 56, borderRadius: "50%", margin: "0 auto 18px",
+              display: "flex", alignItems: "center", justifyContent: "center",
+              color: "var(--accent)",
+              background: "linear-gradient(135deg, rgba(129,140,248,0.22), rgba(167,139,250,0.08))",
+              border: "1px solid rgba(129,140,248,0.35)",
+              boxShadow: "0 0 32px rgba(129,140,248,0.18), inset 0 0 0 5px rgba(129,140,248,0.05)",
             }}
           >
-            🔐
+            <IconLock size={24} />
           </div>
-          <h3
-            style={{
-              margin: 0,
-              fontFamily: "var(--font-display)",
-              fontSize: 18,
-              fontWeight: 800,
-              color: "var(--text)",
-              letterSpacing: "-0.01em",
-            }}
-          >
+          <h3 style={{ margin: 0, fontFamily: "var(--font-display)", fontSize: 20, fontWeight: 800, color: "var(--text)", letterSpacing: "-0.01em" }}>
             Admin Login
           </h3>
-          <p style={{ margin: "6px 0 0", fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--muted)" }}>
-            Required to view device configuration
+          <p style={{ margin: "7px 0 0", fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--muted)", lineHeight: 1.5 }}>
+            Sign in to view and edit device configuration
           </p>
         </div>
 
-        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-          <input
-            value={user}
-            onChange={(e) => setUser(e.target.value)}
-            placeholder="Username"
-            autoFocus
-            onKeyDown={(e) => e.key === "Enter" && attempt()}
-            style={inputStyle}
-          />
-          <input
-            type="password"
-            value={pass}
-            onChange={(e) => setPass(e.target.value)}
-            placeholder="Password"
-            onKeyDown={(e) => e.key === "Enter" && attempt()}
-            style={inputStyle}
-          />
+        {/* Form */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+          <div>
+            <label style={labelStyle} htmlFor="lo-login-user">Username</label>
+            <div className={`lo-login-field${error ? " lo-err" : ""}`}>
+              <span className="lo-login-ic"><Icon name="user" size={15} /></span>
+              <input
+                id="lo-login-user"
+                value={user}
+                onChange={(e) => { setUser(e.target.value); if (error) setError(""); }}
+                placeholder="admin"
+                autoFocus
+                autoComplete="username"
+                spellCheck={false}
+                onKeyDown={(e) => e.key === "Enter" && attempt()}
+              />
+            </div>
+          </div>
+
+          <div>
+            <label style={labelStyle} htmlFor="lo-login-pass">Password</label>
+            <div className={`lo-login-field${error ? " lo-err" : ""}`}>
+              <span className="lo-login-ic"><IconLock size={15} /></span>
+              <input
+                id="lo-login-pass"
+                type={showPass ? "text" : "password"}
+                value={pass}
+                onChange={(e) => { setPass(e.target.value); if (error) setError(""); }}
+                placeholder="••••••••"
+                autoComplete="current-password"
+                onKeyDown={(e) => e.key === "Enter" && attempt()}
+              />
+              <button
+                type="button"
+                className="lo-login-eye"
+                onClick={() => setShowPass((v) => !v)}
+                title={showPass ? "Hide password" : "Show password"}
+                aria-label={showPass ? "Hide password" : "Show password"}
+              >
+                <Icon name={showPass ? "eyeOff" : "eye"} size={15} />
+              </button>
+            </div>
+          </div>
+
           {error && (
             <div
               style={{
-                fontFamily: "var(--font-mono)",
-                fontSize: 11,
-                color: "#f87171",
-                background: "rgba(248,113,113,0.08)",
-                border: "1px solid rgba(248,113,113,0.2)",
-                borderRadius: 6,
-                padding: "7px 12px",
+                display: "flex", alignItems: "center", gap: 8,
+                fontFamily: "var(--font-mono)", fontSize: 11, color: "#f87171",
+                background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.22)",
+                borderRadius: 8, padding: "8px 12px",
               }}
             >
-              ⚠ {error}
+              <Icon name="warn" size={13} />
+              <span>{error}</span>
             </div>
           )}
-          <Btn variant="primary" onClick={attempt} disabled={loading} style={{ width: "100%", justifyContent: "center", marginTop: 4 }}>
-            {loading ? "Signing in…" : "Sign In"}
+
+          <Btn
+            variant="primary"
+            size="lg"
+            onClick={attempt}
+            disabled={!canSubmit}
+            style={{ width: "100%", justifyContent: "center", marginTop: 2 }}
+          >
+            {loading ? "Signing in…" : (<><IconLock size={14} />Sign In</>)}
           </Btn>
-          <Btn variant="ghost" onClick={onClose} style={{ width: "100%", justifyContent: "center" }}>
-            Cancel
-          </Btn>
+        </div>
+
+        {/* Footer */}
+        <div style={{ marginTop: 18, display: "flex", flexDirection: "column", alignItems: "center", gap: 10 }}>
+          <button className="lo-login-cancel" onClick={onClose}>Cancel</button>
+          <div style={{ width: "100%", borderTop: "1px solid var(--border)", paddingTop: 12, textAlign: "center", fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--muted)", opacity: 0.75 }}>
+            Session ends when this tab is closed
+          </div>
         </div>
       </div>
     </div>
@@ -2214,7 +2293,7 @@ function Modal({ open, onClose, title, size = "lg", children, footer }) {
               padding: "2px 6px",
             }}
           >
-            ×
+            <Icon name="close" size={16} />
           </button>
         </div>
         <div
@@ -2275,7 +2354,7 @@ function ConfirmDialog({ open, title, message, count, itemLabel = "item", confir
       footer={
         <>
           <Btn variant="danger" onClick={onConfirm} disabled={loading}>
-            {loading ? "Removing…" : `🗑 ${confirmLabel}`}
+            {loading ? "Removing…" : <><Icon name="trash" size={13} />{confirmLabel}</>}
           </Btn>
           <Btn variant="ghost" onClick={onCancel} disabled={loading}>Cancel</Btn>
         </>
@@ -2331,7 +2410,7 @@ function Badge({ color = "default", children }) {
 }
 
 // ── BUTTON ────────────────────────────────────────────────────────────────────
-function Btn({ variant = "default", size = "md", onClick, disabled, children, style }) {
+function Btn({ variant = "default", size = "md", onClick, disabled, children, style, title }) {
   const base = {
     cursor: disabled ? "not-allowed" : "pointer",
     border: "none",
@@ -2363,10 +2442,160 @@ function Btn({ variant = "default", size = "md", onClick, disabled, children, st
     <button
       onClick={disabled ? undefined : onClick}
       disabled={disabled}
+      title={title}
       style={{ ...base, ...sizes[size], ...variants[variant], ...style }}
     >
       {children}
     </button>
+  );
+}
+
+// ── ICONS ─────────────────────────────────────────────────────────────────────
+// Minimal single-weight line icons, drawn in the same idiom as the app's own
+// logo mark (thin strokes, round caps, currentColor) — used in place of
+// emoji for the auth / settings / API affordances. Emoji render differently
+// per OS/font and can't pick up the app's accent color the way an inline
+// SVG glyph does.
+function IconLock({ size = 14, style }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 16 16" fill="none" style={style} aria-hidden="true">
+      <path d="M4.75 7.1V5a3.25 3.25 0 0 1 6.5 0v2.1" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+      <rect x="3.1" y="7.1" width="9.8" height="6.9" rx="1.7" stroke="currentColor" strokeWidth="1.4" />
+      <circle cx="8" cy="10.35" r="0.95" fill="currentColor" />
+    </svg>
+  );
+}
+
+// Gear built the same way as the header logo mark (a center hub with 8
+// radiating spokes at 45° increments) so it reads as part of the same
+// design system rather than a generic settings-cog glyph.
+function IconGear({ size = 14, style }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 16 16" fill="none" style={style} aria-hidden="true">
+      <circle cx="8" cy="8" r="2.35" stroke="currentColor" strokeWidth="1.4" />
+      {[0, 45, 90, 135, 180, 225, 270, 315].map((a) => {
+        const rad = (a * Math.PI) / 180;
+        const r1 = 3.5, r2 = 6.6;
+        return (
+          <line
+            key={a}
+            x1={8 + r1 * Math.cos(rad)} y1={8 + r1 * Math.sin(rad)}
+            x2={8 + r2 * Math.cos(rad)} y2={8 + r2 * Math.sin(rad)}
+            stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"
+          />
+        );
+      })}
+    </svg>
+  );
+}
+
+// Shared gear button — the exact look of the device-card gear, reused by the
+// header "Settings" control so both read as the same affordance.
+//   size="sm" → compact (device cards)   size="md" → header toolbar height
+function GearBtn({ onClick, title, active = false, size = "sm", style }) {
+  const md = size === "md";
+  return (
+    <button
+      onClick={onClick}
+      title={title}
+      aria-label={title}
+      style={{
+        background: active ? "rgba(129,140,248,0.15)" : "rgba(255,255,255,0.05)",
+        border: `1px solid ${active ? "rgba(129,140,248,0.4)" : "var(--border)"}`,
+        borderRadius: 6,
+        color: active ? "var(--accent)" : "var(--muted)",
+        cursor: "pointer",
+        fontSize: md ? 15 : 13,
+        padding: md ? "0 11px" : "2px 7px",
+        height: md ? 28 : undefined,
+        display: "inline-flex",
+        alignItems: "center",
+        justifyContent: "center",
+        transition: "all 0.15s",
+        ...style,
+      }}
+      onMouseEnter={(e) => { if (!active) { e.currentTarget.style.color = "var(--accent)"; e.currentTarget.style.borderColor = "rgba(129,140,248,0.4)"; } }}
+      onMouseLeave={(e) => { if (!active) { e.currentTarget.style.color = "var(--muted)"; e.currentTarget.style.borderColor = "var(--border)"; } }}
+    >
+      ⚙
+    </button>
+  );
+}
+
+// Two opposing brackets around a center dot — reads as "endpoint" / API
+// exchange without leaning on a generic </> code glyph.
+function IconApi({ size = 14, style }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 16 16" fill="none" style={style} aria-hidden="true">
+      <path d="M6.1 3.3 2 8l4.1 4.7" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M9.9 3.3 14 8l-4.1 4.7" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+      <circle cx="8" cy="8" r="1.15" fill="currentColor" />
+    </svg>
+  );
+}
+
+// ── ICON SET ──────────────────────────────────────────────────────────────────
+// One registry of line icons drawn in the same idiom as IconGear / IconLock /
+// IconApi: 16×16 grid, 1.4 stroke, round caps & joins, currentColor. Replaces
+// the emoji and Unicode symbols (🗑 📄 ✔ ⚠ ▶ ⬇ …) that used to be scattered
+// through the UI, so every glyph picks up the app's colours and renders the
+// same on every OS.  Usage: <Icon name="trash" size={13} />
+const ICONS = {
+  play:      <path d="M5.2 3.3 12.4 8l-7.2 4.7z" />,
+  stop:      <rect x="4" y="4" width="8" height="8" rx="1.6" />,
+  trash:     <path d="M2.8 4.3h10.4M6.2 4.3V2.9h3.6v1.4M4.1 4.3l.6 8.4a1 1 0 0 0 1 .9h4.6a1 1 0 0 0 1-.9l.6-8.4M6.7 7v3.6M9.3 7v3.6" />,
+  close:     <path d="M4 4l8 8M12 4l-8 8" />,
+  check:     <path d="M3.4 8.6l3.2 3.2 6-7.2" />,
+  plus:      <path d="M8 3.2v9.6M3.2 8h9.6" />,
+  warn:      <><path d="M8 2.6 14 13H2z" /><path d="M8 6.6v3" /><circle cx="8" cy="11.4" r=".8" fill="currentColor" stroke="none" /></>,
+  download:  <path d="M8 2.5v7.2M4.9 6.8 8 9.9l3.1-3.1M3 12.6h10" />,
+  upload:    <path d="M8 10.5V3.3M4.9 6.2 8 3.1l3.1 3.1M3 12.6h10" />,
+  copy:      <><rect x="5.6" y="5.6" width="7.6" height="7.6" rx="1.6" /><path d="M10.4 5.6V3.4a1 1 0 0 0-1-1H3.7a1 1 0 0 0-1 1v5.7a1 1 0 0 0 1 1h1.9" /></>,
+  save:      <><path d="M3.6 2.6h7.6l2.2 2.2v7.6a1 1 0 0 1-1 1H3.6a1 1 0 0 1-1-1V3.6a1 1 0 0 1 1-1z" /><path d="M5.3 2.7v3h4.6v-3M5 13.4V9.3h6v4.1" /></>,
+  edit:      <path d="M10.6 3.2l2.2 2.2-7.4 7.4-2.6.4.4-2.6zM9.2 4.6l2.2 2.2" />,
+  sliders:   <><path d="M3 5h5.5M11.5 5H13M3 11h1.5M7.5 11H13" /><circle cx="10" cy="5" r="1.5" /><circle cx="6" cy="11" r="1.5" /></>,
+  braces:    <path d="M6 2.8c-1.6 0-2 .8-2 2v1.6c0 1-.6 1.6-1.6 1.6 1 0 1.6.6 1.6 1.6v1.6c0 1.2.4 2 2 2M10 2.8c1.6 0 2 .8 2 2v1.6c0 1 .6 1.6 1.6 1.6-1 0-1.6.6-1.6 1.6v1.6c0 1.2-.4 2-2 2" />,
+  clock:     <><circle cx="8" cy="8" r="5.6" /><path d="M8 4.8V8l2.2 1.4" /></>,
+  hourglass: <path d="M4.4 2.6h7.2M4.4 13.4h7.2M5 2.6c0 3 3 3.4 3 5.4s-3 2.4-3 5.4M11 2.6c0 3-3 3.4-3 5.4s3 2.4 3 5.4" />,
+  link:      <path d="M6.9 9.1a2.6 2.6 0 0 0 3.7 0l2.2-2.2a2.6 2.6 0 0 0-3.7-3.7l-.6.6M9.1 6.9a2.6 2.6 0 0 0-3.7 0L3.2 9.1a2.6 2.6 0 0 0 3.7 3.7l.6-.6" />,
+  file:      <><path d="M4.2 2.4h5l3 3v7.2a1 1 0 0 1-1 1H4.2a1 1 0 0 1-1-1V3.4a1 1 0 0 1 1-1z" /><path d="M9.2 2.5v3h3M5.6 8.6h4.8M5.6 11h3.2" /></>,
+  table:     <><rect x="2.6" y="3.2" width="10.8" height="9.6" rx="1.4" /><path d="M2.6 6.6h10.8M2.6 9.8h10.8M7.2 6.6v6.2" /></>,
+  chart:     <path d="M2.8 2.8v10.4h10.4M5.4 10 8 6.8l2 2 3-4.2" />,
+  clipboard: <><rect x="3.6" y="3.4" width="8.8" height="10.2" rx="1.4" /><path d="M6 3.4v-.6a.6.6 0 0 1 .6-.6h2.8a.6.6 0 0 1 .6.6v.6M5.8 7.4h4.4M5.8 10h3" /></>,
+  search:    <><circle cx="7" cy="7" r="4.2" /><path d="M10.2 10.2l3.2 3.2" /></>,
+  chevUp:    <path d="M4 10l4-4 4 4" />,
+  chevDown:  <path d="M4 6l4 4 4-4" />,
+  chevLeft:  <path d="M10 4L6 8l4 4" />,
+  chevRight: <path d="M6 4l4 4-4 4" />,
+  arrowLeft: <path d="M13 8H3.4M7.4 4l-4 4 4 4" />,
+  enter:     <path d="M12.6 3.6v4.2a1 1 0 0 1-1 1H3.8M6.2 6.4 3.4 8.8l2.8 2.4" />,
+  refresh:   <path d="M13 8a5 5 0 1 1-1.5-3.55M13 2.8v2.8h-2.8" />,
+  globe:     <><circle cx="8" cy="8" r="5.6" /><path d="M2.4 8h11.2" /><ellipse cx="8" cy="8" rx="2.6" ry="5.6" /></>,
+  folder:    <path d="M2.6 4.4a1 1 0 0 1 1-1h2.7l1.4 1.6h4.7a1 1 0 0 1 1 1v5.6a1 1 0 0 1-1 1H3.6a1 1 0 0 1-1-1z" />,
+  key:       <><circle cx="5.4" cy="10.6" r="2.4" /><path d="M7.1 8.9 13 3M11 5l1.8 1.8" /></>,
+  plug:      <path d="M5.8 2.6v3M10.2 2.6v3M4.2 5.6h7.6v2.2a3.8 3.8 0 0 1-7.6 0zM8 11.6v2.2" />,
+  pin:       <><path d="M8 13.6s4.2-3.6 4.2-7a4.2 4.2 0 0 0-8.4 0c0 3.4 4.2 7 4.2 7z" /><circle cx="8" cy="6.6" r="1.5" /></>,
+  spark:     <path d="M8 2.4c.4 3.2 2.4 5.2 5.6 5.6-3.2.4-5.2 2.4-5.6 5.6-.4-3.2-2.4-5.2-5.6-5.6C5.6 7.6 7.6 5.6 8 2.4z" />,
+  bolt:      <path d="M9 2.4 4.2 9h3.6L7 13.6 11.8 7H8.2z" />,
+  ban:       <><circle cx="8" cy="8" r="5.6" /><path d="M4.1 4.1l7.8 7.8" /></>,
+  monitor:   <><rect x="2.4" y="3" width="11.2" height="7.6" rx="1.4" /><path d="M6 13.2h4M8 10.6v2.6" /></>,
+  terminal:  <path d="M3 4.4 6.6 8 3 11.6M8 12h5" />,
+  user:      <><circle cx="8" cy="5.6" r="2.7" /><path d="M2.9 13.4c.4-2.6 2.5-4.1 5.1-4.1s4.7 1.5 5.1 4.1" /></>,
+  eye:       <><path d="M1.6 8s2.4-4.6 6.4-4.6S14.4 8 14.4 8s-2.4 4.6-6.4 4.6S1.6 8 1.6 8z" /><circle cx="8" cy="8" r="1.9" /></>,
+  eyeOff:    <><path d="M1.6 8s2.4-4.6 6.4-4.6c1.1 0 2.1.3 3 .8M14.4 8s-2.4 4.6-6.4 4.6c-1.1 0-2.1-.3-3-.8" /><path d="M3 2.8l10 10.4" /></>,
+  grid:      <><rect x="2.8" y="2.8" width="4.2" height="4.2" rx="1" /><rect x="9" y="2.8" width="4.2" height="4.2" rx="1" /><rect x="2.8" y="9" width="4.2" height="4.2" rx="1" /><rect x="9" y="9" width="4.2" height="4.2" rx="1" /></>,
+};
+
+function Icon({ name, size = 14, stroke = 1.4, style }) {
+  return (
+    <svg
+      width={size} height={size} viewBox="0 0 16 16" fill="none"
+      stroke="currentColor" strokeWidth={stroke} strokeLinecap="round" strokeLinejoin="round"
+      style={{ display: "inline-block", verticalAlign: "-0.15em", flexShrink: 0, ...style }}
+      aria-hidden="true"
+    >
+      {ICONS[name]}
+    </svg>
   );
 }
 
@@ -2403,14 +2632,14 @@ function Toast({ message, type = "error", onDismiss }) {
         onClick={onDismiss}
         style={{ background: "none", border: "none", color: c.text, cursor: "pointer", fontSize: 18 }}
       >
-        ×
+        <Icon name="close" size={16} />
       </button>
     </div>
   );
 }
 
 // ── DEVICE GROUP ──────────────────────────────────────────────────────────────
-function DeviceGroup({ group, groupDevices, collapsed, onToggleCollapse, selectedDevices, onSelect, onSelectAll, onInfo, onAutoCollectionSave, onDropDevice, onRemoveDevice, onReorderDevice, onRename, onDelete, addToast, isUngrouped }) {
+function DeviceGroup({ group, groupDevices, collapsed, onToggleCollapse, selectedDevices, onSelect, onSelectAll, onInfo, onDropDevice, onRemoveDevice, onReorderDevice, onRename, onDelete, isUngrouped }) {
   const [dragOver, setDragOver] = useState(false);
   const [editingName, setEditingName] = useState(false);
   const [nameInput, setNameInput] = useState(group.name || "");
@@ -2501,11 +2730,11 @@ function DeviceGroup({ group, groupDevices, collapsed, onToggleCollapse, selecte
                 transform: isCollapsed ? "rotate(-90deg)" : "rotate(0deg)",
                 flexShrink: 0,
               }}
-            >▼</button>
+            ><Icon name="chevDown" size={12} /></button>
           )}
 
           {/* Drag-drop hint icon */}
-          <span style={{ fontSize: 14, opacity: 0.5 }}>⊞</span>
+          <span style={{ display: "inline-flex", opacity: 0.5 }}><Icon name="grid" size={14} /></span>
 
           {editingName ? (
             <input
@@ -2550,7 +2779,7 @@ function DeviceGroup({ group, groupDevices, collapsed, onToggleCollapse, selecte
               onClick={onDelete}
               title="Delete group"
               style={{ marginLeft: "auto", background: "none", border: "none", color: "var(--muted)", cursor: "pointer", fontSize: 14, padding: "2px 6px", opacity: 0.6 }}
-            >🗑</button>
+            ><Icon name="trash" size={14} /></button>
           )}
         </div>
       )}
@@ -2590,11 +2819,9 @@ function DeviceGroup({ group, groupDevices, collapsed, onToggleCollapse, selecte
                   selected={selectedDevices.includes(d.id)}
                   onSelect={(checked) => onSelect(d.id, checked)}
                   onInfo={() => onInfo(d)}
-                  onAutoCollectionSave={onAutoCollectionSave}
                   onDragStart={() => { setDragSrcId(d.id); }}
                   onDragEnd={() => { setDragSrcId(null); setDragOverId(null); }}
                   srcGroupId={group.id}
-                  addToast={addToast}
                 />
               </div>
             ))}
@@ -2606,41 +2833,13 @@ function DeviceGroup({ group, groupDevices, collapsed, onToggleCollapse, selecte
 }
 
 // ── DEVICE CARD ───────────────────────────────────────────────────────────────
-function DeviceCard({ device, selected, onSelect, onInfo, onAutoCollectionSave, onDragStart, onDragEnd, srcGroupId, addToast }) {
-  const [hovered,       setHovered]       = useState(false);
-  const [settingsOpen,  setSettingsOpen]  = useState(false);
-  const [autoEnabled,   setAutoEnabled]   = useState(device.autoCollectionEnabled ?? false);
-  const [intervalHours, setIntervalHours] = useState(device.autoCollectionInterval ?? 1);
-  const [saving,        setSaving]        = useState(false);
+function DeviceCard({ device, selected, onSelect, onInfo, onDragStart, onDragEnd, srcGroupId }) {
+  const [hovered, setHovered] = useState(false);
 
-  // Sync if device prop changes (e.g. after a poll refresh)
-  useEffect(() => {
-    setAutoEnabled(device.autoCollectionEnabled ?? false);
-    setIntervalHours(device.autoCollectionInterval ?? 1);
-  }, [device.autoCollectionEnabled, device.autoCollectionInterval]);
-
-  const saveAutoCollection = async () => {
-    setSaving(true);
-    try {
-      await apiFetch("/api/settings/auto-collection", {
-        method: "POST",
-        body: JSON.stringify({ enabled: autoEnabled, interval_hours: intervalHours, device_ids: [device.id] }),
-      });
-      onAutoCollectionSave?.(device.id, autoEnabled, intervalHours);
-      addToast?.(
-        autoEnabled
-          ? `Auto-collection on "${device.name}" — every ${intervalHours}h.`
-          : `Auto-collection disabled for "${device.name}".`,
-        "success"
-      );
-    } catch (e) {
-      addToast?.(`Failed to save: ${e.message}`);
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const INTERVALS = [1, 2, 4, 6, 12, 24];
+  // Auto-collection is edited inside the Device Details modal; the card only
+  // reflects the current state via the badge below.
+  const autoEnabled   = device.autoCollectionEnabled ?? false;
+  const intervalHours = device.autoCollectionInterval ?? 1;
 
   return (
     <div
@@ -2675,9 +2874,9 @@ function DeviceCard({ device, selected, onSelect, onInfo, onAutoCollectionSave, 
           style={{ position: "absolute", top: 12, left: 12, width: 16, height: 16, accentColor: "var(--accent)", cursor: "pointer" }}
         />
 
-        {/* Info + Settings toggle buttons */}
+        {/* Single gear → full device details (incl. auto-collection) */}
         <div style={{ position: "absolute", top: 10, right: 10, display: "flex", alignItems: "center", gap: 4 }}>
-          {/* Pcap collection ongoing indicator — shown left of the info button
+          {/* Pcap collection ongoing indicator — shown left of the gear button
               whenever this device is collecting AND has a packets_capture_config.
               Rendered as an animated triangular dorsal fin (as seen breaking
               the water's surface) evoking Wireshark. */}
@@ -2706,26 +2905,7 @@ function DeviceCard({ device, selected, onSelect, onInfo, onAutoCollectionSave, 
       </svg>
         </span>
       )}
-          <button
-            onClick={onInfo}
-            title="Device details"
-            style={{ background: "rgba(255,255,255,0.05)", border: "1px solid var(--border)", borderRadius: 6, color: "var(--muted)", cursor: "pointer", fontSize: 13, padding: "2px 7px" }}
-          >
-            ℹ
-          </button>
-          <button
-            onClick={() => setSettingsOpen(v => !v)}
-            title="Auto-collection settings"
-            style={{
-              background: settingsOpen ? "rgba(129,140,248,0.15)" : "rgba(255,255,255,0.05)",
-              border: `1px solid ${settingsOpen ? "rgba(129,140,248,0.4)" : "var(--border)"}`,
-              borderRadius: 6, color: settingsOpen ? "var(--accent)" : "var(--muted)",
-              cursor: "pointer", fontSize: 13, padding: "2px 7px",
-              transition: "all 0.15s",
-            }}
-          >
-            ⚙
-          </button>
+          <GearBtn onClick={onInfo} title="Device details & auto-collection settings" />
         </div>
 
         <div style={{ marginTop: 20, marginBottom: 10, fontFamily: "var(--font-display)", fontSize: 15, fontWeight: 700, color: "var(--text)", letterSpacing: "0.03em" }}>
@@ -2753,65 +2933,9 @@ function DeviceCard({ device, selected, onSelect, onInfo, onAutoCollectionSave, 
           </div>
         )}
 
-        {/* Network capture indicator now lives solely next to the info button above. */}
+        {/* Network capture indicator now lives solely next to the gear button above. */}
       </div>
 
-      {/* ── Auto-collection settings panel ── */}
-      {settingsOpen && (
-        <div style={{
-          borderTop: "1px solid var(--border)",
-          padding: "14px 14px 12px",
-          background: "rgba(0,0,0,0.18)",
-        }}>
-          {/* Enable toggle */}
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
-            <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--muted)" }}>Auto-collection</span>
-            <Toggle checked={autoEnabled} onChange={setAutoEnabled} />
-          </div>
-
-          {/* Interval grid */}
-          <div style={{ opacity: autoEnabled ? 1 : 0.4, pointerEvents: autoEnabled ? "auto" : "none", transition: "opacity 0.15s" }}>
-            <div style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 7 }}>
-              Interval
-            </div>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 5 }}>
-              {INTERVALS.map(h => {
-                const active = intervalHours === h;
-                return (
-                  <button key={h} onClick={() => setIntervalHours(h)}
-                    style={{
-                      padding: "6px 0", borderRadius: 6, border: "1px solid",
-                      fontFamily: "var(--font-mono)", fontSize: 11, fontWeight: 600,
-                      cursor: "pointer", textAlign: "center",
-                      background: active ? "rgba(129,140,248,0.16)" : "rgba(255,255,255,0.03)",
-                      color: active ? "var(--accent)" : "var(--muted)",
-                      borderColor: active ? "rgba(129,140,248,0.45)" : "var(--border)",
-                      transition: "all 0.12s",
-                    }}>
-                    {h}h
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
-          {/* Save button */}
-          <button
-            onClick={saveAutoCollection}
-            disabled={saving}
-            style={{
-              marginTop: 11, width: "100%", padding: "7px 0",
-              borderRadius: 7, border: "1px solid rgba(129,140,248,0.35)",
-              background: "rgba(129,140,248,0.12)", color: "var(--accent)",
-              fontFamily: "var(--font-mono)", fontSize: 11, fontWeight: 600,
-              cursor: saving ? "not-allowed" : "pointer", opacity: saving ? 0.6 : 1,
-              transition: "all 0.15s",
-            }}
-          >
-            {saving ? "Saving…" : "💾 Save"}
-          </button>
-        </div>
-      )}
     </div>
   );
 }
@@ -2829,7 +2953,7 @@ function StatusRow({ label, ok, pulseWhenTrue }) {
         }}
       />
       <span style={{ color: "var(--muted)" }}>{label}</span>
-      <span style={{ marginLeft: "auto", color: ok ? "#4ade80" : "#cb0f0f", fontSize: 16 }}>{ok ? "✔" : "✖"}</span>
+      <span style={{ marginLeft: "auto", color: ok ? "#4ade80" : "#cb0f0f", display: "inline-flex" }}><Icon name={ok ? "check" : "close"} size={15} stroke={1.8} /></span>
     </div>
   );
 }
@@ -2873,7 +2997,7 @@ function SnapshotsPagination({ page, totalPages, total, pageSize, onPage }) {
     }}>
       <span>{total === 0 ? "No results" : `${from}–${to} of ${total}`}</span>
       <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
-        <button style={btnStyle(false, page <= 1)} onClick={() => page > 1 && onPage(page - 1)} disabled={page <= 1}>‹ Prev</button>
+        <button style={btnStyle(false, page <= 1)} onClick={() => page > 1 && onPage(page - 1)} disabled={page <= 1}><Icon name="chevLeft" size={12} style={{ marginRight: 4 }} />Prev</button>
         {pages.map((p, i) =>
           p === "..." ? (
             <span key={`e${i}`} style={{ padding: "0 4px", color: "var(--muted)" }}>…</span>
@@ -2881,7 +3005,7 @@ function SnapshotsPagination({ page, totalPages, total, pageSize, onPage }) {
             <button key={p} style={btnStyle(p === page, false)} onClick={() => p !== page && onPage(p)}>{p}</button>
           )
         )}
-        <button style={btnStyle(false, page >= totalPages)} onClick={() => page < totalPages && onPage(page + 1)} disabled={page >= totalPages}>Next ›</button>
+        <button style={btnStyle(false, page >= totalPages)} onClick={() => page < totalPages && onPage(page + 1)} disabled={page >= totalPages}>Next<Icon name="chevRight" size={12} style={{ marginLeft: 4 }} /></button>
       </div>
     </div>
   );
@@ -3188,7 +3312,7 @@ requests.post(f"{BASE}/api/stop-logs-collection",
             borderTop: "1px solid var(--border)", borderRadius: "6px 0 0 6px",
           }}
         >
-          <span style={{ fontSize: 14 }}>🐍</span>
+          <span style={{ display: "inline-flex", color: "var(--accent)" }}><Icon name="terminal" size={14} /></span>
           <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: active === endpoints.length ? "var(--text)" : "var(--muted)" }}>
             Python example
           </span>
@@ -3213,7 +3337,7 @@ requests.post(f"{BASE}/api/stop-logs-collection",
               </code>
               <button onClick={() => copy(ep.path, "path")}
                 style={{ marginLeft: "auto", background: "transparent", border: "none", cursor: "pointer", color: "var(--muted)", fontSize: 12, fontFamily: "var(--font-mono)", padding: "3px 8px" }}>
-                {copied === "path" ? "✓ copied" : "copy"}
+                {copied === "path" ? <><Icon name="check" size={11} style={{ marginRight: 4 }} />copied</> : "copy"}
               </button>
             </div>
 
@@ -3229,7 +3353,7 @@ requests.post(f"{BASE}/api/stop-logs-collection",
                   <span>Request Body</span>
                   <button onClick={() => copy(ep.req, "req")}
                     style={{ background: "transparent", border: "none", cursor: "pointer", color: "var(--muted)", fontSize: 11, fontFamily: "var(--font-mono)" }}>
-                    {copied === "req" ? "✓ copied" : "copy"}
+                    {copied === "req" ? <><Icon name="check" size={11} style={{ marginRight: 4 }} />copied</> : "copy"}
                   </button>
                 </div>
                 <pre style={{
@@ -3247,7 +3371,7 @@ requests.post(f"{BASE}/api/stop-logs-collection",
                 <span>Response</span>
                 <button onClick={() => copy(ep.res, "res")}
                   style={{ background: "transparent", border: "none", cursor: "pointer", color: "var(--muted)", fontSize: 11, fontFamily: "var(--font-mono)" }}>
-                  {copied === "res" ? "✓ copied" : "copy"}
+                  {copied === "res" ? <><Icon name="check" size={11} style={{ marginRight: 4 }} />copied</> : "copy"}
                 </button>
               </div>
               <pre style={{
@@ -3267,11 +3391,11 @@ requests.post(f"{BASE}/api/stop-logs-collection",
           /* Python example panel */
           <>
             <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-              <span style={{ fontSize: 18 }}>🐍</span>
+              <span style={{ display: "inline-flex", color: "var(--accent)" }}><Icon name="terminal" size={18} /></span>
               <span style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 14, color: "var(--text)" }}>Python Quick-Start</span>
               <button onClick={() => copy(pyCode, "py")}
                 style={{ marginLeft: "auto", background: "var(--accent-dim)", border: "1px solid var(--accent-border)", borderRadius: 6, cursor: "pointer", color: "var(--accent)", fontSize: 11, fontFamily: "var(--font-mono)", padding: "4px 12px" }}>
-                {copied === "py" ? "✓ Copied" : "Copy"}
+                {copied === "py" ? <><Icon name="check" size={11} style={{ marginRight: 4 }} />Copied</> : "Copy"}
               </button>
             </div>
             <p style={{ color: "var(--muted)", fontSize: 12, margin: 0, fontFamily: "var(--font-mono)", lineHeight: 1.7 }}>
@@ -3324,8 +3448,41 @@ function StatusPill({ label, ok, onLabel, offLabel, pulse }) {
   );
 }
 
-function DeviceDetails({ device, isAdmin, onRequestLogin, onEdit }) {
+function DeviceDetails({ device, isAdmin, onRequestLogin, onEdit, onAutoCollectionSave, addToast }) {
   const [configVisible, setConfigVisible] = useState(false);
+  // Auto logs collection (moved here from the device card gear panel)
+  const AUTO_INTERVALS = [1, 2, 4, 6, 12, 24];
+  const [autoEnabled,   setAutoEnabled]   = useState(device.autoCollectionEnabled ?? false);
+  const [intervalHours, setIntervalHours] = useState(device.autoCollectionInterval ?? 1);
+  const [savedAuto,     setSavedAuto]     = useState({
+    enabled:  device.autoCollectionEnabled ?? false,
+    interval: device.autoCollectionInterval ?? 1,
+  });
+  const [autoSaving, setAutoSaving] = useState(false);
+  const autoDirty = autoEnabled !== savedAuto.enabled || (autoEnabled && intervalHours !== savedAuto.interval);
+
+  const saveAutoCollection = async () => {
+    setAutoSaving(true);
+    try {
+      await apiFetch("/api/settings/auto-collection", {
+        method: "POST",
+        body: JSON.stringify({ enabled: autoEnabled, interval_hours: intervalHours, device_ids: [device.id] }),
+      });
+      setSavedAuto({ enabled: autoEnabled, interval: intervalHours });
+      onAutoCollectionSave?.(device.id, autoEnabled, intervalHours);
+      addToast?.(
+        autoEnabled
+          ? `Auto-collection on "${device.name}" — every ${intervalHours}h.`
+          : `Auto-collection disabled for "${device.name}".`,
+        "success"
+      );
+    } catch (e) {
+      addToast?.(`Failed to save: ${e.message}`);
+    } finally {
+      setAutoSaving(false);
+    }
+  };
+
   const [errors, setErrors] = useState(null);
   const [errorsLoading, setErrorsLoading] = useState(false);
   const [errorsLoadError, setErrorsLoadError] = useState(null);
@@ -3466,8 +3623,85 @@ function DeviceDetails({ device, isAdmin, onRequestLogin, onEdit }) {
             disabled={!device.id}
             style={{ flexShrink: 0 }}
           >
-            {idCopied ? "✓ Copied" : "⧉ Copy"}
+            {idCopied ? <><Icon name="check" size={12} />Copied</> : <><Icon name="copy" size={12} />Copy</>}
           </Btn>
+        </div>
+      </div>
+
+      {/* Auto logs collection */}
+      <div style={{ borderTop: "1px solid var(--border)", paddingTop: 18 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 12 }}>
+          <h4 style={{ fontFamily: "var(--font-display)", fontSize: 13, color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.08em", margin: 0, display: "flex", alignItems: "center", gap: 7 }}>
+            <Icon name="clock" size={14} /> Auto Logs Collection
+          </h4>
+          {autoEnabled && !autoDirty && (
+            <span style={{
+              display: "inline-flex", alignItems: "center", gap: 5,
+              background: "rgba(129,140,248,0.13)", border: "1px solid rgba(129,140,248,0.35)",
+              borderRadius: 20, padding: "3px 9px",
+              fontFamily: "var(--font-mono)", fontSize: 10, fontWeight: 600, color: "var(--accent)",
+            }}>
+              <span style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--accent)", boxShadow: "0 0 5px var(--accent)", display: "inline-block" }} />
+              Auto collection - {savedAuto.interval}h
+            </span>
+          )}
+        </div>
+
+        <div style={{
+          background: "rgba(0,0,0,0.18)", border: "1px solid var(--border)", borderRadius: 10,
+          padding: "16px 18px", display: "flex", flexDirection: "column", gap: 14,
+        }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+            <span style={{ fontFamily: "var(--font-mono)", fontSize: 12, color: "var(--muted)" }}>
+              Collect logs for this device on a schedule
+            </span>
+            <Toggle checked={autoEnabled} onChange={setAutoEnabled} />
+          </div>
+
+          <div style={{ opacity: autoEnabled ? 1 : 0.4, pointerEvents: autoEnabled ? "auto" : "none", transition: "opacity 0.15s" }}>
+            <div style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 8 }}>
+              Interval
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(6, minmax(0, 1fr))", gap: 6, maxWidth: 420 }}>
+              {AUTO_INTERVALS.map((h) => {
+                const active = intervalHours === h;
+                return (
+                  <button
+                    key={h}
+                    onClick={() => setIntervalHours(h)}
+                    style={{
+                      padding: "7px 0", borderRadius: 6, border: "1px solid",
+                      fontFamily: "var(--font-mono)", fontSize: 12, fontWeight: 600,
+                      cursor: "pointer", textAlign: "center",
+                      background: active ? "rgba(129,140,248,0.16)" : "rgba(255,255,255,0.03)",
+                      color: active ? "var(--accent)" : "var(--muted)",
+                      borderColor: active ? "rgba(129,140,248,0.45)" : "var(--border)",
+                      transition: "all 0.12s",
+                    }}
+                  >
+                    {h}h
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div style={{ display: "flex", justifyContent: "flex-end" }}>
+            <button
+              onClick={saveAutoCollection}
+              disabled={autoSaving || !autoDirty}
+              style={{
+                padding: "7px 18px", borderRadius: 7, border: "1px solid rgba(129,140,248,0.35)",
+                background: "rgba(129,140,248,0.12)", color: "var(--accent)",
+                fontFamily: "var(--font-mono)", fontSize: 11, fontWeight: 600,
+                cursor: autoSaving || !autoDirty ? "not-allowed" : "pointer",
+                opacity: autoSaving || !autoDirty ? 0.5 : 1,
+                transition: "all 0.15s",
+              }}
+            >
+              {autoSaving ? "Saving…" : <><Icon name="save" size={12} style={{ marginRight: 6 }} />Save</>}
+            </button>
+          </div>
         </div>
       </div>
 
@@ -3475,16 +3709,16 @@ function DeviceDetails({ device, isAdmin, onRequestLogin, onEdit }) {
       <div style={{ borderTop: "1px solid var(--border)", paddingTop: 18 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 10 }}>
           <h4 style={{ fontFamily: "var(--font-display)", fontSize: 13, color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.08em", margin: 0, display: "flex", alignItems: "center", gap: 7 }}>
-            <span style={{ fontSize: 13 }}>🛠️</span> JSON Configuration
+            <Icon name="sliders" size={14} /> JSON Configuration
           </h4>
-          <Btn size="sm" variant={isAdmin ? "subtle" : "admin"} onClick={handleShowConfig}>
+          <Btn size="sm" variant={isAdmin ? "subtle" : "admin"} onClick={handleShowConfig} style={{ display: "inline-flex", alignItems: "center", gap: isAdmin ? 0 : 7 }}>
             {isAdmin
               ? configVisible ? "Hide" : "Show"
-              : "🔐 Admin only"}
+              : (<><IconLock size={11} /> Admin only</>)}
           </Btn>
           {isAdmin && (
             <Btn size="sm" variant="primary" onClick={() => onEdit(device)}>
-              ✏️ Edit Config
+              <Icon name="edit" size={12} />Edit Config
             </Btn>
           )}
         </div>
@@ -3504,7 +3738,7 @@ function DeviceDetails({ device, isAdmin, onRequestLogin, onEdit }) {
               color: "#a78bfa",
             }}
           >
-            <span style={{ fontSize: 22 }}>🔒</span>
+            <span style={{ display: "inline-flex", color: "#a78bfa", flexShrink: 0 }}><IconLock size={20} /></span>
             <div>
               <div style={{ fontWeight: 600, marginBottom: 4 }}>Configuration is restricted</div>
               <div style={{ color: "var(--muted)" }}>Sign in as admin to view the raw device JSON configuration.</div>
@@ -3542,7 +3776,7 @@ function DeviceDetails({ device, isAdmin, onRequestLogin, onEdit }) {
       <div style={{ borderTop: "1px solid var(--border)", paddingTop: 18 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 10 }}>
           <h4 style={{ fontFamily: "var(--font-display)", fontSize: 13, color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.08em", margin: 0, display: "flex", alignItems: "center", gap: 7 }}>
-            <span style={{ fontSize: 13 }}>⚠️</span> Error Logs
+            <Icon name="warn" size={14} /> Error Logs
           </h4>
           {errors !== null && errors.length > 0 && (
             <span style={{
@@ -3902,9 +4136,9 @@ function LogEntryEditor({ entry, conn, index, onChange, onRemove, onDuplicate })
 
   // Tab config
   const TABS = [
-    { key: "collect",    icon: "▶", label: "collect",    cmdKey: "log_file_cmd",        hint: "Command that fetches log data" },
-    { key: "activate",   icon: "⚡", label: "activate",   cmdKey: "log_activation_cmd",  hint: "Runs before collection. Must exit 0 to enable. Use `true` to always enable." },
-    { key: "deactivate", icon: "⛔", label: "deactivate", cmdKey: "log_deactivation_cmd", hint: "Runs on collection stop to disable the log source. Optional." },
+    { key: "collect",    icon: "play", label: "collect",    cmdKey: "log_file_cmd",        hint: "Command that fetches log data" },
+    { key: "activate",   icon: "bolt", label: "activate",   cmdKey: "log_activation_cmd",  hint: "Runs before collection. Must exit 0 to enable. Use `true` to always enable." },
+    { key: "deactivate", icon: "ban", label: "deactivate", cmdKey: "log_deactivation_cmd", hint: "Runs on collection stop to disable the log source. Optional." },
   ];
   const currentTab = TABS.find(t => t.key === activeTab);
 
@@ -3986,9 +4220,9 @@ function LogEntryEditor({ entry, conn, index, onChange, onRemove, onDuplicate })
 
         {/* badges */}
         <Badge color={logTypeColors[entry.log_type] || "default"}>{entry.log_type}</Badge>
-        {outputs.collect    && <Badge color="green">collect ✔</Badge>}
-        {outputs.activate   && <Badge color="cyan">activate ✔</Badge>}
-        {outputs.deactivate && <Badge color="violet">deactivate ✔</Badge>}
+        {outputs.collect    && <Badge color="green">collect <Icon name="check" size={10} stroke={1.8} style={{ marginLeft: 2 }} /></Badge>}
+        {outputs.activate   && <Badge color="cyan">activate <Icon name="check" size={10} stroke={1.8} style={{ marginLeft: 2 }} /></Badge>}
+        {outputs.deactivate && <Badge color="violet">deactivate <Icon name="check" size={10} stroke={1.8} style={{ marginLeft: 2 }} /></Badge>}
         {entry.data_extraction_regex && !reErr && matchCount && (
           <Badge color={matchCount.matched > 0 ? "green" : "red"}>
             {matchCount.matched}/{matchCount.total} lines
@@ -3996,10 +4230,10 @@ function LogEntryEditor({ entry, conn, index, onChange, onRemove, onDuplicate })
         )}
 
         <button onClick={e => { e.stopPropagation(); onDuplicate(); }} title="Duplicate"
-          style={{ background: "none", border: "none", cursor: "pointer", color: "var(--muted)", fontSize: 13, padding: "2px 6px" }}>⎘</button>
+          style={{ background: "none", border: "none", cursor: "pointer", color: "var(--muted)", fontSize: 13, padding: "2px 6px" }}><Icon name="copy" size={13} /></button>
         <button onClick={e => { e.stopPropagation(); onRemove(); }} title="Remove"
-          style={{ background: "none", border: "none", cursor: "pointer", color: "#f87171", fontSize: 15, padding: "2px 6px" }}>×</button>
-        <span style={{ color: "var(--muted)", fontSize: 10 }}>{expanded ? "▲" : "▼"}</span>
+          style={{ background: "none", border: "none", cursor: "pointer", color: "#f87171", fontSize: 15, padding: "2px 6px" }}><Icon name="close" size={13} /></button>
+        <span style={{ color: "var(--muted)", display: "inline-flex" }}><Icon name={expanded ? "chevUp" : "chevDown"} size={12} /></span>
       </div>
 
       {expanded && (
@@ -4023,7 +4257,7 @@ function LogEntryEditor({ entry, conn, index, onChange, onRemove, onDuplicate })
                     color: entry.log_type === t ? (t === "text" ? "#22d3ee" : "#a78bfa") : "var(--muted)",
                     borderColor: entry.log_type === t ? (t === "text" ? "rgba(34,211,238,0.4)" : "rgba(167,139,250,0.4)") : "var(--border)",
                     transition: "all 0.12s",
-                  }}>{t === "text" ? "📄 text" : "📈 chart"}</button>
+                  }}>{t === "text" ? <><Icon name="file" size={12} style={{ marginRight: 6 }} />text</> : <><Icon name="chart" size={12} style={{ marginRight: 6 }} />chart</>}</button>
                 ))}
               </div>
             </div>
@@ -4105,7 +4339,7 @@ function LogEntryEditor({ entry, conn, index, onChange, onRemove, onDuplicate })
                     outputs[tab.key] != null,
                     !!errors[tab.key],
                   )}>
-                  <span>{tab.icon}</span>
+                  <Icon name={tab.icon} size={11} />
                   <span>{tab.label}</span>
                   {running === tab.key && (
                     <svg width="9" height="9" viewBox="0 0 9 9" style={{ animation: "spin 1s linear infinite", flexShrink: 0 }}>
@@ -4114,7 +4348,7 @@ function LogEntryEditor({ entry, conn, index, onChange, onRemove, onDuplicate })
                   )}
                   {outputs[tab.key] != null && running !== tab.key && (
                     <span style={{ fontSize: 9, color: errors[tab.key] ? "#f87171" : "#4ade80" }}>
-                      {errors[tab.key] ? "✖" : "✔"}
+                      <Icon name={errors[tab.key] ? "close" : "check"} size={10} stroke={2} />
                     </span>
                   )}
                 </button>
@@ -4140,7 +4374,7 @@ function LogEntryEditor({ entry, conn, index, onChange, onRemove, onDuplicate })
                   <><svg width="9" height="9" viewBox="0 0 9 9" style={{ animation: "spin 1s linear infinite" }}>
                     <circle cx="4.5" cy="4.5" r="3.5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeDasharray="11" strokeDashoffset="5.5" />
                   </svg> running</>
-                ) : "run ↵"}
+                ) : <>run <Icon name="enter" size={11} /></>}
               </button>
             </div>
 
@@ -4150,7 +4384,7 @@ function LogEntryEditor({ entry, conn, index, onChange, onRemove, onDuplicate })
                 fontFamily: "var(--font-mono)", fontSize: 11, color: "#f87171",
                 background: "rgba(248,113,113,0.07)", borderTop: "1px solid rgba(248,113,113,0.15)",
                 padding: "6px 14px",
-              }}>⚠ {errors[activeTab]}</div>
+              }}><Icon name="warn" size={12} style={{ marginRight: 6 }} />{errors[activeTab]}</div>
             )}
 
             {/* Output area */}
@@ -4169,7 +4403,7 @@ function LogEntryEditor({ entry, conn, index, onChange, onRemove, onDuplicate })
               }}>
                 {running === activeTab
                   ? "executing…"
-                  : `press run ↵ to test ${activeTab} command`}
+                  : <>press run <Icon name="enter" size={11} /> to test {activeTab} command</>}
               </div>
             )}
           </div>
@@ -4194,7 +4428,7 @@ function LogEntryEditor({ entry, conn, index, onChange, onRemove, onDuplicate })
                     border: `1px solid ${matchCount.matched > 0 ? "rgba(74,222,128,0.2)" : "rgba(248,113,113,0.2)"}`,
                     borderRadius: 4, padding: "2px 7px",
                   }}>
-                    {matchCount.matched > 0 ? `✔ ${matchCount.matched}/${matchCount.total} lines matched` : `✖ 0/${matchCount.total} matched`}
+                    {matchCount.matched > 0 ? <><Icon name="check" size={11} stroke={1.8} style={{ marginRight: 5 }} />{matchCount.matched}/{matchCount.total} lines matched</> : <><Icon name="close" size={11} stroke={1.8} style={{ marginRight: 5 }} />0/{matchCount.total} matched</>}
                   </span>
                 )}
                 <div style={{ flex: 1 }} />
@@ -4204,17 +4438,17 @@ function LogEntryEditor({ entry, conn, index, onChange, onRemove, onDuplicate })
                   onClick={() => setMarkMode(markMode === "TIME" ? null : "TIME")}
                   style={S.markBtn(markMode === "TIME", "#f59e0b")}
                 >
-                  {timeSpan ? `TIME: "${timeSpan.text.slice(0,16)}${timeSpan.text.length>16?"…":""}"` : "⏱ mark TIME"}
+                  {timeSpan ? `TIME: "${timeSpan.text.slice(0,16)}${timeSpan.text.length>16?"…":""}"` : <><Icon name="clock" size={11} style={{ marginRight: 5 }} />mark TIME</>}
                 </button>
                 <button
                   onClick={() => setMarkMode(markMode === "ENTRY" ? null : "ENTRY")}
                   style={S.markBtn(markMode === "ENTRY", "#86efac")}
                 >
-                  {entrySpan ? `ENTRY: "${entrySpan.text.slice(0,16)}${entrySpan.text.length>16?"…":""}"` : "📌 mark ENTRY"}
+                  {entrySpan ? `ENTRY: "${entrySpan.text.slice(0,16)}${entrySpan.text.length>16?"…":""}"` : <><Icon name="pin" size={11} style={{ marginRight: 5 }} />mark ENTRY</>}
                 </button>
                 {(timeSpan || entrySpan) && (
                   <button onClick={clearSpans} style={{ background: "none", border: "none", color: "#374151", fontFamily: "var(--font-mono)", fontSize: 10, cursor: "pointer", padding: "2px 4px" }}>
-                    ✕ clear
+                    <Icon name="close" size={10} style={{ marginRight: 4 }} />clear
                   </button>
                 )}
               </div>
@@ -4228,7 +4462,7 @@ function LogEntryEditor({ entry, conn, index, onChange, onRemove, onDuplicate })
                   border: `1px solid ${markMode === "TIME" ? "rgba(245,158,11,0.25)" : "rgba(134,239,172,0.2)"}`,
                   borderRadius: 5, padding: "6px 10px", marginBottom: 8,
                 }}>
-                  ✦ Select the <strong>{markMode}</strong> portion in the terminal output above, then release.
+                  <Icon name="spark" size={12} style={{ marginRight: 6 }} />Select the <strong>{markMode}</strong> portion in the terminal output above, then release.
                   {markMode === "TIME" ? " This will capture the timestamp." : " This will capture the log value/content."}
                 </div>
               )}
@@ -4248,7 +4482,7 @@ function LogEntryEditor({ entry, conn, index, onChange, onRemove, onDuplicate })
               />
               {reErr && (
                 <div style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "#f87171", marginTop: 5 }}>
-                  ⚠ {reErr}
+                  <Icon name="warn" size={12} style={{ marginRight: 6 }} />{reErr}
                 </div>
               )}
               <div style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "#1f2937", marginTop: 5 }}>
@@ -4541,7 +4775,7 @@ function ConfigBuilderModal({ open, onClose, onSave, initialDevice }) {
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "20px 28px", borderBottom: "1px solid var(--border)", flexShrink: 0, background: "rgba(129,140,248,0.03)" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
             <div style={{ width: 38, height: 38, borderRadius: 10, background: "linear-gradient(135deg, rgba(129,140,248,0.2) 0%, rgba(167,139,250,0.12) 100%)", border: "1px solid rgba(129,140,248,0.3)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, boxShadow: "0 2px 8px rgba(129,140,248,0.15)" }}>
-              🛠
+              <span style={{ display: "inline-flex", color: "var(--accent)" }}><Icon name="sliders" size={19} /></span>
             </div>
             <div>
               <div style={{ fontFamily: "var(--font-display)", fontWeight: 800, fontSize: 17, color: "var(--text)", letterSpacing: "0.02em" }}>
@@ -4555,14 +4789,14 @@ function ConfigBuilderModal({ open, onClose, onSave, initialDevice }) {
           <button onClick={onClose} style={{ background: "rgba(255,255,255,0.06)", border: "1px solid var(--border)", borderRadius: 8, color: "var(--muted)", cursor: "pointer", fontSize: 18, lineHeight: 1, padding: "5px 9px", transition: "all 0.15s" }}
             onMouseEnter={e => e.currentTarget.style.color = "var(--text)"}
             onMouseLeave={e => e.currentTarget.style.color = "var(--muted)"}
-          >×</button>
+          ><Icon name="close" size={16} /></button>
         </div>
 
         {/* Step tabs */}
         <div style={{ display: "flex", borderBottom: "1px solid var(--border)", flexShrink: 0 }}>
           <button style={stepTabStyle(1)} onClick={() => setStep(1)}>
             <span style={{ width: 20, height: 20, borderRadius: "50%", background: step > 1 ? "rgba(74,222,128,0.2)" : "rgba(129,140,248,0.15)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontWeight: 800, color: step > 1 ? "#4ade80" : "var(--accent)" }}>
-              {step > 1 ? "✔" : "1"}
+              {step > 1 ? <Icon name="check" size={11} stroke={2} /> : "1"}
             </span>
             Connection
           </button>
@@ -4608,7 +4842,7 @@ function ConfigBuilderModal({ open, onClose, onSave, initialDevice }) {
                         color: conn.authMode === mode ? "var(--accent)" : "var(--muted)",
                         transition: "all 0.12s",
                       }}>
-                        {mode === "password" ? "🔑 Password" : "📄 SSH Key"}
+                        {mode === "password" ? <><Icon name="key" size={12} style={{ marginRight: 6 }} />Password</> : <><Icon name="file" size={12} style={{ marginRight: 6 }} />SSH Key</>}
                       </button>
                     ))}
                   </div>
@@ -4683,7 +4917,7 @@ function ConfigBuilderModal({ open, onClose, onSave, initialDevice }) {
                       <><svg width="11" height="11" viewBox="0 0 11 11" style={{ animation: "spin 1s linear infinite" }}>
                         <circle cx="5.5" cy="5.5" r="4.5" fill="none" stroke="var(--accent)" strokeWidth="1.6" strokeDasharray="14" strokeDashoffset="7" />
                       </svg> Testing…</>
-                    ) : "🔌 Test Connection"}
+                    ) : <><Icon name="plug" size={12} style={{ marginRight: 6 }} />Test Connection</>}
                   </button>
 
                   {connStatus && connStatus !== "testing" && (
@@ -4695,7 +4929,7 @@ function ConfigBuilderModal({ open, onClose, onSave, initialDevice }) {
                       border: `1px solid ${connStatus.success ? "rgba(74,222,128,0.25)" : "rgba(248,113,113,0.25)"}`,
                       borderRadius: 7, padding: "7px 13px",
                     }}>
-                      {connStatus.success ? "✔" : "✖"} {connStatus.message}
+                      <Icon name={connStatus.success ? "check" : "close"} size={13} stroke={1.8} />{connStatus.message}
                     </div>
                   )}
                 </div>
@@ -4745,9 +4979,9 @@ function ConfigBuilderModal({ open, onClose, onSave, initialDevice }) {
                           </span>
                         )}
                         <div style={{ marginLeft: "auto", display: "flex", gap: 4 }}>
-                          <button onClick={moveUp}   disabled={hi === 0}                        title="Move up"   style={{ background: "none", border: "none", color: hi === 0 ? "var(--border)" : "var(--muted)", cursor: hi === 0 ? "default" : "pointer", fontSize: 13, padding: "2px 5px" }}>▲</button>
-                          <button onClick={moveDown} disabled={hi === conn.gateways.length - 1} title="Move down" style={{ background: "none", border: "none", color: hi === conn.gateways.length - 1 ? "var(--border)" : "var(--muted)", cursor: hi === conn.gateways.length - 1 ? "default" : "pointer", fontSize: 13, padding: "2px 5px" }}>▼</button>
-                          <button onClick={removeHop} title="Remove" style={{ background: "none", border: "none", color: "#f87171", cursor: "pointer", fontSize: 15, padding: "2px 5px" }}>×</button>
+                          <button onClick={moveUp}   disabled={hi === 0}                        title="Move up"   style={{ background: "none", border: "none", color: hi === 0 ? "var(--border)" : "var(--muted)", cursor: hi === 0 ? "default" : "pointer", fontSize: 13, padding: "2px 5px" }}><Icon name="chevUp" size={12} /></button>
+                          <button onClick={moveDown} disabled={hi === conn.gateways.length - 1} title="Move down" style={{ background: "none", border: "none", color: hi === conn.gateways.length - 1 ? "var(--border)" : "var(--muted)", cursor: hi === conn.gateways.length - 1 ? "default" : "pointer", fontSize: 13, padding: "2px 5px" }}><Icon name="chevDown" size={12} /></button>
+                          <button onClick={removeHop} title="Remove" style={{ background: "none", border: "none", color: "#f87171", cursor: "pointer", fontSize: 15, padding: "2px 5px" }}><Icon name="close" size={13} /></button>
                         </div>
                       </div>
                       {/* Hop fields */}
@@ -4825,7 +5059,7 @@ function ConfigBuilderModal({ open, onClose, onSave, initialDevice }) {
             <div>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
                 <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--muted)" }}>
-                  {entries.length} log entr{entries.length === 1 ? "y" : "ies"} · Click ▶ Run on Device to test each command live
+                  {entries.length} log entr{entries.length === 1 ? "y" : "ies"} · Click <Icon name="play" size={9} style={{ marginLeft: 2, marginRight: 2 }} /> Run on Device to test each command live
                 </div>
                 <div style={{ display: "flex", gap: 8 }}>
                   <button
@@ -4967,7 +5201,7 @@ function ConfigBuilderModal({ open, onClose, onSave, initialDevice }) {
                 onClick={downloadConfig}
                 style={{ background: "rgba(255,255,255,0.04)", border: "1px solid var(--border)", borderRadius: 7, color: "var(--muted)", fontFamily: "var(--font-mono)", fontSize: 12, padding: "8px 14px", cursor: "pointer", display: "flex", alignItems: "center", gap: 6 }}
               >
-                ⬇ Download JSON
+                <Icon name="download" size={12} />Download JSON
               </button>
             )}
           </div>
@@ -4979,9 +5213,9 @@ function ConfigBuilderModal({ open, onClose, onSave, initialDevice }) {
             )}
             {step === 2 && (
               <>
-                <Btn variant="ghost" onClick={() => setStep(1)}>← Back</Btn>
+                <Btn variant="ghost" onClick={() => setStep(1)}><Icon name="arrowLeft" size={13} />Back</Btn>
                 <Btn variant="success" onClick={handleSave} disabled={saving || !step2Valid}>
-                  {saving ? "Saving…" : initialDevice ? "💾 Save Changes" : "💾 Save Device"}
+                  {saving ? "Saving…" : initialDevice ? <><Icon name="save" size={13} />Save Changes</> : <><Icon name="save" size={13} />Save Device</>}
                 </Btn>
               </>
             )}
@@ -5023,7 +5257,7 @@ function AddDeviceBtn({ onUpload, onBuildConfig }) {
   return (
     <>
       <input ref={fileRef} type="file" accept=".json" multiple style={{ display: "none" }} onChange={handleFile} />
-      <Btn variant="primary" onClick={() => setChoiceOpen(true)}>＋ Add Device</Btn>
+      <Btn variant="primary" onClick={() => setChoiceOpen(true)}><Icon name="plus" size={13} />Add Device</Btn>
 
       {choiceOpen && (
         <div style={{ position: "fixed", inset: 0, zIndex: 1100, display: "flex", alignItems: "center", justifyContent: "center" }}
@@ -5040,7 +5274,7 @@ function AddDeviceBtn({ onUpload, onBuildConfig }) {
                 width: 52, height: 52, borderRadius: "50%", margin: "0 auto 16px",
                 background: "rgba(129,140,248,0.12)", border: "1px solid rgba(129,140,248,0.3)",
                 display: "flex", alignItems: "center", justifyContent: "center", fontSize: 24,
-              }}>＋</div>
+              }}><Icon name="plus" size={24} style={{ color: "var(--accent)" }} /></div>
               <h3 style={{ margin: "0 0 6px", fontFamily: "var(--font-display)", fontWeight: 800, fontSize: 18, color: "var(--text)", letterSpacing: "-0.01em" }}>
                 Add Device
               </h3>
@@ -5061,7 +5295,7 @@ function AddDeviceBtn({ onUpload, onBuildConfig }) {
                 onMouseEnter={e => { e.currentTarget.style.borderColor = "rgba(129,140,248,0.4)"; e.currentTarget.style.background = "rgba(129,140,248,0.06)"; }}
                 onMouseLeave={e => { e.currentTarget.style.borderColor = "var(--border)"; e.currentTarget.style.background = "rgba(255,255,255,0.03)"; }}
               >
-                <div style={{ fontSize: 32, marginBottom: 12 }}>📄</div>
+                <div style={{ display: "flex", justifyContent: "center", marginBottom: 12, color: "var(--muted)" }}><Icon name="upload" size={30} /></div>
                 <div style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 14, color: "var(--text)", marginBottom: 6 }}>
                   Upload JSON
                 </div>
@@ -5081,7 +5315,7 @@ function AddDeviceBtn({ onUpload, onBuildConfig }) {
                 onMouseEnter={e => { e.currentTarget.style.borderColor = "rgba(129,140,248,0.55)"; e.currentTarget.style.background = "rgba(129,140,248,0.12)"; }}
                 onMouseLeave={e => { e.currentTarget.style.borderColor = "rgba(129,140,248,0.25)"; e.currentTarget.style.background = "rgba(129,140,248,0.06)"; }}
               >
-                <div style={{ fontSize: 32, marginBottom: 12 }}>🛠</div>
+                <div style={{ display: "flex", justifyContent: "center", marginBottom: 12, color: "var(--accent)" }}><Icon name="sliders" size={30} /></div>
                 <div style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 14, color: "var(--accent)", marginBottom: 6 }}>
                   Build Config
                 </div>
@@ -5316,7 +5550,7 @@ function SessionInfo({ sessionId, textUrl, chartUrl, partial = false }) {
             textAlign: "center",
           }}
         >
-          ⚠ More log snapshots may still land under this session ID.
+          <Icon name="warn" size={12} style={{ marginRight: 6 }} />More log snapshots may still land under this session ID.
         </div>
       )}
       <div style={{ textAlign: "center" }}>
@@ -5326,8 +5560,8 @@ function SessionInfo({ sessionId, textUrl, chartUrl, partial = false }) {
         </code>
       </div>
       <div style={{ display: "flex", gap: 12 }}>
-        {textUrl  && <a href={textUrl}  target="_blank" rel="noreferrer"><Btn variant="subtle">📄 Show Text Logs</Btn></a>}
-        {chartUrl && <a href={chartUrl} target="_blank" rel="noreferrer"><Btn variant="subtle">📈 Show Chart Logs</Btn></a>}
+        {textUrl  && <a href={textUrl}  target="_blank" rel="noreferrer"><Btn variant="subtle"><Icon name="file" size={13} />Show Text Logs</Btn></a>}
+        {chartUrl && <a href={chartUrl} target="_blank" rel="noreferrer"><Btn variant="subtle"><Icon name="chart" size={13} />Show Chart Logs</Btn></a>}
       </div>
     </div>
   );
@@ -6805,6 +7039,9 @@ ${rowsHtml}
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                 <span
                   style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 6,
                     fontFamily: "var(--font-mono)",
                     fontSize: 11,
                     color: "#a78bfa",
@@ -6814,16 +7051,41 @@ ${rowsHtml}
                     padding: "3px 10px",
                   }}
                 >
-                  🔐 Admin
+                  <IconLock size={11} /> Admin
                 </span>
-                <Btn variant="ghost" size="sm" onClick={auth.logout}>Sign out</Btn>
+                <Btn
+                  variant="ghost" size="sm" title="Sign out of admin session"
+                  onClick={auth.logout}
+                  style={{ justifyContent: "center", height: 30, minWidth: 128 }}
+                >
+                  Sign out
+                </Btn>
               </div>
             ) : (
-              <Btn variant="admin" size="sm" onClick={() => setLoginModal(true)}>🔐 Admin Login</Btn>
+              <Btn
+                variant="admin" size="sm" title="Sign in as admin"
+                onClick={() => setLoginModal(true)}
+                style={{ justifyContent: "center", height: 30, minWidth: 128 }}
+              >
+                <IconLock size={13} /> Admin Login
+              </Btn>
             )}
 
-            <Btn variant="subtle" size="sm" onClick={() => setSettingsModal(true)}>⚙️ Settings</Btn>
-            <Btn variant="subtle" size="sm" onClick={() => setApiModal(true)}>⚡ REST API</Btn>
+            {/* Header toolbar buttons — identical size so they sit as a matched pair */}
+            <Btn
+              variant="subtle" size="sm" title="Open settings"
+              onClick={() => setSettingsModal(true)}
+              style={{ justifyContent: "center", height: 30, minWidth: 128 }}
+            >
+              <span style={{ fontSize: 14, lineHeight: 1, display: "inline-flex" }}>⚙</span> Settings
+            </Btn>
+            <Btn
+              variant="subtle" size="sm" title="Open REST API documentation"
+              onClick={() => setApiModal(true)}
+              style={{ justifyContent: "center", height: 30, minWidth: 128 }}
+            >
+              <IconApi size={13} /> REST API
+            </Btn>
           </div>
         </header>
 
@@ -6837,9 +7099,9 @@ ${rowsHtml}
           {/* ACTION BAR */}
           <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 24, alignItems: "center" }}>
             <AddDeviceBtn onUpload={handleUpload} onBuildConfig={() => setBuilderModal(true)} />
-            <Btn variant="success" onClick={startCollection} disabled={!anySelected}>▶ Start Collection</Btn>
-            <Btn variant="danger"  onClick={stopCollection}  disabled={!anySelected}>⏹ Stop Collection</Btn>
-            <Btn variant="ghost"   onClick={() => setConfirmRemoveDevices(true)}  disabled={!anySelected}>🗑 Remove Selected</Btn>
+            <Btn variant="success" onClick={startCollection} disabled={!anySelected}><Icon name="play" size={12} />Start Collection</Btn>
+            <Btn variant="danger"  onClick={stopCollection}  disabled={!anySelected}><Icon name="stop" size={12} />Stop Collection</Btn>
+            <Btn variant="ghost"   onClick={() => setConfirmRemoveDevices(true)}  disabled={!anySelected}><Icon name="trash" size={13} />Remove Selected</Btn>
             <div style={{ marginLeft: "auto", fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--muted)" }}>
               {selectedDevices.length} device(s) selected
             </div>
@@ -6863,10 +7125,10 @@ ${rowsHtml}
                       style={{ ...inputStyle, width: 160, padding: "6px 10px", fontSize: 12 }}
                     />
                     <Btn variant="success" size="sm" onClick={createGroup}>Create</Btn>
-                    <Btn variant="ghost" size="sm" onClick={() => { setCreatingGroup(false); setNewGroupName(""); }}>✕</Btn>
+                    <Btn variant="ghost" size="sm" onClick={() => { setCreatingGroup(false); setNewGroupName(""); }}><Icon name="close" size={12} /></Btn>
                   </div>
                 ) : (
-                  <Btn variant="subtle" size="sm" onClick={() => setCreatingGroup(true)}>＋ New Group</Btn>
+                  <Btn variant="subtle" size="sm" onClick={() => setCreatingGroup(true)}><Icon name="plus" size={12} />New Group</Btn>
                 )}
               </div>
             </div>
@@ -6892,15 +7154,11 @@ ${rowsHtml}
                       onSelect={(id, checked) => toggleDevice(id, checked)}
                       onSelectAll={selectAllInGroup}
                       onInfo={(d) => setDeviceModal(d)}
-                      onAutoCollectionSave={(id, enabled, interval) => {
-                        setDevices(prev => prev.map(dev => dev.id === id ? { ...dev, autoCollectionEnabled: enabled, autoCollectionInterval: interval } : dev));
-                      }}
                       onDropDevice={moveDeviceToGroup}
                       onRemoveDevice={removeDeviceFromGroups}
                       onReorderDevice={reorderDeviceInGroup}
                       onRename={(name) => renameGroup(group.id, name)}
                       onDelete={() => deleteGroup(group.id)}
-                      addToast={addToast}
                     />
                   );
                 })}
@@ -6914,12 +7172,8 @@ ${rowsHtml}
                   onSelect={(id, checked) => toggleDevice(id, checked)}
                   onSelectAll={selectAllInGroup}
                   onInfo={(d) => setDeviceModal(d)}
-                  onAutoCollectionSave={(id, enabled, interval) => {
-                    setDevices(prev => prev.map(dev => dev.id === id ? { ...dev, autoCollectionEnabled: enabled, autoCollectionInterval: interval } : dev));
-                  }}
                   onDropDevice={moveDeviceToGroup}
                   onRemoveDevice={removeDeviceFromGroups}
-                  addToast={addToast}
                   isUngrouped
                 />
                 )}
@@ -6936,7 +7190,7 @@ ${rowsHtml}
               onClick={() => openLogContent(snapshots.filter((s) => selectedSnaps.includes(s.id)))}
               disabled={selectedSnaps.length === 0}
             >
-              {isChart ? `📈 View ${selectedSnaps.length > 1 ? `${selectedSnaps.length} Charts` : "Chart"}` : "📋 View Selected"}
+              {isChart ? <><Icon name="chart" size={13} />View {selectedSnaps.length > 1 ? `${selectedSnaps.length} Charts` : "Chart"}</> : <><Icon name="clipboard" size={13} />View Selected</>}
             </Btn>
             <DownloadSelectedBtn
               onDownload={downloadSelectedLogs}
@@ -6949,7 +7203,7 @@ ${rowsHtml}
               onClick={() => setConfirmRemoveSnaps(true)}
               disabled={selectedSnaps.length === 0}
             >
-              🗑 Remove Selected
+              <Icon name="trash" size={13} />Remove Selected
             </Btn>
             <Toggle checked={isChart} onChange={(v) => { setIsChart(v); setSelectedSnaps([]); }} labelLeft="Text" labelRight="Chart" />
             <div style={{ display: "flex", alignItems: "center", gap: 8, marginLeft: 8 }}>
@@ -6969,8 +7223,8 @@ ${rowsHtml}
                 onKeyDown={(e) => { if (e.key === "Enter") applyFilter(); }}
                 style={{ background: "var(--card-bg)", border: "1px solid var(--border)", borderRadius: 7, color: "var(--text)", fontFamily: "var(--font-mono)", fontSize: 12, padding: "7px 12px", width: 160 }}
               />
-              <Btn variant="subtle" size="sm" onClick={applyFilter}>🔍 Filter</Btn>
-              {filterActive && <Btn variant="ghost" size="sm" onClick={clearFilter}>✕ Clear</Btn>}
+              <Btn variant="subtle" size="sm" onClick={applyFilter}><Icon name="search" size={12} />Filter</Btn>
+              {filterActive && <Btn variant="ghost" size="sm" onClick={clearFilter}><Icon name="close" size={11} />Clear</Btn>}
             </div>
             <div style={{ marginLeft: "auto", fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--muted)" }}>
               {snapsTotal} snapshot(s)
@@ -7028,7 +7282,7 @@ ${rowsHtml}
         size="sm"
         footer={
           <>
-            <Btn variant="success" onClick={confirmStartCollection}>▶ Start</Btn>
+            <Btn variant="success" onClick={confirmStartCollection}><Icon name="play" size={12} />Start</Btn>
             <Btn variant="ghost" onClick={() => setScenarioModal(false)}>Cancel</Btn>
           </>
         }
@@ -7133,12 +7387,12 @@ ${rowsHtml}
                 onClick={shareCurrentLine}
                 title="Copy a link to this view, with the currently selected line highlighted"
               >
-                {shareLinkCopied ? "✓ Copied!" : "🔗 Share"}
+                {shareLinkCopied ? <><Icon name="check" size={12} />Copied!</> : <><Icon name="link" size={12} />Share</>}
               </Btn>
             )}
             {networkCaptureSnaps.map((s) => (
               <Btn key={s.id} size="sm" variant="subtle" onClick={() => downloadRawPcap(s)}>
-                ⬇ Raw PCAP{networkCaptureSnaps.length > 1 ? `: ${s.deviceName}` : ""}
+                <Icon name="download" size={12} />Raw PCAP{networkCaptureSnaps.length > 1 ? `: ${s.deviceName}` : ""}
               </Btn>
             ))}
             <DownloadMenu onDownload={downloadLogs} isChart={isChart} />
@@ -7173,7 +7427,7 @@ ${rowsHtml}
         )}
       </Modal>
 
-      {/* Packet details modal — opened from the 🔎 glyph next to packet_capture rows */}
+      {/* Packet details modal — opened from the search icon next to packet_capture rows */}
       <Modal
         open={packetModal}
         onClose={() => setPacketModal(false)}
@@ -7185,7 +7439,7 @@ ${rowsHtml}
           <Spinner />
         ) : packetModalError ? (
           <p style={{ color: "#f87171", fontFamily: "var(--font-mono)", fontSize: 13 }}>
-            ⚠ {packetModalError}
+            <Icon name="warn" size={12} style={{ marginRight: 6 }} />{packetModalError}
           </p>
         ) : packetModalData?.details && Object.keys(packetModalData.details).length > 0 ? (
           <PacketFieldTree data={packetModalData.details} />
@@ -7197,7 +7451,7 @@ ${rowsHtml}
       <Modal
         open={!!deviceModal}
         onClose={() => setDeviceModal(null)}
-        title="Device Details"
+        title="Device Details & Settings"
         size="xl"
         footer={<Btn variant="ghost" onClick={() => setDeviceModal(null)}>Close</Btn>}
       >
@@ -7206,6 +7460,10 @@ ${rowsHtml}
             device={deviceModal}
             isAdmin={auth.isAdmin}
             onRequestLogin={() => setLoginModal(true)}
+            addToast={addToast}
+            onAutoCollectionSave={(id, enabled, interval) => {
+              setDevices(prev => prev.map(dev => dev.id === id ? { ...dev, autoCollectionEnabled: enabled, autoCollectionInterval: interval } : dev));
+            }}
             onEdit={(device) => {
               setEditBuilderDevice(device);
               setBuilderModal(true);
