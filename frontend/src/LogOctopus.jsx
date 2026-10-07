@@ -1557,6 +1557,521 @@ function PacketFieldTree({ data, depth = 0 }) {
   return <span style={{ color: "var(--text)" }}>{String(data)}</span>;
 }
 
+// ── NETWORK CAPTURE VISUALIZER ────────────────────────────────────────────────
+// Interactive views over the decoded packet lines of a "network capture"
+// snapshot (the same rows shown in the log viewer, so the regex filters
+// applied there carry over). Everything is built on the Plotly global the app
+// already uses for charts (scatter3d lives in the standard Plotly bundle), so
+// no extra dependency is needed.
+//
+//   • 3D Flow Timeline — x = time, y = conversation, z = packet size. Click a
+//                        point to open that packet's detail modal.
+//   • 3D Host Topology — force-directed graph of hosts; node size = traffic.
+//   • Traffic Timeline — stacked bytes/packets per time bucket by protocol.
+
+const NV_FONT = "JetBrains Mono, monospace";
+const NV_PALETTE = ["#818cf8", "#34d399", "#f472b6", "#fb923c", "#60a5fa", "#a78bfa", "#fbbf24", "#22d3ee"];
+const NV_OTHER = "#6b7280";
+const NV_MAX_PROTOCOLS = 8;     // legend entries before the rest fold into "other"
+const NV_MAX_FLOWS_3D = 20;     // conversations shown as rows in the 3D timeline
+const NV_MAX_POINTS_3D = 6000;  // 3D points drawn (uniformly sampled above this)
+const NV_MAX_HOSTS = 40;        // nodes in the topology graph
+const NV_MAX_EDGES = 120;       // edges in the topology graph
+const NV_TIME_BUCKETS = 80;
+
+// "12 | eth:ip:tcp | 10.0.0.1:443 -> 10.0.0.2:51000 | len=1500 | info"
+// (mirrors PacketInfo.to_content_str(); the protocols part may be absent).
+const NV_PKT_RE = /^\s*(\d+)\s*\|\s*(?:(.*?)\s*\|\s*)?(\S*) -> (\S*)\s*\|\s*len=(\d+)(?:\s*\|\s*(.*))?$/;
+
+function nvSplitEndpoint(ep) {
+  const i = ep.lastIndexOf(":"); // IPv6 safe: the port is always the last segment
+  return i < 0 ? [ep, ""] : [ep.slice(0, i), ep.slice(i + 1)];
+}
+
+function nvFormatBytes(n) {
+  if (n < 1024) return `${n} B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  let v = n / 1024, u = 0;
+  while (v >= 1024 && u < units.length - 1) { v /= 1024; u += 1; }
+  return `${v.toFixed(v >= 100 ? 0 : 1)} ${units[u]}`;
+}
+
+function nvFormatDuration(sec) {
+  if (sec < 1) return `${Math.round(sec * 1000)} ms`;
+  if (sec < 120) return `${sec.toFixed(1)} s`;
+  if (sec < 7200) return `${(sec / 60).toFixed(1)} min`;
+  return `${(sec / 3600).toFixed(1)} h`;
+}
+
+const nvShort = (s, n) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
+
+/**
+ * Parses packet rows and builds every aggregate the charts need in one pass.
+ * Rows that aren't parseable packet lines are skipped.
+ */
+function analyzeCapture(rows) {
+  const pkts = [];
+  const protoCount = new Map();
+  const hosts = new Map();
+  const convs = new Map();
+  let bytes = 0;
+
+  for (const row of rows || []) {
+    if (row.log_name !== "network capture") continue;
+    const m = NV_PKT_RE.exec(String(row.content ?? ""));
+    if (!m) continue;
+    const t = Date.parse(row.time ?? row.timestamp);
+    if (Number.isNaN(t)) continue;
+
+    const [srcIp, sport] = nvSplitEndpoint(m[3]);
+    const [dstIp, dport] = nvSplitEndpoint(m[4]);
+    const src = srcIp || "(no IP)"; // e.g. ARP / link-layer frames
+    const dst = dstIp || "(no IP)";
+    const protoChain = (m[2] || "").split(":").filter(Boolean);
+    const proto = (protoChain[protoChain.length - 1] || "unknown").toLowerCase();
+    const len = parseInt(m[5], 10) || 0;
+    const p = { n: parseInt(m[1], 10), t, len, proto, src, dst, sport, dport, info: m[6] || "", row };
+    pkts.push(p);
+    bytes += len;
+    protoCount.set(proto, (protoCount.get(proto) || 0) + 1);
+
+    for (const ip of [src, dst]) {
+      const h = hosts.get(ip) || { ip, bytes: 0, packets: 0, peers: new Set() };
+      h.bytes += len; h.packets += 1;
+      hosts.set(ip, h);
+    }
+    hosts.get(src).peers.add(dst);
+    hosts.get(dst).peers.add(src);
+
+    // Conversation = unordered host pair, so request and reply share a row.
+    const key = src < dst ? `${src}\u0000${dst}` : `${dst}\u0000${src}`;
+    const c = convs.get(key) || { key, a: src < dst ? src : dst, b: src < dst ? dst : src, bytes: 0, packets: 0 };
+    c.bytes += len; c.packets += 1;
+    convs.set(key, c);
+  }
+
+  // Legend protocols: most frequent first, the long tail folds into "other".
+  const ranked = [...protoCount.entries()].sort((a, b) => b[1] - a[1]).map(([k]) => k);
+  const legend = ranked.slice(0, NV_MAX_PROTOCOLS);
+  const colorOf = {};
+  legend.forEach((p, i) => { colorOf[p] = NV_PALETTE[i % NV_PALETTE.length]; });
+  const hasOther = ranked.length > legend.length;
+  if (hasOther) legend.push("other");
+  colorOf.other = NV_OTHER;
+  const legendProto = (p) => (colorOf[p] && p !== "other" ? p : "other");
+
+  let tMin = Infinity, tMax = -Infinity;
+  for (const p of pkts) { if (p.t < tMin) tMin = p.t; if (p.t > tMax) tMax = p.t; }
+
+  return {
+    pkts, bytes, hosts, convs, legend, colorOf, legendProto,
+    tMin: pkts.length ? tMin : 0,
+    tMax: pkts.length ? tMax : 0,
+    topProto: ranked[0] || "—",
+  };
+}
+
+// Deterministic 3D force-directed layout (Fruchterman–Reingold style).
+function forceLayout3D(n, edges, iterations = 240) {
+  const pos = [];
+  for (let i = 0; i < n; i += 1) { // Fibonacci sphere start → reproducible, no overlaps
+    const phi = Math.acos(1 - (2 * (i + 0.5)) / n);
+    const theta = Math.PI * (1 + Math.sqrt(5)) * (i + 0.5);
+    pos.push([Math.cos(theta) * Math.sin(phi) * 2, Math.sin(theta) * Math.sin(phi) * 2, Math.cos(phi) * 2]);
+  }
+  const k = 1.3;
+  for (let it = 0; it < iterations; it += 1) {
+    const disp = pos.map(() => [0, 0, 0]);
+    const temp = 0.25 * (1 - it / iterations) + 0.01;
+    for (let i = 0; i < n; i += 1) {
+      for (let j = i + 1; j < n; j += 1) {
+        const dx = pos[i][0] - pos[j][0], dy = pos[i][1] - pos[j][1], dz = pos[i][2] - pos[j][2];
+        const d2 = Math.max(dx * dx + dy * dy + dz * dz, 0.01);
+        const f = (k * k) / d2; // repulsion
+        disp[i][0] += dx * f; disp[i][1] += dy * f; disp[i][2] += dz * f;
+        disp[j][0] -= dx * f; disp[j][1] -= dy * f; disp[j][2] -= dz * f;
+      }
+    }
+    for (const [a, b, w] of edges) {
+      const dx = pos[a][0] - pos[b][0], dy = pos[a][1] - pos[b][1], dz = pos[a][2] - pos[b][2];
+      const d = Math.max(Math.sqrt(dx * dx + dy * dy + dz * dz), 0.01);
+      const f = (d / k) * (0.4 + 0.6 * w); // attraction, stronger for heavy links
+      disp[a][0] -= dx * f; disp[a][1] -= dy * f; disp[a][2] -= dz * f;
+      disp[b][0] += dx * f; disp[b][1] += dy * f; disp[b][2] += dz * f;
+    }
+    for (let i = 0; i < n; i += 1) {
+      for (let c = 0; c < 3; c += 1) disp[i][c] -= pos[i][c] * 0.15; // gentle gravity
+      const len = Math.max(Math.hypot(disp[i][0], disp[i][1], disp[i][2]), 1e-6);
+      const step = Math.min(len, temp);
+      for (let c = 0; c < 3; c += 1) pos[i][c] += (disp[i][c] / len) * step;
+    }
+  }
+  return pos;
+}
+
+const NV_AXIS_3D = {
+  backgroundcolor: "rgba(9,9,15,0.55)",
+  gridcolor: "rgba(255,255,255,0.08)",
+  zerolinecolor: "rgba(255,255,255,0.12)",
+  showspikes: false,
+  tickfont: { color: "#6b7280", size: 9, family: NV_FONT },
+};
+
+const NV_HOVERLABEL = {
+  bgcolor: "#111827",
+  bordercolor: "#818cf8",
+  font: { color: "#e8eaf0", size: 12, family: NV_FONT },
+};
+
+const nvScene = (extra) => ({
+  bgcolor: "rgba(0,0,0,0)",
+  camera: { eye: { x: 1.55, y: -1.55, z: 0.95 } },
+  ...extra,
+});
+
+/**
+ * Thin Plotly wrapper: draws on mount/update, purges on unmount, forwards
+ * point clicks and (for 3D plots) optionally spins the camera slowly until
+ * the user grabs the plot.
+ */
+function NvPlot({ data, layout, onPointClick, autoRotate = false }) {
+  const ref = useRef(null);
+  const clickRef = useRef(onPointClick);
+  clickRef.current = onPointClick;
+
+  useEffect(() => {
+    const el = ref.current;
+    const Plotly = window.Plotly;
+    if (!el) return undefined;
+    if (!Plotly) {
+      el.innerHTML = '<p style="color:#f87171;font-family:monospace;font-size:12px;padding:16px">Plotly not loaded — add the CDN script to index.html</p>';
+      return undefined;
+    }
+    Plotly.newPlot(el, data, {
+      paper_bgcolor: "rgba(0,0,0,0)",
+      plot_bgcolor: "rgba(9,9,15,0.6)",
+      font: { color: "#6b7280", family: NV_FONT, size: 11 },
+      hoverlabel: NV_HOVERLABEL,
+      autosize: true,
+      ...layout,
+    }, {
+      responsive: true,
+      displaylogo: false,
+      modeBarButtonsToRemove: ["select2d", "lasso2d", "toggleSpikelines"],
+      toImageButtonOptions: { format: "png", filename: "network_capture", scale: 2 },
+    });
+    el.on("plotly_click", (ev) => {
+      const pt = ev && ev.points && ev.points[0];
+      if (pt && clickRef.current) clickRef.current(pt);
+    });
+    return () => { Plotly.purge(el); };
+  }, [data, layout]);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!autoRotate || !el || !window.Plotly) return undefined;
+    let grabbed = false;
+    const down = () => { grabbed = true; };
+    const up = () => { grabbed = false; };
+    el.addEventListener("mousedown", down);
+    el.addEventListener("touchstart", down, { passive: true });
+    window.addEventListener("mouseup", up);
+    window.addEventListener("touchend", up);
+    const id = setInterval(() => {
+      if (grabbed || !el.layout || !el.layout.scene) return;
+      const eye = (el.layout.scene.camera && el.layout.scene.camera.eye) || { x: 1.55, y: -1.55, z: 0.95 };
+      const a = 0.012;
+      window.Plotly.relayout(el, {
+        "scene.camera.eye": {
+          x: eye.x * Math.cos(a) - eye.y * Math.sin(a),
+          y: eye.x * Math.sin(a) + eye.y * Math.cos(a),
+          z: eye.z,
+        },
+      });
+    }, 50);
+    return () => {
+      clearInterval(id);
+      el.removeEventListener("mousedown", down);
+      el.removeEventListener("touchstart", down);
+      window.removeEventListener("mouseup", up);
+      window.removeEventListener("touchend", up);
+    };
+  }, [autoRotate, data, layout]);
+
+  return <div ref={ref} style={{ width: "100%", height: "100%", minHeight: 380 }} />;
+}
+
+function Flow3DView({ a, onPacketClick, autoRotate }) {
+  const { data, layout, lookup, note } = useMemo(() => {
+    const topConvs = [...a.convs.values()].sort((x, y) => y.packets - x.packets).slice(0, NV_MAX_FLOWS_3D);
+    const rowOf = new Map(topConvs.map((c, i) => [c.key, i]));
+    let pool = a.pkts.filter((p) => rowOf.has(p.src < p.dst ? `${p.src}\u0000${p.dst}` : `${p.dst}\u0000${p.src}`));
+    const eligible = pool.length;
+    if (pool.length > NV_MAX_POINTS_3D) {
+      const step = pool.length / NV_MAX_POINTS_3D;
+      pool = Array.from({ length: NV_MAX_POINTS_3D }, (_, i) => pool[Math.floor(i * step)]);
+    }
+    const maxLen = Math.max(1, ...pool.map((p) => p.len));
+    const rel = (p) => (p.t - a.tMin) / 1000;
+    const yOf = (p) => rowOf.get(p.src < p.dst ? `${p.src}\u0000${p.dst}` : `${p.dst}\u0000${p.src}`);
+
+    // Faint vertical "stems" from the floor up to each packet → a 3D skyline.
+    const sx = [], sy = [], sz = [];
+    for (const p of pool) { sx.push(rel(p), rel(p), null); sy.push(yOf(p), yOf(p), null); sz.push(0, p.len, null); }
+    const traces = [{
+      type: "scatter3d", mode: "lines", x: sx, y: sy, z: sz,
+      line: { color: "rgba(129,140,248,0.22)", width: 1 },
+      hoverinfo: "skip", showlegend: false,
+    }];
+    const lookup = [null];
+
+    for (const proto of a.legend) {
+      const pts = pool.filter((p) => a.legendProto(p.proto) === proto);
+      if (!pts.length) continue;
+      traces.push({
+        type: "scatter3d", mode: "markers", name: proto,
+        x: pts.map(rel), y: pts.map(yOf), z: pts.map((p) => p.len),
+        text: pts.map((p) => `#${p.n} ${p.proto}<br>${p.src}${p.sport ? `:${p.sport}` : ""} → ${p.dst}${p.dport ? `:${p.dport}` : ""}<br>${p.len} B${p.info ? `<br>${nvShort(p.info, 70).replace(/</g, "&lt;")}` : ""}`),
+        hoverinfo: "text",
+        marker: {
+          size: pts.map((p) => 3 + 7 * Math.sqrt(p.len / maxLen)),
+          color: a.colorOf[proto], opacity: 0.88, line: { width: 0 },
+        },
+      });
+      lookup.push(pts);
+    }
+
+    return {
+      data: traces,
+      lookup,
+      note: eligible > pool.length ? `Showing ${pool.length.toLocaleString()} of ${eligible.toLocaleString()} packets (sampled)` : "",
+      layout: {
+        margin: { l: 0, r: 0, t: 0, b: 0 },
+        legend: { font: { color: "#e8eaf0", size: 11, family: NV_FONT }, bgcolor: "rgba(0,0,0,0.35)", x: 0.01, y: 0.99 },
+        scene: nvScene({
+          aspectmode: "manual", aspectratio: { x: 2.1, y: 1.3, z: 0.7 },
+          xaxis: { ...NV_AXIS_3D, title: { text: "time since first packet (s)", font: { size: 10, color: "#9ca3af" } } },
+          yaxis: {
+            ...NV_AXIS_3D, title: { text: "" },
+            tickmode: "array", tickvals: topConvs.map((_, i) => i),
+            ticktext: topConvs.map((c) => nvShort(`${c.a} ↔ ${c.b}`, 26)),
+            tickfont: { color: "#6b7280", size: 8, family: NV_FONT },
+          },
+          zaxis: { ...NV_AXIS_3D, title: { text: "bytes", font: { size: 10, color: "#9ca3af" } }, rangemode: "tozero" },
+        }),
+      },
+    };
+  }, [a]);
+
+  const handleClick = useCallback((pt) => {
+    const pkt = lookup[pt.curveNumber] && lookup[pt.curveNumber][pt.pointNumber];
+    if (pkt && onPacketClick) onPacketClick(pkt.row);
+  }, [lookup, onPacketClick]);
+
+  return (
+    <>
+      <NvNote>Click any point to open the packet details. Drag to rotate, scroll to zoom.{note ? ` ${note}.` : ""}</NvNote>
+      <div style={{ flex: 1, minHeight: 0 }}><NvPlot data={data} layout={layout} onPointClick={handleClick} autoRotate={autoRotate} /></div>
+    </>
+  );
+}
+
+function Topology3DView({ a, autoRotate }) {
+  const { data, layout, note } = useMemo(() => {
+    const topHosts = [...a.hosts.values()].sort((x, y) => y.bytes - x.bytes).slice(0, NV_MAX_HOSTS);
+    const idx = new Map(topHosts.map((h, i) => [h.ip, i]));
+    const edges = [...a.convs.values()]
+      .filter((c) => idx.has(c.a) && idx.has(c.b))
+      .sort((x, y) => y.bytes - x.bytes)
+      .slice(0, NV_MAX_EDGES);
+    const maxEdge = Math.max(1, ...edges.map((e) => e.bytes));
+    const pos = forceLayout3D(topHosts.length, edges.map((e) => [idx.get(e.a), idx.get(e.b), Math.sqrt(e.bytes / maxEdge)]));
+
+    // Edges bucketed by volume so heavier links draw thicker and brighter.
+    const buckets = [
+      { w: 1.5, color: "rgba(129,140,248,0.25)", xs: [], ys: [], zs: [] },
+      { w: 3.5, color: "rgba(129,140,248,0.50)", xs: [], ys: [], zs: [] },
+      { w: 6.5, color: "rgba(244,114,182,0.85)", xs: [], ys: [], zs: [] },
+    ];
+    for (const e of edges) {
+      const r = e.bytes / maxEdge;
+      const bkt = buckets[r > 0.5 ? 2 : r > 0.12 ? 1 : 0];
+      const p1 = pos[idx.get(e.a)], p2 = pos[idx.get(e.b)];
+      bkt.xs.push(p1[0], p2[0], null); bkt.ys.push(p1[1], p2[1], null); bkt.zs.push(p1[2], p2[2], null);
+    }
+    const traces = buckets.filter((b) => b.xs.length).map((b) => ({
+      type: "scatter3d", mode: "lines", x: b.xs, y: b.ys, z: b.zs,
+      line: { color: b.color, width: b.w }, hoverinfo: "skip", showlegend: false,
+    }));
+
+    const maxBytes = Math.max(1, ...topHosts.map((h) => h.bytes));
+    traces.push({
+      type: "scatter3d", mode: "markers+text", name: "hosts", showlegend: false,
+      x: pos.map((p) => p[0]), y: pos.map((p) => p[1]), z: pos.map((p) => p[2]),
+      text: topHosts.map((h, i) => (i < 12 ? nvShort(h.ip, 22) : "")),
+      textposition: "top center",
+      textfont: { color: "#e8eaf0", size: 10, family: NV_FONT },
+      hovertext: topHosts.map((h) => `${h.ip}<br>${h.packets.toLocaleString()} packets · ${nvFormatBytes(h.bytes)}<br>${h.peers.size} peer${h.peers.size === 1 ? "" : "s"}`),
+      hoverinfo: "text",
+      marker: {
+        size: topHosts.map((h) => 6 + 24 * Math.sqrt(h.bytes / maxBytes)),
+        color: topHosts.map((h) => Math.log10(h.bytes + 1)),
+        colorscale: [[0, "#312e81"], [0.5, "#818cf8"], [1, "#f472b6"]],
+        opacity: 0.95, line: { color: "rgba(255,255,255,0.35)", width: 1 },
+      },
+    });
+
+    const hidden = a.hosts.size - topHosts.length;
+    const axis = { visible: false, showbackground: false, showgrid: false, zeroline: false };
+    return {
+      data: traces,
+      note: hidden > 0 ? `Top ${topHosts.length} of ${a.hosts.size} hosts by traffic shown.` : "",
+      layout: {
+        margin: { l: 0, r: 0, t: 0, b: 0 },
+        scene: nvScene({ xaxis: axis, yaxis: axis, zaxis: axis, aspectmode: "cube" }),
+      },
+    };
+  }, [a]);
+
+  return (
+    <>
+      <NvNote>Hosts are pulled together by how much they talk — node size and colour show traffic volume, link thickness shows volume between a pair. {note}</NvNote>
+      <div style={{ flex: 1, minHeight: 0 }}><NvPlot data={data} layout={layout} autoRotate={autoRotate} /></div>
+    </>
+  );
+}
+
+function TrafficTimelineView({ a, metric }) {
+  const { data, layout } = useMemo(() => {
+    const span = Math.max(a.tMax - a.tMin, 1);
+    const size = span / NV_TIME_BUCKETS;
+    const sums = {};
+    a.legend.forEach((p) => { sums[p] = new Array(NV_TIME_BUCKETS).fill(0); });
+    for (const p of a.pkts) {
+      const b = Math.min(NV_TIME_BUCKETS - 1, Math.floor((p.t - a.tMin) / size));
+      sums[a.legendProto(p.proto)][b] += metric === "bytes" ? p.len : 1;
+    }
+    const x = Array.from({ length: NV_TIME_BUCKETS }, (_, i) => new Date(a.tMin + (i + 0.5) * size));
+    return {
+      data: a.legend.map((proto) => ({
+        type: "bar", name: proto, x, y: sums[proto],
+        marker: { color: a.colorOf[proto], line: { width: 0 } },
+        hovertemplate: `<b>${proto}</b> %{y:,} ${metric === "bytes" ? "B" : "pkts"}<extra></extra>`,
+      })),
+      layout: {
+        barmode: "stack", bargap: 0.06, hovermode: "x unified",
+        margin: { l: 64, r: 20, t: 12, b: 48 },
+        legend: { font: { color: "#e8eaf0", size: 11, family: NV_FONT }, orientation: "h", y: 1.08 },
+        xaxis: { gridcolor: "rgba(255,255,255,0.06)", tickfont: { color: "#6b7280", size: 10 } },
+        yaxis: {
+          gridcolor: "rgba(255,255,255,0.06)", tickfont: { color: "#6b7280", size: 10 },
+          title: { text: metric === "bytes" ? "bytes per bucket" : "packets per bucket", font: { color: "#6b7280", size: 11 } },
+        },
+      },
+    };
+  }, [a, metric]);
+
+  return (
+    <>
+      <NvNote>{NV_TIME_BUCKETS} equal time buckets across the capture, stacked by top-layer protocol.</NvNote>
+      <div style={{ flex: 1, minHeight: 0 }}><NvPlot data={data} layout={layout} /></div>
+    </>
+  );
+}
+
+function NvNote({ children }) {
+  return (
+    <div style={{ fontFamily: NV_FONT, fontSize: 11, color: "var(--muted)", padding: "0 2px 8px", flexShrink: 0 }}>{children}</div>
+  );
+}
+
+function NvStat({ label, value }) {
+  return (
+    <div style={{
+      background: "var(--card-bg)", border: "1px solid var(--border)", borderRadius: 8,
+      padding: "8px 14px", minWidth: 110,
+    }}>
+      <div style={{ fontFamily: NV_FONT, fontSize: 9, color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.1em" }}>{label}</div>
+      <div style={{ fontFamily: "var(--font-display)", fontSize: 16, fontWeight: 700, color: "var(--text)", marginTop: 2 }}>{value}</div>
+    </div>
+  );
+}
+
+/**
+ * Props:
+ *   rows           – log rows (any rows that aren't "network capture" are ignored)
+ *   onPacketClick  – optional (row) => void, called when a 3D point is clicked
+ */
+function NetworkCaptureVisualizer({ rows, onPacketClick }) {
+  // Parsing hundreds of thousands of lines takes a moment: run it after the
+  // first paint so the modal opens instantly with a spinner.
+  const [a, setA] = useState(null);
+  useEffect(() => {
+    setA(null);
+    const id = setTimeout(() => setA(analyzeCapture(rows)), 30);
+    return () => clearTimeout(id);
+  }, [rows]);
+  const [view, setView] = useState("flow3d");
+  const [metric, setMetric] = useState("bytes");
+  const [rotate, setRotate] = useState(false);
+
+  if (!a) return <Spinner />;
+
+  if (a.pkts.length === 0) {
+    return <p style={{ color: "var(--muted)", padding: 16 }}>No decodable packets to visualize{rows && rows.length ? " — check the log filters." : "."}</p>;
+  }
+
+  const tabs = [
+    { id: "flow3d", label: "3D Flow Timeline" },
+    { id: "topo3d", label: "3D Host Topology" },
+    { id: "timeline", label: "Traffic Timeline" },
+  ];
+  const tabStyle = (active) => ({
+    padding: "7px 16px", borderRadius: 7, border: "none", cursor: "pointer",
+    fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 12, letterSpacing: "0.05em",
+    background: active ? "rgba(129,140,248,0.15)" : "transparent",
+    color: active ? "var(--accent)" : "var(--muted)", transition: "all 0.15s",
+  });
+  const is3D = view !== "timeline";
+
+  return (
+    <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", gap: 12 }}>
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", flexShrink: 0 }}>
+        <NvStat label="Packets" value={a.pkts.length.toLocaleString()} />
+        <NvStat label="Traffic" value={nvFormatBytes(a.bytes)} />
+        <NvStat label="Duration" value={nvFormatDuration((a.tMax - a.tMin) / 1000)} />
+        <NvStat label="Hosts" value={a.hosts.size.toLocaleString()} />
+        <NvStat label="Conversations" value={a.convs.size.toLocaleString()} />
+        <NvStat label="Top protocol" value={a.topProto} />
+      </div>
+
+      <div style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0, borderBottom: "1px solid var(--border)", paddingBottom: 8 }}>
+        {tabs.map((t) => (
+          <button key={t.id} style={tabStyle(view === t.id)} onClick={() => setView(t.id)}>{t.label}</button>
+        ))}
+        <div style={{ flex: 1 }} />
+        {is3D && (
+          <Btn size="sm" variant={rotate ? "primary" : "subtle"} onClick={() => setRotate((r) => !r)} title="Slowly spin the 3D camera">
+            <Icon name="refresh" size={12} />Auto-rotate
+          </Btn>
+        )}
+        {view === "timeline" && (
+          <>
+            <Btn size="sm" variant={metric === "bytes" ? "primary" : "subtle"} onClick={() => setMetric("bytes")}>Bytes</Btn>
+            <Btn size="sm" variant={metric === "packets" ? "primary" : "subtle"} onClick={() => setMetric("packets")}>Packets</Btn>
+          </>
+        )}
+      </div>
+
+      <div style={{ flex: 1, minHeight: 380, display: "flex", flexDirection: "column" }}>
+        {view === "flow3d" && <Flow3DView a={a} onPacketClick={onPacketClick} autoRotate={rotate} />}
+        {view === "topo3d" && <Topology3DView a={a} autoRotate={rotate} />}
+        {view === "timeline" && <TrafficTimelineView a={a} metric={metric} />}
+      </div>
+    </div>
+  );
+}
+
 // ── DOWNLOAD FORMATS ──────────────────────────────────────────────────────────
 const DOWNLOAD_FORMATS = [
   { id: "csv",        label: "CSV",  icon: "table", desc: "Spreadsheet-compatible" },
@@ -5970,6 +6485,7 @@ export default function App() {
 
   // packet_capture "view packet details" modal
   const [packetModal,        setPacketModal]        = useState(false);
+  const [vizModal,           setVizModal]           = useState(false); // network capture visualizer
   const [packetModalData,    setPacketModalData]    = useState(null); // { packet_number, details }
   const [packetModalLoading, setPacketModalLoading] = useState(false);
   const [packetModalError,   setPacketModalError]   = useState("");
@@ -7578,6 +8094,11 @@ ${rowsHtml}
                 {shareLinkCopied ? <><Icon name="check" size={12} />Copied!</> : <><Icon name="link" size={12} />Share</>}
               </Btn>
             )}
+            {!isChart && networkCaptureSnaps.length > 0 && !logRowsLoading && (
+              <Btn size="sm" variant="subtle" onClick={() => setVizModal(true)} title="Interactive 3D and timeline views of this capture">
+                <Icon name="chart" size={12} />Visualize
+              </Btn>
+            )}
             {networkCaptureSnaps.map((s) => (
               <Btn key={s.id} size="sm" variant="subtle" onClick={() => downloadRawPcap(s)}>
                 <Icon name="download" size={12} />Raw PCAP{networkCaptureSnaps.length > 1 ? `: ${s.deviceName}` : ""}
@@ -7618,6 +8139,19 @@ ${rowsHtml}
             </LogViewErrorBoundary>
           </div>
         )}
+      </Modal>
+
+      {/* Network capture visualizer — rendered before the packet modal so that
+          clicking a 3D point opens the packet details on top of it. */}
+      <Modal
+        open={vizModal}
+        onClose={() => setVizModal(false)}
+        title="Network Capture Visualizer"
+        icon={<Icon name="chart" size={18} />}
+        size="full"
+        footer={<Btn variant="ghost" onClick={() => setVizModal(false)}>Close</Btn>}
+      >
+        {vizModal && <NetworkCaptureVisualizer rows={filteredLogRows} onPacketClick={openPacketDetails} />}
       </Modal>
 
       {/* Packet details modal — opened from the search icon next to packet_capture rows */}
