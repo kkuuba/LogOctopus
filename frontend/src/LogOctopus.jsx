@@ -1934,7 +1934,7 @@ function SettingsModal({ open, onClose, isAdmin, onRequestLogin, auth, addToast,
         {/* Header */}
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "18px 24px", borderBottom: "1px solid var(--border)", flexShrink: 0 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-            <span style={{ display: "inline-flex", color: "var(--accent)" }}><IconGear size={18} /></span>
+            <span style={{ display: "inline-flex", color: "var(--accent)" }}><GearGlyph size={18} /></span>
             <h3 style={{ margin: 0, fontFamily: "var(--font-display)", fontSize: 16, fontWeight: 800, color: "var(--text)", letterSpacing: "0.04em" }}>Settings</h3>
           </div>
           <button onClick={onClose} style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer", fontSize: 20, lineHeight: 1, padding: "2px 6px" }}><Icon name="close" size={16} /></button>
@@ -2432,7 +2432,7 @@ const inputStyle = {
 };
 
 // ── MODAL ─────────────────────────────────────────────────────────────────────
-function Modal({ open, onClose, title, size = "lg", children, footer }) {
+function Modal({ open, onClose, title, icon, size = "lg", children, footer }) {
   useEffect(() => {
     const handler = (e) => { if (e.key === "Escape") onClose(); };
     if (open) document.addEventListener("keydown", handler);
@@ -2480,17 +2480,20 @@ function Modal({ open, onClose, title, size = "lg", children, footer }) {
             flexShrink: 0,
           }}
         >
-          <h3
-            style={{
-              margin: 0,
-              fontSize: 16,
-              fontFamily: "var(--font-display)",
-              letterSpacing: "0.04em",
-              color: "var(--text)",
-            }}
-          >
-            {title}
-          </h3>
+          <div style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 0 }}>
+            {icon && <span style={{ display: "inline-flex", color: "var(--accent)" }}>{icon}</span>}
+            <h3
+              style={{
+                margin: 0,
+                fontSize: 16,
+                fontFamily: "var(--font-display)",
+                letterSpacing: "0.04em",
+                color: "var(--text)",
+              }}
+            >
+              {title}
+            </h3>
+          </div>
           <button
             onClick={onClose}
             style={{
@@ -2676,31 +2679,18 @@ function IconLock({ size = 14, style }) {
   );
 }
 
-// Gear built the same way as the header logo mark (a center hub with 8
-// radiating spokes at 45° increments) so it reads as part of the same
-// design system rather than a generic settings-cog glyph.
-function IconGear({ size = 14, style }) {
+// The one gear used everywhere in the UI — the same "⚙" glyph as the header
+// "Settings" button. Always render a gear through this component (never a
+// raw ⚙ character or a different icon) so every settings/config affordance
+// stays identical. Inherits colour from its parent.
+function GearGlyph({ size = 14, style }) {
   return (
-    <svg width={size} height={size} viewBox="0 0 16 16" fill="none" style={style} aria-hidden="true">
-      <circle cx="8" cy="8" r="2.35" stroke="currentColor" strokeWidth="1.4" />
-      {[0, 45, 90, 135, 180, 225, 270, 315].map((a) => {
-        const rad = (a * Math.PI) / 180;
-        const r1 = 3.5, r2 = 6.6;
-        return (
-          <line
-            key={a}
-            x1={8 + r1 * Math.cos(rad)} y1={8 + r1 * Math.sin(rad)}
-            x2={8 + r2 * Math.cos(rad)} y2={8 + r2 * Math.sin(rad)}
-            stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"
-          />
-        );
-      })}
-    </svg>
+    <span aria-hidden="true" style={{ fontSize: size, lineHeight: 1, display: "inline-flex", ...style }}>⚙</span>
   );
 }
 
-// Shared gear button — the exact look of the device-card gear, reused by the
-// header "Settings" control so both read as the same affordance.
+// Shared gear button (device cards). Uses the same GearGlyph as the header
+// "Settings" control so both read as the same affordance.
 //   size="sm" → compact (device cards)   size="md" → header toolbar height
 function GearBtn({ onClick, title, active = false, size = "sm", style }) {
   const md = size === "md";
@@ -2727,7 +2717,7 @@ function GearBtn({ onClick, title, active = false, size = "sm", style }) {
       onMouseEnter={(e) => { if (!active) { e.currentTarget.style.color = "var(--accent)"; e.currentTarget.style.borderColor = "rgba(129,140,248,0.4)"; } }}
       onMouseLeave={(e) => { if (!active) { e.currentTarget.style.color = "var(--muted)"; e.currentTarget.style.borderColor = "var(--border)"; } }}
     >
-      ⚙
+      <GearGlyph size={md ? 15 : 13} />
     </button>
   );
 }
@@ -2745,7 +2735,7 @@ function IconApi({ size = 14, style }) {
 }
 
 // ── ICON SET ──────────────────────────────────────────────────────────────────
-// One registry of line icons drawn in the same idiom as IconGear / IconLock /
+// One registry of line icons drawn in the same idiom as IconLock /
 // IconApi: 16×16 grid, 1.4 stroke, round caps & joins, currentColor. Replaces
 // the emoji and Unicode symbols (🗑 📄 ✔ ⚠ ▶ ⬇ …) that used to be scattered
 // through the UI, so every glyph picks up the app's colours and renders the
@@ -3919,7 +3909,7 @@ function DeviceDetails({ device, isAdmin, onRequestLogin, onEdit, onAutoCollecti
       <div style={{ borderTop: "1px solid var(--border)", paddingTop: 18 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 10 }}>
           <h4 style={{ fontFamily: "var(--font-display)", fontSize: 13, color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.08em", margin: 0, display: "flex", alignItems: "center", gap: 7 }}>
-            <Icon name="sliders" size={14} /> JSON Configuration
+            <GearGlyph size={14} /> JSON Configuration
           </h4>
           <Btn size="sm" variant={isAdmin ? "subtle" : "admin"} onClick={handleShowConfig} style={{ display: "inline-flex", alignItems: "center", gap: isAdmin ? 0 : 7 }}>
             {isAdmin
@@ -4985,7 +4975,7 @@ function ConfigBuilderModal({ open, onClose, onSave, initialDevice }) {
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "20px 28px", borderBottom: "1px solid var(--border)", flexShrink: 0, background: "rgba(129,140,248,0.03)" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
             <div style={{ width: 38, height: 38, borderRadius: 10, background: "linear-gradient(135deg, rgba(129,140,248,0.2) 0%, rgba(167,139,250,0.12) 100%)", border: "1px solid rgba(129,140,248,0.3)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, boxShadow: "0 2px 8px rgba(129,140,248,0.15)" }}>
-              <span style={{ display: "inline-flex", color: "var(--accent)" }}><Icon name="sliders" size={19} /></span>
+              <span style={{ display: "inline-flex", color: "var(--accent)" }}><GearGlyph size={19} /></span>
             </div>
             <div>
               <div style={{ fontFamily: "var(--font-display)", fontWeight: 800, fontSize: 17, color: "var(--text)", letterSpacing: "0.02em" }}>
@@ -5525,7 +5515,7 @@ function AddDeviceBtn({ onUpload, onBuildConfig }) {
                 onMouseEnter={e => { e.currentTarget.style.borderColor = "rgba(129,140,248,0.55)"; e.currentTarget.style.background = "rgba(129,140,248,0.12)"; }}
                 onMouseLeave={e => { e.currentTarget.style.borderColor = "rgba(129,140,248,0.25)"; e.currentTarget.style.background = "rgba(129,140,248,0.06)"; }}
               >
-                <div style={{ display: "flex", justifyContent: "center", marginBottom: 12, color: "var(--accent)" }}><Icon name="sliders" size={30} /></div>
+                <div style={{ display: "flex", justifyContent: "center", marginBottom: 12, color: "var(--accent)" }}><GearGlyph size={30} /></div>
                 <div style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 14, color: "var(--accent)", marginBottom: 6 }}>
                   Build Config
                 </div>
@@ -7275,7 +7265,7 @@ ${rowsHtml}
               onClick={() => setSettingsModal(true)}
               style={{ justifyContent: "center", height: 30, minWidth: 128 }}
             >
-              <span style={{ fontSize: 14, lineHeight: 1, display: "inline-flex" }}>⚙</span> Settings
+              <GearGlyph size={14} /> Settings
             </Btn>
             <Btn
               variant="subtle" size="sm" title="Open REST API documentation"
@@ -7655,6 +7645,7 @@ ${rowsHtml}
         open={!!deviceModal}
         onClose={() => setDeviceModal(null)}
         title="Device Details & Settings"
+        icon={<GearGlyph size={18} />}
         size="xl"
         footer={<Btn variant="ghost" onClick={() => setDeviceModal(null)}>Close</Btn>}
       >

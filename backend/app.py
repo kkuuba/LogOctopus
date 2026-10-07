@@ -747,13 +747,15 @@ def get_snapshot_content(snapshot_id: str):
 
 @app.get("/api/snapshots/<snapshot_id>/packets/<int:packet_number>")
 def get_packet_details(snapshot_id: str, packet_number: int):
-    """Return the full decoded tshark field detail for a single packet.
+    """Return the decoded field detail for a single packet.
 
     Only valid for "packet_capture" snapshots (produced by
     PcapDecoder.to_log_snapshot / DeviceWatchdog.save_log_snapshots).
     Locates the snapshot's saved '<session_id>.pcap' file via the
     snapshot's device_config_id/session_id and decodes the requested frame
-    with PcapDecoder.get_session_packet_details.
+    with PcapDecoder.get_session_packet_details.  Uses tshark by default, or
+    the device's custom 'decoder_cmd' when one is configured (in which case
+    the packet's row is taken from that command's output).
 
     GET '/api/snapshots/<snapshot_id>/packets/<packet_number>'
 
@@ -773,8 +775,8 @@ def get_packet_details(snapshot_id: str, packet_number: int):
             with that frame number exists in the capture.
 
         500 Internal Server Error:
-            '{ "error": "tshark not available: …" }' - tshark is not
-            installed on the server, or the session's pcap file is
+            '{ "error": "pcap decoder not available: …" }' - the decoder
+            (tshark or the custom command) is not installed on the server, or the session's pcap file is
             missing on disk.
     """
     target = find_snapshot_by_id(snapshot_id)
