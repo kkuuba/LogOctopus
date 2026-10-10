@@ -1,7 +1,7 @@
-import { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import React, { useState, useEffect, useCallback, useRef, useMemo } from "react";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
-const API_BASE = (import.meta.env.VITE_API_BASE) || "http://localhost:8050"
+const API_BASE = (import.meta.env.VITE_API_BASE) || ""
 ;
 
 // Plotly is expected as a global (loaded via CDN script tag in index.html):
@@ -239,7 +239,7 @@ function PlotlyChart({ rows, title, index, dataUnit }) {
  * snapshot as its own titled Plotly panel inside the modal — side by side
  * (2-column grid) or stacked depending on count.
  */
-function ChartContentView({ chartGroups }) {
+function ChartContentView({ chartGroups, onShareChart }) {
   // chartGroups: [{ snapInfo, rows }]
   if (!chartGroups || chartGroups.length === 0)
     return <p style={{ color: "var(--muted)" }}>No chart data.</p>;
@@ -265,6 +265,7 @@ function ChartContentView({ chartGroups }) {
                 marginTop: -12,
                 marginBottom: 8,
                 paddingLeft: 4,
+                alignItems: "center",
               }}
             >
               <Badge color="cyan">{g.snapInfo.logName}</Badge>
@@ -272,6 +273,28 @@ function ChartContentView({ chartGroups }) {
               <Badge color="default">{g.rows.length} points</Badge>
               <Badge color="default">Session: {g.snapInfo.sessionId}</Badge>
               <Badge color="default">Data unit: {g.snapInfo.dataUnit}</Badge>
+              {onShareChart && (
+                <button
+                  onClick={() => onShareChart(g.snapInfo.id)}
+                  title="Copy shareable link to this chart"
+                  style={{
+                    marginLeft: "auto",
+                    display: "inline-flex", alignItems: "center", gap: 5,
+                    padding: "4px 10px",
+                    background: "rgba(129,140,248,0.1)",
+                    border: "1px solid rgba(129,140,248,0.3)",
+                    borderRadius: 7,
+                    color: "var(--accent)",
+                    fontFamily: "var(--font-mono)", fontSize: 11,
+                    cursor: "pointer",
+                    transition: "all 0.15s",
+                  }}
+                  onMouseEnter={e => { e.currentTarget.style.background = "rgba(129,140,248,0.2)"; }}
+                  onMouseLeave={e => { e.currentTarget.style.background = "rgba(129,140,248,0.1)"; }}
+                >
+                  <Icon name="link" size={12} style={{ marginRight: 6 }} />Share
+                </button>
+              )}
             </div>
           </div>
         );
@@ -493,6 +516,166 @@ function parsePacketNumber(content) {
   return Number.isNaN(n) ? null : n;
 }
 
+// ── LARGE-LOG SAFETY LIMITS ───────────────────────────────────────────────────
+// Hard cap on how many lines are pushed into the Monaco model at once. Building
+// one giant string for millions of lines can exceed V8's max string length
+// (RangeError: Invalid string length) which, thrown during render, blanks the
+// whole app. Raise it if you know your browsers can take more.
+const MAX_VIEW_LINES = 500_000;
+// Per-line colour decorations are the most expensive thing Monaco is asked to
+// do here, so in colour mode only the first N lines get tinted (applied in
+// small batches so the UI stays responsive while they land).
+const COLOR_DECORATION_LIMIT = 200_000;
+const COLOR_DECORATION_BATCH = 5_000;
+
+// ── NON-BLOCKING REGEX ROW FILTER ─────────────────────────────────────────────
+// Compile each (device, logName) regex ONCE. Invalid patterns are skipped, so
+// rows for that pair are kept (same "safe fallback" as before).
+function compileRowFilters(filters) {
+  const compiled = new Map();
+  for (const [key, pat] of Object.entries(filters || {})) {
+    if (!pat || !pat.trim()) continue;
+    try { compiled.set(key, new RegExp(pat, "i")); } catch { /* invalid → keep rows */ }
+  }
+  return compiled;
+}
+
+const NO_ROWS = [];
+
+/**
+ * Filters `rows` with the per-(device, logName) regexes in `filters`
+ * WITHOUT freezing the tab: work is split into ~12 ms slices that yield back
+ * to the browser between slices, and is cancelled/restarted if the inputs
+ * change mid-way.
+ *
+ * Returns { rows, filtering, progress }
+ *   rows      – filtered rows. While a new filter run is in progress this is
+ *               the previous finished result for the same data (or an empty
+ *               array if there is none yet), so the viewer never renders
+ *               half-filtered data.
+ *   filtering – true while a run is in progress
+ *   progress  – 0..1 (updated ~every 150 ms)
+ */
+function useChunkedRowFilter(rows, filters) {
+  const compiled = useMemo(() => compileRowFilters(filters), [filters]);
+  const [done, setDone]         = useState(null); // { src, compiled, out }
+  const [progress, setProgress] = useState(0);
+
+  const active = !!rows && rows.length > 0 && compiled.size > 0;
+
+  useEffect(() => {
+    if (!active) return undefined;
+
+    let cancelled = false;
+    let timer = null;
+    let lastProgressAt = 0;
+    const out = [];
+    const n = rows.length;
+    let i = 0;
+    setProgress(0);
+
+    const SLICE_MS = 12;
+    const CHECK_EVERY = 2048; // rows between clock checks
+
+    const step = () => {
+      if (cancelled) return;
+      try {
+        const deadline = performance.now() + SLICE_MS;
+        while (i < n) {
+          const end = Math.min(n, i + CHECK_EVERY);
+          for (; i < end; i++) {
+            const row = rows[i];
+            const dev = row.device_name ?? "";
+            const log = row.log_name ?? "";
+            const re  = compiled.get(`${dev}${FILTER_SEP}${log}`);
+            // Rows of pairs with no filter are kept without building the line.
+            if (!re || re.test(`[${row.time ?? ""}] [${dev}] [${log}]  ${row.content ?? ""}`)) {
+              out.push(row);
+            }
+          }
+          if (performance.now() >= deadline) break;
+        }
+      } catch (e) {
+        console.error("Row filtering failed, showing unfiltered rows:", e);
+        if (!cancelled) setDone({ src: rows, compiled, out: rows });
+        return;
+      }
+
+      if (i >= n) {
+        setDone({ src: rows, compiled, out });
+        return;
+      }
+      const now = performance.now();
+      if (now - lastProgressAt > 150) {
+        lastProgressAt = now;
+        setProgress(i / n);
+      }
+      timer = setTimeout(step, 0);
+    };
+
+    timer = setTimeout(step, 0);
+    return () => { cancelled = true; if (timer) clearTimeout(timer); };
+  }, [active, rows, compiled]);
+
+  if (!active) return { rows, filtering: false, progress: 1 };
+  if (done && done.src === rows && done.compiled === compiled) {
+    return { rows: done.out, filtering: false, progress: 1 };
+  }
+  const stale = done && done.src === rows ? done.out : NO_ROWS;
+  return { rows: stale, filtering: true, progress };
+}
+
+// ── ERROR BOUNDARY ────────────────────────────────────────────────────────────
+// Without this, any exception thrown while rendering the log viewer unmounts
+// the whole React tree (= white screen). Now only the viewer is replaced by an
+// error message and the filter bar stays usable. `resetKey` changing (e.g. the
+// user applies a different filter) automatically clears the error.
+class LogViewErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { error: null };
+  }
+  static getDerivedStateFromError(error) {
+    return { error };
+  }
+  componentDidCatch(error, info) {
+    console.error("Log viewer crashed:", error, info?.componentStack);
+  }
+  componentDidUpdate(prevProps) {
+    if (this.state.error && prevProps.resetKey !== this.props.resetKey) {
+      this.setState({ error: null });
+    }
+  }
+  render() {
+    if (!this.state.error) return this.props.children;
+    return (
+      <div style={{
+        margin: 16, padding: 20, fontFamily: "var(--font-mono)", fontSize: 12,
+        color: "#f87171", background: "rgba(248,113,113,0.06)",
+        border: "1px solid rgba(248,113,113,0.2)", borderRadius: 8,
+      }}>
+        <div style={{ fontWeight: 700, marginBottom: 8 }}>
+          The log viewer could not display this many lines.
+        </div>
+        <div style={{ color: "var(--muted)", marginBottom: 12, whiteSpace: "pre-wrap" }}>
+          {String(this.state.error?.message || this.state.error)}
+        </div>
+        <div style={{ color: "var(--text)", marginBottom: 12 }}>
+          Try a more specific filter, then apply it again.
+        </div>
+        <button
+          onClick={() => this.setState({ error: null })}
+          style={{
+            background: "rgba(248,113,113,0.10)", border: "1px solid rgba(248,113,113,0.30)",
+            borderRadius: 6, color: "#f87171", fontFamily: "var(--font-mono)",
+            fontSize: 11, fontWeight: 700, padding: "4px 12px", cursor: "pointer",
+          }}
+        >Retry</button>
+      </div>
+    );
+  }
+}
+
 // ── MONACO LOG VIEWER ─────────────────────────────────────────────────────────
 /**
  * Renders log rows inside a Monaco Editor instance (read-only).
@@ -511,12 +694,15 @@ function parsePacketNumber(content) {
  *                   Every other log line is untouched — the glyph margin
  *                   only ever gets a decoration for packet_capture rows.
  */
-function MonacoLogViewer({ rows, colorMode, onPacketClick }) {
+function MonacoLogViewer({ rows, colorMode, onPacketClick, highlightLine, onEditorReady }) {
   const containerRef      = useRef(null);
   const editorRef         = useRef(null);
   const modelRef          = useRef(null);
   const decorationsRef    = useRef([]); // current line-color decoration IDs
   const glyphDecorationsRef = useRef([]); // current packet-glyph decoration IDs
+  const shareDecorationsRef = useRef([]); // highlight for shared line
+  const colorJobRef    = useRef(null);  // in-flight batched colour-decoration job
+  const appliedTextRef = useRef("");    // text currently loaded in the Monaco model
   const [ready, setReady] = useState(false);
   const [loadErr, setLoadErr] = useState(null);
 
@@ -545,46 +731,53 @@ function MonacoLogViewer({ rows, colorMode, onPacketClick }) {
   logText.current = logTextValue;
 
   // ── Apply / clear line-number decorations ────────────────────────────────
+  // Colour decorations are created in small batches (and capped at
+  // COLOR_DECORATION_LIMIT lines) so a huge log never builds hundreds of
+  // thousands of decoration objects in a single blocking call.
   const applyLineNumberDecorations = useCallback((rowsData, isColor) => {
     const editor = editorRef.current;
     if (!editor) return;
 
-    if (!isColor) {
-      // Clear all decorations in raw mode
-      decorationsRef.current = editor.deltaDecorations(decorationsRef.current, []);
-      return;
-    }
+    // Cancel any batch job still running for the previous rows.
+    if (colorJobRef.current) colorJobRef.current.cancelled = true;
+    colorJobRef.current = null;
+
+    // Always start from a clean slate.
+    decorationsRef.current = editor.deltaDecorations(decorationsRef.current, []);
+    if (!isColor || !rowsData || rowsData.length === 0) return;
 
     ensureLnStyleEl();
     const pairColorMap = buildPairColorMap(rowsData);
+    const total = Math.min(rowsData.length, COLOR_DECORATION_LIMIT);
+    const job = { cancelled: false };
+    colorJobRef.current = job;
+    let i = 0;
 
-    const newDecorations = (rowsData ?? []).map((r, lineIndex) => {
-      const key = `${r.device_name ?? ""}|${r.log_name ?? ""}`;
-      const colorIndex = pairColorMap.get(key) ?? 0;
-      return {
-        range: {
-          startLineNumber: lineIndex + 1,
-          startColumn: 1,
-          endLineNumber: lineIndex + 1,
-          endColumn: 1,
-        },
-        options: {
-          // isWholeLine stretches the decoration div across the full editor
-          // width so the background tint covers the entire line, not just tokens.
-          isWholeLine:               true,
-          className:                `lo-ln-${colorIndex}`,
-          // Color the line number to match the line's accent color
-          lineNumberClassName:      `lo-ln-num-${colorIndex}`,
-          // Separate class for the gutter strip (left of line numbers)
-          linesDecorationsClassName: `lo-ln-gutter-${colorIndex}`,
-        },
-      };
-    });
-
-    decorationsRef.current = editor.deltaDecorations(
-      decorationsRef.current,
-      newDecorations
-    );
+    const step = () => {
+      if (job.cancelled || editorRef.current !== editor) return;
+      const end = Math.min(total, i + COLOR_DECORATION_BATCH);
+      const batch = [];
+      for (; i < end; i++) {
+        const r = rowsData[i];
+        const colorIndex = pairColorMap.get(`${r.device_name ?? ""}|${r.log_name ?? ""}`) ?? 0;
+        batch.push({
+          range: { startLineNumber: i + 1, startColumn: 1, endLineNumber: i + 1, endColumn: 1 },
+          options: {
+            // isWholeLine stretches the decoration div across the full editor
+            // width so the background tint covers the entire line.
+            isWholeLine:               true,
+            className:                `lo-ln-${colorIndex}`,
+            lineNumberClassName:      `lo-ln-num-${colorIndex}`,
+            linesDecorationsClassName: `lo-ln-gutter-${colorIndex}`,
+          },
+        });
+      }
+      const ids = editor.deltaDecorations([], batch);
+      for (let k = 0; k < ids.length; k++) decorationsRef.current.push(ids[k]);
+      if (i < total) setTimeout(step, 0);
+      else colorJobRef.current = null;
+    };
+    step();
   }, []);
 
   // ── Apply glyph-margin "view packet details" buttons ─────────────────────
@@ -596,21 +789,24 @@ function MonacoLogViewer({ rows, colorMode, onPacketClick }) {
 
     ensurePacketGlyphStyleEl();
 
-    const newDecorations = (rowsData ?? [])
-      .map((r, lineIndex) => ({ r, lineIndex }))
-      .filter(({ r }) => r.log_name === "network capture")
-      .map(({ lineIndex }) => ({
-        range: {
-          startLineNumber: lineIndex + 1,
-          startColumn: 1,
-          endLineNumber: lineIndex + 1,
-          endColumn: 1,
-        },
-        options: {
-          glyphMarginClassName: "lo-packet-glyph",
-          glyphMarginHoverMessage: { value: "Click to view packet details" },
-        },
-      }));
+    const newDecorations = [];
+    if (rowsData) {
+      for (let lineIndex = 0; lineIndex < rowsData.length; lineIndex++) {
+        if (rowsData[lineIndex].log_name !== "network capture") continue;
+        newDecorations.push({
+          range: {
+            startLineNumber: lineIndex + 1,
+            startColumn: 1,
+            endLineNumber: lineIndex + 1,
+            endColumn: 1,
+          },
+          options: {
+            glyphMarginClassName: "lo-packet-glyph",
+            glyphMarginHoverMessage: { value: "Click to view packet details" },
+          },
+        });
+      }
+    }
 
     glyphDecorationsRef.current = editor.deltaDecorations(
       glyphDecorationsRef.current,
@@ -626,6 +822,7 @@ function MonacoLogViewer({ rows, colorMode, onPacketClick }) {
         if (cancelled || !containerRef.current) return;
 
         const model = monaco.editor.createModel(logText.current, "logoctopus");
+        appliedTextRef.current = logText.current;
         modelRef.current = model;
 
         const editor = monaco.editor.create(containerRef.current, {
@@ -678,6 +875,13 @@ function MonacoLogViewer({ rows, colorMode, onPacketClick }) {
           }
         });
 
+        // Expose a function the parent can call to get the current cursor line
+        if (onEditorReady) {
+          onEditorReady({
+            getCurrentLine: () => editor.getPosition()?.lineNumber ?? 1,
+          });
+        }
+
         setReady(true);
       })
       .catch((e) => {
@@ -686,12 +890,15 @@ function MonacoLogViewer({ rows, colorMode, onPacketClick }) {
 
     return () => {
       cancelled = true;
+      if (colorJobRef.current) colorJobRef.current.cancelled = true;
+      colorJobRef.current = null;
       editorRef.current?.dispose();
       modelRef.current?.dispose();
       editorRef.current = null;
       modelRef.current  = null;
       decorationsRef.current = [];
       glyphDecorationsRef.current = [];
+      shareDecorationsRef.current = [];
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -700,7 +907,10 @@ function MonacoLogViewer({ rows, colorMode, onPacketClick }) {
     if (!modelRef.current) return;
     const model = modelRef.current;
     const newText = logText.current;
-    if (model.getValue() !== newText) {
+    // Compare against the text we last loaded instead of model.getValue(),
+    // which would materialise a full extra copy of a potentially huge buffer.
+    if (appliedTextRef.current !== newText) {
+      appliedTextRef.current = newText;
       model.setValue(newText);
       // Jump to last line for live-appended logs
       editorRef.current?.revealLine(model.getLineCount());
@@ -734,6 +944,52 @@ function MonacoLogViewer({ rows, colorMode, onPacketClick }) {
     return () => ro.disconnect();
   }, [ready]);
 
+  // Highlight and scroll to the shared line when highlightLine changes.
+  // Also re-applies whenever `rows` changes after mount: model.setValue()
+  // (used to sync content when rows update, e.g. when a shared link's
+  // filters are re-applied right after the editor first mounts) fully
+  // replaces the buffer and drops any previously-set decorations, so
+  // without `rows` as a dependency here the highlight would silently
+  // disappear the moment that happens.
+  useEffect(() => {
+    const editor = editorRef.current;
+    const model  = modelRef.current;
+    if (!ready || !editor || !model || !highlightLine) return;
+    // The shared line may no longer exist in the current (e.g. filtered) view.
+    if (highlightLine > model.getLineCount()) return;
+
+    // Ensure style element for the highlight class exists
+    const styleId = "lo-share-highlight-style";
+    if (!document.getElementById(styleId)) {
+      const el = document.createElement("style");
+      el.id = styleId;
+      el.textContent = `.lo-share-line { background: rgba(251,191,36,0.18) !important; border-left: 3px solid #fbbf24 !important; }
+        .lo-share-line-number { color: #fbbf24 !important; font-weight: 700 !important; }`;
+      document.head.appendChild(el);
+    }
+
+    shareDecorationsRef.current = editor.deltaDecorations(
+      shareDecorationsRef.current,
+      [{
+        range: {
+          startLineNumber: highlightLine,
+          startColumn: 1,
+          endLineNumber: highlightLine,
+          endColumn: 1,
+        },
+        options: {
+          isWholeLine: true,
+          className: "lo-share-line",
+          lineNumberClassName: "lo-share-line-number",
+        },
+      }]
+    );
+
+    // Scroll the highlighted line into view (center it)
+    editor.revealLineInCenter(highlightLine);
+    editor.setPosition({ lineNumber: highlightLine, column: 1 });
+  }, [ready, highlightLine, rows]);
+
   if (loadErr) {
     return (
       <div style={{
@@ -741,7 +997,7 @@ function MonacoLogViewer({ rows, colorMode, onPacketClick }) {
         color: "#f87171", background: "rgba(248,113,113,0.06)",
         border: "1px solid rgba(248,113,113,0.2)", borderRadius: 8,
       }}>
-        ⚠ Monaco failed to load: {loadErr}
+        <Icon name="warn" size={12} style={{ marginRight: 6 }} />Monaco failed to load: {loadErr}
       </div>
     );
   }
@@ -772,16 +1028,457 @@ function MonacoLogViewer({ rows, colorMode, onPacketClick }) {
   );
 }
 
-// ── LOG CONTENT VIEW ──────────────────────────────────────────────────────────
-function LogContentView({ rows, isChart, colorMode, chartGroups, onPacketClick }) {
-  if (isChart) return <ChartContentView chartGroups={chartGroups} />;
+// ── LOG FILTER BAR ────────────────────────────────────────────────────────────
+/**
+ * Filter bar with device+logName granularity.
+ *
+ * Filter key format: "deviceName\x00logName"  (null-byte separator, never
+ * appears in either field so it is safe to use as a delimiter).
+ *
+ * Layout:
+ *   - One collapsible device-group chip per unique device.
+ *   - Clicking a chip opens a popover that lists every log name for that
+ *     device, each with its own regex input field.
+ *   - Applying saves all per-(device, logName) regexes at once.
+ *
+ * Props:
+ *   logRows         – full (unfiltered) rows array
+ *   filters         – { ["device\x00logName"]: regexString }
+ *   onFiltersChange – (newFilters) => void
+ *   filteredCount   – rows after filtering
+ *   totalCount      – rows before filtering
+ */
+const FILTER_SEP = "\x00";
+const makeFilterKey = (device, logName) => `${device}${FILTER_SEP}${logName}`;
 
-  if (!rows || rows.length === 0)
-    return <p style={{ color: "var(--muted)" }}>No data.</p>;
+const DEVICE_PALETTE = [
+  { accent: "#818cf8", bg: "rgba(129,140,248,0.12)", border: "rgba(129,140,248,0.32)" },
+  { accent: "#34d399", bg: "rgba(52,211,153,0.12)",  border: "rgba(52,211,153,0.32)"  },
+  { accent: "#fb923c", bg: "rgba(251,146,60,0.12)",  border: "rgba(251,146,60,0.32)"  },
+  { accent: "#f472b6", bg: "rgba(244,114,182,0.12)", border: "rgba(244,114,182,0.32)" },
+  { accent: "#60a5fa", bg: "rgba(96,165,250,0.12)",  border: "rgba(96,165,250,0.32)"  },
+  { accent: "#a78bfa", bg: "rgba(167,139,250,0.12)", border: "rgba(167,139,250,0.32)" },
+  { accent: "#facc15", bg: "rgba(250,204,21,0.12)",  border: "rgba(250,204,21,0.32)"  },
+  { accent: "#2dd4bf", bg: "rgba(45,212,191,0.12)",  border: "rgba(45,212,191,0.32)"  },
+];
+
+function LogFilterBar({ logRows, filters, onFiltersChange, filteredCount, totalCount, filtering = false, progress = 0 }) {
+  // Build ordered map: deviceName → [logName, …]  (insertion order preserved)
+  const deviceLogMap = useMemo(() => {
+    const map = new Map(); // device → Set of logNames
+    for (const r of logRows) {
+      const dev = r.device_name ?? "";
+      const log = r.log_name   ?? "";
+      if (!map.has(dev)) map.set(dev, []);
+      if (!map.get(dev).includes(log)) map.get(dev).push(log);
+    }
+    return map;
+  }, [logRows]);
+
+  const deviceNames = useMemo(() => [...deviceLogMap.keys()], [deviceLogMap]);
+
+  // Draft state: same key format as `filters`
+  const [drafts, setDrafts] = useState(() => ({ ...filters }));
+
+  // Sync drafts when filters reset externally (modal re-open)
+  const prevFiltersRef = useRef(filters);
+  useEffect(() => {
+    if (prevFiltersRef.current !== filters) {
+      prevFiltersRef.current = filters;
+      setDrafts({ ...filters });
+    }
+  }, [filters]);
+
+  // Which device chip is expanded
+  const [expanded, setExpanded] = useState(null);
+
+  // Close popover when clicking outside
+  const popoverRef = useRef(null);
+  useEffect(() => {
+    if (!expanded) return;
+    const handler = (e) => {
+      if (popoverRef.current && !popoverRef.current.contains(e.target)) {
+        setExpanded(null);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [expanded]);
+
+  // Regex validity for all current drafts
+  const regexValid = useMemo(() => {
+    const v = {};
+    for (const [k, pat] of Object.entries(drafts)) {
+      if (!pat || !pat.trim()) { v[k] = true; continue; }
+      try { new RegExp(pat, "i"); v[k] = true; } catch { v[k] = false; }
+    }
+    return v;
+  }, [drafts]);
+
+  // Per-device helpers
+  const deviceHasFilter = (dev) =>
+    (deviceLogMap.get(dev) || []).some(log => {
+      const k = makeFilterKey(dev, log);
+      return (filters[k] ?? "").trim().length > 0;
+    });
+
+  const deviceActiveCount = (dev) =>
+    (deviceLogMap.get(dev) || []).filter(log => (filters[makeFilterKey(dev, log)] ?? "").trim()).length;
+
+  const allDraftsValid = Object.values(regexValid).every(Boolean);
+  const isFiltered = Object.values(filters).some(v => v && v.trim());
+
+  // Apply: push all drafts for the open device into applied filters
+  const applyDevice = (dev) => {
+    if (!allDraftsValid) return;
+    const next = { ...filters };
+    (deviceLogMap.get(dev) || []).forEach(log => {
+      const k = makeFilterKey(dev, log);
+      const val = drafts[k] ?? "";
+      if (val.trim()) next[k] = val; else delete next[k];
+    });
+    onFiltersChange(next);
+    setExpanded(null);
+  };
+
+  const clearDevice = (dev, e) => {
+    e.stopPropagation();
+    const next = { ...filters };
+    (deviceLogMap.get(dev) || []).forEach(log => delete next[makeFilterKey(dev, log)]);
+    const nextDrafts = { ...drafts };
+    (deviceLogMap.get(dev) || []).forEach(log => { nextDrafts[makeFilterKey(dev, log)] = ""; });
+    setDrafts(nextDrafts);
+    onFiltersChange(next);
+  };
+
+  const clearAll = () => {
+    setDrafts({});
+    onFiltersChange({});
+  };
 
   return (
-    <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
-      <MonacoLogViewer rows={rows} colorMode={colorMode} onPacketClick={onPacketClick} />
+    <div style={{
+      padding: "10px 16px",
+      borderBottom: "1px solid var(--border)",
+      background: "rgba(0,0,0,0.18)",
+      display: "flex",
+      alignItems: "center",
+      gap: 8,
+      flexWrap: "wrap",
+      flexShrink: 0,
+    }}>
+      {/* Label */}
+      <span style={{
+        fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--muted)",
+        textTransform: "uppercase", letterSpacing: "0.1em", flexShrink: 0,
+      }}>
+        Filter
+      </span>
+
+      {/* One chip per device */}
+      {deviceNames.map((dev, i) => {
+        const palette  = DEVICE_PALETTE[i % DEVICE_PALETTE.length];
+        const filtered = deviceHasFilter(dev);
+        const count    = deviceActiveCount(dev);
+        const isOpen   = expanded === dev;
+        const logNames = deviceLogMap.get(dev) || [];
+
+        return (
+          <div key={dev} style={{ position: "relative", display: "inline-flex" }} ref={isOpen ? popoverRef : null}>
+            {/* Chip button */}
+            <button
+              onClick={() => setExpanded(isOpen ? null : dev)}
+              style={{
+                display: "inline-flex", alignItems: "center", gap: 6,
+                padding: "4px 10px 4px 9px",
+                borderRadius: isOpen ? "10px 10px 0 0" : 20,
+                border: `1px solid ${isOpen || filtered ? palette.border : "var(--border)"}`,
+                borderBottom: isOpen ? "1px solid transparent" : undefined,
+                background: isOpen ? palette.bg : filtered ? palette.bg : "rgba(255,255,255,0.04)",
+                color: filtered || isOpen ? palette.accent : "var(--muted)",
+                fontFamily: "var(--font-mono)", fontSize: 11, fontWeight: filtered ? 700 : 500,
+                cursor: "pointer", transition: "all 0.15s", whiteSpace: "nowrap",
+                position: "relative", zIndex: isOpen ? 11 : 1,
+              }}
+            >
+              <span style={{
+                width: 6, height: 6, borderRadius: "50%", background: palette.accent,
+                flexShrink: 0, opacity: filtered || isOpen ? 1 : 0.4,
+                boxShadow: filtered ? `0 0 5px ${palette.accent}` : "none",
+                transition: "all 0.15s",
+              }} />
+              {dev}
+              {filtered && (
+                <>
+                  <span style={{
+                    display: "inline-flex", alignItems: "center", justifyContent: "center",
+                    minWidth: 16, height: 16, borderRadius: 8, padding: "0 4px",
+                    background: palette.accent, color: "#06061a",
+                    fontSize: 9, fontWeight: 800, flexShrink: 0,
+                  }}>
+                    {count}
+                  </span>
+                  {/* Clear-device × button */}
+                  <span
+                    onClick={(e) => clearDevice(dev, e)}
+                    title="Clear filters for this device"
+                    style={{
+                      display: "inline-flex", alignItems: "center", justifyContent: "center",
+                      width: 14, height: 14, borderRadius: "50%",
+                      background: "rgba(255,255,255,0.12)",
+                      color: palette.accent, fontSize: 10, lineHeight: 1,
+                      flexShrink: 0, cursor: "pointer",
+                    }}
+                  ><Icon name="close" size={9} stroke={1.8} /></span>
+                </>
+              )}
+              <span style={{ opacity: 0.55, marginLeft: 1, display: "inline-flex" }}><Icon name={isOpen ? "chevUp" : "chevDown"} size={10} /></span>
+            </button>
+
+            {/* Popover — per-logName rows */}
+            {isOpen && (
+              <div style={{
+                position: "absolute", top: "100%", left: 0,
+                background: "var(--modal-bg)",
+                border: `1px solid ${palette.border}`,
+                borderTop: "none",
+                borderRadius: "0 12px 12px 12px",
+                padding: "14px 16px 12px",
+                zIndex: 200,
+                minWidth: 340,
+                boxShadow: `0 10px 40px rgba(0,0,0,0.55), 0 0 0 1px ${palette.border}`,
+              }}>
+                {/* Popover header */}
+                <div style={{
+                  display: "flex", alignItems: "center", justifyContent: "space-between",
+                  marginBottom: 12,
+                }}>
+                  <div style={{
+                    fontFamily: "var(--font-mono)", fontSize: 10,
+                    color: palette.accent,
+                    textTransform: "uppercase", letterSpacing: "0.08em",
+                    display: "flex", alignItems: "center", gap: 6,
+                  }}>
+                    <span style={{
+                      width: 7, height: 7, borderRadius: "50%", background: palette.accent,
+                      display: "inline-block",
+                    }} />
+                    {dev}
+                  </div>
+                  <span style={{
+                    fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--muted)",
+                  }}>
+                    regex per log — case-insensitive
+                  </span>
+                </div>
+
+                {/* One row per logName */}
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  {logNames.map((log, li) => {
+                    const k       = makeFilterKey(dev, log);
+                    const draft   = drafts[k] ?? "";
+                    const valid   = regexValid[k] ?? true;
+                    const applied = (filters[k] ?? "").trim().length > 0;
+
+                    return (
+                      <div key={log}>
+                        {/* Log name label */}
+                        <div style={{
+                          display: "flex", alignItems: "center", gap: 6, marginBottom: 5,
+                        }}>
+                          <span style={{
+                            fontFamily: "var(--font-mono)", fontSize: 10,
+                            color: applied ? "#22d3ee" : "var(--muted)",
+                            background: applied ? "rgba(34,211,238,0.10)" : "rgba(255,255,255,0.05)",
+                            border: `1px solid ${applied ? "rgba(34,211,238,0.28)" : "var(--border)"}`,
+                            borderRadius: 12, padding: "2px 9px",
+                            fontWeight: applied ? 700 : 400,
+                            transition: "all 0.15s",
+                          }}>
+                            {log}
+                          </span>
+                          {applied && (
+                            <span style={{
+                              fontFamily: "var(--font-mono)", fontSize: 9,
+                              color: "#4ade80",
+                            }}>active</span>
+                          )}
+                        </div>
+
+                        {/* Regex input */}
+                        <div style={{ position: "relative" }}>
+                          <input
+                            autoFocus={li === 0}
+                            value={draft}
+                            onChange={e => setDrafts(prev => ({ ...prev, [k]: e.target.value }))}
+                            onKeyDown={e => {
+                              if (e.key === "Enter") applyDevice(dev);
+                              if (e.key === "Escape") setExpanded(null);
+                            }}
+                            placeholder={`e.g. ERROR|WARN`}
+                            style={{
+                              width: "100%",
+                              background: "var(--card-bg)",
+                              border: `1px solid ${!valid ? "#f87171" : draft ? palette.border : "var(--border)"}`,
+                              borderRadius: 7,
+                              color: "var(--text)",
+                              fontFamily: "var(--font-mono)", fontSize: 12,
+                              padding: "7px 30px 7px 10px",
+                              outline: "none", boxSizing: "border-box",
+                              transition: "border-color 0.15s",
+                            }}
+                          />
+                          {draft && (
+                            <button
+                              onClick={() => setDrafts(prev => ({ ...prev, [k]: "" }))}
+                              style={{
+                                position: "absolute", right: 8, top: "50%",
+                                transform: "translateY(-50%)",
+                                background: "none", border: "none", color: "var(--muted)",
+                                cursor: "pointer", fontSize: 14, lineHeight: 1, padding: 0,
+                              }}
+                            ><Icon name="close" size={12} /></button>
+                          )}
+                        </div>
+                        {!valid && (
+                          <div style={{ marginTop: 3, fontFamily: "var(--font-mono)", fontSize: 10, color: "#f87171" }}>
+                            <Icon name="warn" size={11} style={{ marginRight: 5 }} />Invalid regular expression
+                          </div>
+                        )}
+                        {/* Divider between log entries */}
+                        {li < logNames.length - 1 && (
+                          <div style={{ height: 1, background: "var(--border)", marginTop: 8 }} />
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* Footer actions */}
+                <div style={{
+                  display: "flex", gap: 6, marginTop: 14,
+                  justifyContent: "space-between", alignItems: "center",
+                }}>
+                  <button
+                    onClick={(e) => clearDevice(dev, e)}
+                    style={{
+                      background: "transparent", border: "1px solid var(--border)",
+                      borderRadius: 6, color: "var(--muted)",
+                      fontFamily: "var(--font-mono)", fontSize: 11,
+                      padding: "5px 11px", cursor: "pointer",
+                    }}
+                  >Clear</button>
+                  <div style={{ display: "flex", gap: 6 }}>
+                    <button
+                      onClick={() => setExpanded(null)}
+                      style={{
+                        background: "transparent", border: "1px solid var(--border)",
+                        borderRadius: 6, color: "var(--muted)",
+                        fontFamily: "var(--font-mono)", fontSize: 11,
+                        padding: "5px 11px", cursor: "pointer",
+                      }}
+                    >Cancel</button>
+                    <button
+                      onClick={() => applyDevice(dev)}
+                      disabled={!allDraftsValid}
+                      style={{
+                        background: palette.bg, border: `1px solid ${palette.border}`,
+                        borderRadius: 6, color: palette.accent,
+                        fontFamily: "var(--font-mono)", fontSize: 11, fontWeight: 700,
+                        padding: "5px 16px",
+                        cursor: allDraftsValid ? "pointer" : "not-allowed",
+                        opacity: allDraftsValid ? 1 : 0.5, transition: "all 0.15s",
+                      }}
+                    >Apply <Icon name="enter" size={12} /></button>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })}
+
+      {/* Spacer */}
+      <div style={{ flex: 1 }} />
+
+      {/* Row count + clear all */}
+      {isFiltered ? (
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
+          <span style={{
+            fontFamily: "var(--font-mono)", fontSize: 11,
+            color: filtering ? "var(--muted)" : filteredCount === 0 ? "#f87171" : "#4ade80",
+          }}>
+            {filtering
+              ? `Filtering… ${Math.round(progress * 100)}%`
+              : `${filteredCount.toLocaleString()} / ${totalCount.toLocaleString()} rows`}
+          </span>
+          <button
+            onClick={clearAll}
+            style={{
+              background: "rgba(248,113,113,0.10)", border: "1px solid rgba(248,113,113,0.30)",
+              borderRadius: 6, color: "#f87171",
+              fontFamily: "var(--font-mono)", fontSize: 10, fontWeight: 700,
+              padding: "3px 10px", cursor: "pointer", transition: "all 0.15s", whiteSpace: "nowrap",
+            }}
+            onMouseEnter={e => e.currentTarget.style.background = "rgba(248,113,113,0.18)"}
+            onMouseLeave={e => e.currentTarget.style.background = "rgba(248,113,113,0.10)"}
+          ><Icon name="close" size={11} style={{ marginRight: 5 }} />Clear all</button>
+        </div>
+      ) : (
+        <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--muted)", flexShrink: 0 }}>
+          {totalCount.toLocaleString()} rows
+        </span>
+      )}
+    </div>
+  );
+}
+
+// ── LOG CONTENT VIEW ──────────────────────────────────────────────────────────
+function LogContentView({ rows, isChart, colorMode, chartGroups, onPacketClick, onShareChart, onEditorReady, highlightLine, filtering = false }) {
+  // Hooks must run before any early return.
+  const truncated = !isChart && !!rows && rows.length > MAX_VIEW_LINES;
+  const shownRows = useMemo(
+    () => (truncated ? rows.slice(0, MAX_VIEW_LINES) : rows),
+    [rows, truncated]
+  );
+
+  if (isChart) return <ChartContentView chartGroups={chartGroups} onShareChart={onShareChart} />;
+
+  if (!rows || rows.length === 0)
+    return (
+      <p style={{ color: "var(--muted)", padding: 16 }}>
+        {filtering ? "Applying filter…" : "No data."}
+      </p>
+    );
+
+  return (
+    <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", position: "relative" }}>
+      {truncated && (
+        <div style={{
+          padding: "6px 16px", fontFamily: "var(--font-mono)", fontSize: 11,
+          color: "#fbbf24", background: "rgba(251,191,36,0.08)",
+          borderBottom: "1px solid rgba(251,191,36,0.25)", flexShrink: 0,
+        }}>
+          Showing the first {MAX_VIEW_LINES.toLocaleString()} of {rows.length.toLocaleString()} matching
+          lines — narrow the filter to see the rest. Downloads still include everything.
+        </div>
+      )}
+      {filtering && (
+        <div style={{
+          position: "absolute", top: 8, right: 24, zIndex: 5,
+          padding: "3px 10px", borderRadius: 6, fontFamily: "var(--font-mono)", fontSize: 11,
+          color: "var(--text)", background: "rgba(0,0,0,0.65)", border: "1px solid var(--border)",
+        }}>
+          Applying filter…
+        </div>
+      )}
+      <MonacoLogViewer
+        rows={shownRows}
+        colorMode={colorMode}
+        onPacketClick={onPacketClick}
+        onEditorReady={onEditorReady}
+        highlightLine={highlightLine}
+      />
     </div>
   );
 }
@@ -860,12 +1557,527 @@ function PacketFieldTree({ data, depth = 0 }) {
   return <span style={{ color: "var(--text)" }}>{String(data)}</span>;
 }
 
+// ── NETWORK CAPTURE VISUALIZER ────────────────────────────────────────────────
+// Interactive views over the decoded packet lines of a "network capture"
+// snapshot (the same rows shown in the log viewer, so the regex filters
+// applied there carry over). Everything is built on the Plotly global the app
+// already uses for charts (scatter3d lives in the standard Plotly bundle), so
+// no extra dependency is needed.
+//
+//   • 3D Flow Timeline — x = time, y = conversation, z = packet size. Click a
+//                        point to open that packet's detail modal.
+//   • 3D Host Topology — force-directed graph of hosts; node size = traffic.
+//   • Traffic Timeline — stacked bytes/packets per time bucket by protocol.
+
+const NV_FONT = "JetBrains Mono, monospace";
+const NV_PALETTE = ["#818cf8", "#34d399", "#f472b6", "#fb923c", "#60a5fa", "#a78bfa", "#fbbf24", "#22d3ee"];
+const NV_OTHER = "#6b7280";
+const NV_MAX_PROTOCOLS = 8;     // legend entries before the rest fold into "other"
+const NV_MAX_FLOWS_3D = 20;     // conversations shown as rows in the 3D timeline
+const NV_MAX_POINTS_3D = 6000;  // 3D points drawn (uniformly sampled above this)
+const NV_MAX_HOSTS = 40;        // nodes in the topology graph
+const NV_MAX_EDGES = 120;       // edges in the topology graph
+const NV_TIME_BUCKETS = 80;
+
+// "12 | eth:ip:tcp | 10.0.0.1:443 -> 10.0.0.2:51000 | len=1500 | info"
+// (mirrors PacketInfo.to_content_str(); the protocols part may be absent).
+const NV_PKT_RE = /^\s*(\d+)\s*\|\s*(?:(.*?)\s*\|\s*)?(\S*) -> (\S*)\s*\|\s*len=(\d+)(?:\s*\|\s*(.*))?$/;
+
+function nvSplitEndpoint(ep) {
+  const i = ep.lastIndexOf(":"); // IPv6 safe: the port is always the last segment
+  return i < 0 ? [ep, ""] : [ep.slice(0, i), ep.slice(i + 1)];
+}
+
+function nvFormatBytes(n) {
+  if (n < 1024) return `${n} B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  let v = n / 1024, u = 0;
+  while (v >= 1024 && u < units.length - 1) { v /= 1024; u += 1; }
+  return `${v.toFixed(v >= 100 ? 0 : 1)} ${units[u]}`;
+}
+
+function nvFormatDuration(sec) {
+  if (sec < 1) return `${Math.round(sec * 1000)} ms`;
+  if (sec < 120) return `${sec.toFixed(1)} s`;
+  if (sec < 7200) return `${(sec / 60).toFixed(1)} min`;
+  return `${(sec / 3600).toFixed(1)} h`;
+}
+
+const nvShort = (s, n) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
+
+/**
+ * Parses packet rows and builds every aggregate the charts need in one pass.
+ * Rows that aren't parseable packet lines are skipped.
+ */
+function analyzeCapture(rows) {
+  const pkts = [];
+  const protoCount = new Map();
+  const hosts = new Map();
+  const convs = new Map();
+  let bytes = 0;
+
+  for (const row of rows || []) {
+    if (row.log_name !== "network capture") continue;
+    const m = NV_PKT_RE.exec(String(row.content ?? ""));
+    if (!m) continue;
+    const t = Date.parse(row.time ?? row.timestamp);
+    if (Number.isNaN(t)) continue;
+
+    const [srcIp, sport] = nvSplitEndpoint(m[3]);
+    const [dstIp, dport] = nvSplitEndpoint(m[4]);
+    const src = srcIp || "(no IP)"; // e.g. ARP / link-layer frames
+    const dst = dstIp || "(no IP)";
+    const protoChain = (m[2] || "").split(":").filter(Boolean);
+    const proto = (protoChain[protoChain.length - 1] || "unknown").toLowerCase();
+    const len = parseInt(m[5], 10) || 0;
+    const p = { n: parseInt(m[1], 10), t, len, proto, src, dst, sport, dport, info: m[6] || "", row };
+    pkts.push(p);
+    bytes += len;
+    protoCount.set(proto, (protoCount.get(proto) || 0) + 1);
+
+    for (const ip of [src, dst]) {
+      const h = hosts.get(ip) || { ip, bytes: 0, packets: 0, peers: new Set() };
+      h.bytes += len; h.packets += 1;
+      hosts.set(ip, h);
+    }
+    hosts.get(src).peers.add(dst);
+    hosts.get(dst).peers.add(src);
+
+    // Conversation = unordered host pair, so request and reply share a row.
+    const key = src < dst ? `${src}\u0000${dst}` : `${dst}\u0000${src}`;
+    const c = convs.get(key) || { key, a: src < dst ? src : dst, b: src < dst ? dst : src, bytes: 0, packets: 0 };
+    c.bytes += len; c.packets += 1;
+    convs.set(key, c);
+  }
+
+  // Legend protocols: most frequent first, the long tail folds into "other".
+  const ranked = [...protoCount.entries()].sort((a, b) => b[1] - a[1]).map(([k]) => k);
+  const legend = ranked.slice(0, NV_MAX_PROTOCOLS);
+  const colorOf = {};
+  legend.forEach((p, i) => { colorOf[p] = NV_PALETTE[i % NV_PALETTE.length]; });
+  const hasOther = ranked.length > legend.length;
+  if (hasOther) legend.push("other");
+  colorOf.other = NV_OTHER;
+  const legendProto = (p) => (colorOf[p] && p !== "other" ? p : "other");
+
+  let tMin = Infinity, tMax = -Infinity;
+  for (const p of pkts) { if (p.t < tMin) tMin = p.t; if (p.t > tMax) tMax = p.t; }
+
+  return {
+    pkts, bytes, hosts, convs, legend, colorOf, legendProto,
+    tMin: pkts.length ? tMin : 0,
+    tMax: pkts.length ? tMax : 0,
+    topProto: ranked[0] || "—",
+  };
+}
+
+// Deterministic 3D force-directed layout (Fruchterman–Reingold style).
+function forceLayout3D(n, edges, iterations = 240) {
+  const pos = [];
+  for (let i = 0; i < n; i += 1) { // Fibonacci sphere start → reproducible, no overlaps
+    const phi = Math.acos(1 - (2 * (i + 0.5)) / n);
+    const theta = Math.PI * (1 + Math.sqrt(5)) * (i + 0.5);
+    pos.push([Math.cos(theta) * Math.sin(phi) * 2, Math.sin(theta) * Math.sin(phi) * 2, Math.cos(phi) * 2]);
+  }
+  const k = 1.3;
+  for (let it = 0; it < iterations; it += 1) {
+    const disp = pos.map(() => [0, 0, 0]);
+    const temp = 0.25 * (1 - it / iterations) + 0.01;
+    for (let i = 0; i < n; i += 1) {
+      for (let j = i + 1; j < n; j += 1) {
+        const dx = pos[i][0] - pos[j][0], dy = pos[i][1] - pos[j][1], dz = pos[i][2] - pos[j][2];
+        const d2 = Math.max(dx * dx + dy * dy + dz * dz, 0.01);
+        const f = (k * k) / d2; // repulsion
+        disp[i][0] += dx * f; disp[i][1] += dy * f; disp[i][2] += dz * f;
+        disp[j][0] -= dx * f; disp[j][1] -= dy * f; disp[j][2] -= dz * f;
+      }
+    }
+    for (const [a, b, w] of edges) {
+      const dx = pos[a][0] - pos[b][0], dy = pos[a][1] - pos[b][1], dz = pos[a][2] - pos[b][2];
+      const d = Math.max(Math.sqrt(dx * dx + dy * dy + dz * dz), 0.01);
+      const f = (d / k) * (0.4 + 0.6 * w); // attraction, stronger for heavy links
+      disp[a][0] -= dx * f; disp[a][1] -= dy * f; disp[a][2] -= dz * f;
+      disp[b][0] += dx * f; disp[b][1] += dy * f; disp[b][2] += dz * f;
+    }
+    for (let i = 0; i < n; i += 1) {
+      for (let c = 0; c < 3; c += 1) disp[i][c] -= pos[i][c] * 0.15; // gentle gravity
+      const len = Math.max(Math.hypot(disp[i][0], disp[i][1], disp[i][2]), 1e-6);
+      const step = Math.min(len, temp);
+      for (let c = 0; c < 3; c += 1) pos[i][c] += (disp[i][c] / len) * step;
+    }
+  }
+  return pos;
+}
+
+const NV_AXIS_3D = {
+  backgroundcolor: "rgba(9,9,15,0.55)",
+  gridcolor: "rgba(255,255,255,0.08)",
+  zerolinecolor: "rgba(255,255,255,0.12)",
+  showspikes: false,
+  tickfont: { color: "#6b7280", size: 9, family: NV_FONT },
+};
+
+const NV_HOVERLABEL = {
+  bgcolor: "#111827",
+  bordercolor: "#818cf8",
+  font: { color: "#e8eaf0", size: 12, family: NV_FONT },
+};
+
+const nvScene = (extra) => ({
+  bgcolor: "rgba(0,0,0,0)",
+  camera: { eye: { x: 1.55, y: -1.55, z: 0.95 } },
+  ...extra,
+});
+
+/**
+ * Thin Plotly wrapper: draws on mount/update, purges on unmount, forwards
+ * point clicks and (for 3D plots) optionally spins the camera slowly until
+ * the user grabs the plot.
+ */
+function NvPlot({ data, layout, onPointClick, autoRotate = false }) {
+  const ref = useRef(null);
+  const clickRef = useRef(onPointClick);
+  clickRef.current = onPointClick;
+
+  useEffect(() => {
+    const el = ref.current;
+    const Plotly = window.Plotly;
+    if (!el) return undefined;
+    if (!Plotly) {
+      el.innerHTML = '<p style="color:#f87171;font-family:monospace;font-size:12px;padding:16px">Plotly not loaded — add the CDN script to index.html</p>';
+      return undefined;
+    }
+    Plotly.newPlot(el, data, {
+      paper_bgcolor: "rgba(0,0,0,0)",
+      plot_bgcolor: "rgba(9,9,15,0.6)",
+      font: { color: "#6b7280", family: NV_FONT, size: 11 },
+      hoverlabel: NV_HOVERLABEL,
+      autosize: true,
+      ...layout,
+    }, {
+      responsive: true,
+      displaylogo: false,
+      modeBarButtonsToRemove: ["select2d", "lasso2d", "toggleSpikelines"],
+      toImageButtonOptions: { format: "png", filename: "network_capture", scale: 2 },
+    });
+    el.on("plotly_click", (ev) => {
+      const pt = ev && ev.points && ev.points[0];
+      if (pt && clickRef.current) clickRef.current(pt);
+    });
+    return () => { Plotly.purge(el); };
+  }, [data, layout]);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!autoRotate || !el || !window.Plotly) return undefined;
+    let grabbed = false;
+    const down = () => { grabbed = true; };
+    const up = () => { grabbed = false; };
+    el.addEventListener("mousedown", down);
+    el.addEventListener("touchstart", down, { passive: true });
+    window.addEventListener("mouseup", up);
+    window.addEventListener("touchend", up);
+    const id = setInterval(() => {
+      if (grabbed || !el.layout || !el.layout.scene) return;
+      const eye = (el.layout.scene.camera && el.layout.scene.camera.eye) || { x: 1.55, y: -1.55, z: 0.95 };
+      const a = 0.012;
+      window.Plotly.relayout(el, {
+        "scene.camera.eye": {
+          x: eye.x * Math.cos(a) - eye.y * Math.sin(a),
+          y: eye.x * Math.sin(a) + eye.y * Math.cos(a),
+          z: eye.z,
+        },
+      });
+    }, 50);
+    return () => {
+      clearInterval(id);
+      el.removeEventListener("mousedown", down);
+      el.removeEventListener("touchstart", down);
+      window.removeEventListener("mouseup", up);
+      window.removeEventListener("touchend", up);
+    };
+  }, [autoRotate, data, layout]);
+
+  return <div ref={ref} style={{ width: "100%", height: "100%", minHeight: 380 }} />;
+}
+
+function Flow3DView({ a, onPacketClick, autoRotate }) {
+  const { data, layout, lookup, note } = useMemo(() => {
+    const topConvs = [...a.convs.values()].sort((x, y) => y.packets - x.packets).slice(0, NV_MAX_FLOWS_3D);
+    const rowOf = new Map(topConvs.map((c, i) => [c.key, i]));
+    let pool = a.pkts.filter((p) => rowOf.has(p.src < p.dst ? `${p.src}\u0000${p.dst}` : `${p.dst}\u0000${p.src}`));
+    const eligible = pool.length;
+    if (pool.length > NV_MAX_POINTS_3D) {
+      const step = pool.length / NV_MAX_POINTS_3D;
+      pool = Array.from({ length: NV_MAX_POINTS_3D }, (_, i) => pool[Math.floor(i * step)]);
+    }
+    const maxLen = Math.max(1, ...pool.map((p) => p.len));
+    const rel = (p) => (p.t - a.tMin) / 1000;
+    const yOf = (p) => rowOf.get(p.src < p.dst ? `${p.src}\u0000${p.dst}` : `${p.dst}\u0000${p.src}`);
+
+    // Faint vertical "stems" from the floor up to each packet → a 3D skyline.
+    const sx = [], sy = [], sz = [];
+    for (const p of pool) { sx.push(rel(p), rel(p), null); sy.push(yOf(p), yOf(p), null); sz.push(0, p.len, null); }
+    const traces = [{
+      type: "scatter3d", mode: "lines", x: sx, y: sy, z: sz,
+      line: { color: "rgba(129,140,248,0.22)", width: 1 },
+      hoverinfo: "skip", showlegend: false,
+    }];
+    const lookup = [null];
+
+    for (const proto of a.legend) {
+      const pts = pool.filter((p) => a.legendProto(p.proto) === proto);
+      if (!pts.length) continue;
+      traces.push({
+        type: "scatter3d", mode: "markers", name: proto,
+        x: pts.map(rel), y: pts.map(yOf), z: pts.map((p) => p.len),
+        text: pts.map((p) => `#${p.n} ${p.proto}<br>${p.src}${p.sport ? `:${p.sport}` : ""} → ${p.dst}${p.dport ? `:${p.dport}` : ""}<br>${p.len} B${p.info ? `<br>${nvShort(p.info, 70).replace(/</g, "&lt;")}` : ""}`),
+        hoverinfo: "text",
+        marker: {
+          size: pts.map((p) => 3 + 7 * Math.sqrt(p.len / maxLen)),
+          color: a.colorOf[proto], opacity: 0.88, line: { width: 0 },
+        },
+      });
+      lookup.push(pts);
+    }
+
+    return {
+      data: traces,
+      lookup,
+      note: eligible > pool.length ? `Showing ${pool.length.toLocaleString()} of ${eligible.toLocaleString()} packets (sampled)` : "",
+      layout: {
+        margin: { l: 0, r: 0, t: 0, b: 0 },
+        legend: { font: { color: "#e8eaf0", size: 11, family: NV_FONT }, bgcolor: "rgba(0,0,0,0.35)", x: 0.01, y: 0.99 },
+        scene: nvScene({
+          aspectmode: "manual", aspectratio: { x: 2.1, y: 1.3, z: 0.7 },
+          xaxis: { ...NV_AXIS_3D, title: { text: "time since first packet (s)", font: { size: 10, color: "#9ca3af" } } },
+          yaxis: {
+            ...NV_AXIS_3D, title: { text: "" },
+            tickmode: "array", tickvals: topConvs.map((_, i) => i),
+            ticktext: topConvs.map((c) => nvShort(`${c.a} ↔ ${c.b}`, 26)),
+            tickfont: { color: "#6b7280", size: 8, family: NV_FONT },
+          },
+          zaxis: { ...NV_AXIS_3D, title: { text: "bytes", font: { size: 10, color: "#9ca3af" } }, rangemode: "tozero" },
+        }),
+      },
+    };
+  }, [a]);
+
+  const handleClick = useCallback((pt) => {
+    const pkt = lookup[pt.curveNumber] && lookup[pt.curveNumber][pt.pointNumber];
+    if (pkt && onPacketClick) onPacketClick(pkt.row);
+  }, [lookup, onPacketClick]);
+
+  return (
+    <>
+      <NvNote>Click any point to open the packet details. Drag to rotate, scroll to zoom.{note ? ` ${note}.` : ""}</NvNote>
+      <div style={{ flex: 1, minHeight: 0 }}><NvPlot data={data} layout={layout} onPointClick={handleClick} autoRotate={autoRotate} /></div>
+    </>
+  );
+}
+
+function Topology3DView({ a, autoRotate }) {
+  const { data, layout, note } = useMemo(() => {
+    const topHosts = [...a.hosts.values()].sort((x, y) => y.bytes - x.bytes).slice(0, NV_MAX_HOSTS);
+    const idx = new Map(topHosts.map((h, i) => [h.ip, i]));
+    const edges = [...a.convs.values()]
+      .filter((c) => idx.has(c.a) && idx.has(c.b))
+      .sort((x, y) => y.bytes - x.bytes)
+      .slice(0, NV_MAX_EDGES);
+    const maxEdge = Math.max(1, ...edges.map((e) => e.bytes));
+    const pos = forceLayout3D(topHosts.length, edges.map((e) => [idx.get(e.a), idx.get(e.b), Math.sqrt(e.bytes / maxEdge)]));
+
+    // Edges bucketed by volume so heavier links draw thicker and brighter.
+    const buckets = [
+      { w: 1.5, color: "rgba(129,140,248,0.25)", xs: [], ys: [], zs: [] },
+      { w: 3.5, color: "rgba(129,140,248,0.50)", xs: [], ys: [], zs: [] },
+      { w: 6.5, color: "rgba(244,114,182,0.85)", xs: [], ys: [], zs: [] },
+    ];
+    for (const e of edges) {
+      const r = e.bytes / maxEdge;
+      const bkt = buckets[r > 0.5 ? 2 : r > 0.12 ? 1 : 0];
+      const p1 = pos[idx.get(e.a)], p2 = pos[idx.get(e.b)];
+      bkt.xs.push(p1[0], p2[0], null); bkt.ys.push(p1[1], p2[1], null); bkt.zs.push(p1[2], p2[2], null);
+    }
+    const traces = buckets.filter((b) => b.xs.length).map((b) => ({
+      type: "scatter3d", mode: "lines", x: b.xs, y: b.ys, z: b.zs,
+      line: { color: b.color, width: b.w }, hoverinfo: "skip", showlegend: false,
+    }));
+
+    const maxBytes = Math.max(1, ...topHosts.map((h) => h.bytes));
+    traces.push({
+      type: "scatter3d", mode: "markers+text", name: "hosts", showlegend: false,
+      x: pos.map((p) => p[0]), y: pos.map((p) => p[1]), z: pos.map((p) => p[2]),
+      text: topHosts.map((h, i) => (i < 12 ? nvShort(h.ip, 22) : "")),
+      textposition: "top center",
+      textfont: { color: "#e8eaf0", size: 10, family: NV_FONT },
+      hovertext: topHosts.map((h) => `${h.ip}<br>${h.packets.toLocaleString()} packets · ${nvFormatBytes(h.bytes)}<br>${h.peers.size} peer${h.peers.size === 1 ? "" : "s"}`),
+      hoverinfo: "text",
+      marker: {
+        size: topHosts.map((h) => 6 + 24 * Math.sqrt(h.bytes / maxBytes)),
+        color: topHosts.map((h) => Math.log10(h.bytes + 1)),
+        colorscale: [[0, "#312e81"], [0.5, "#818cf8"], [1, "#f472b6"]],
+        opacity: 0.95, line: { color: "rgba(255,255,255,0.35)", width: 1 },
+      },
+    });
+
+    const hidden = a.hosts.size - topHosts.length;
+    const axis = { visible: false, showbackground: false, showgrid: false, zeroline: false };
+    return {
+      data: traces,
+      note: hidden > 0 ? `Top ${topHosts.length} of ${a.hosts.size} hosts by traffic shown.` : "",
+      layout: {
+        margin: { l: 0, r: 0, t: 0, b: 0 },
+        scene: nvScene({ xaxis: axis, yaxis: axis, zaxis: axis, aspectmode: "cube" }),
+      },
+    };
+  }, [a]);
+
+  return (
+    <>
+      <NvNote>Hosts are pulled together by how much they talk — node size and colour show traffic volume, link thickness shows volume between a pair. {note}</NvNote>
+      <div style={{ flex: 1, minHeight: 0 }}><NvPlot data={data} layout={layout} autoRotate={autoRotate} /></div>
+    </>
+  );
+}
+
+function TrafficTimelineView({ a, metric }) {
+  const { data, layout } = useMemo(() => {
+    const span = Math.max(a.tMax - a.tMin, 1);
+    const size = span / NV_TIME_BUCKETS;
+    const sums = {};
+    a.legend.forEach((p) => { sums[p] = new Array(NV_TIME_BUCKETS).fill(0); });
+    for (const p of a.pkts) {
+      const b = Math.min(NV_TIME_BUCKETS - 1, Math.floor((p.t - a.tMin) / size));
+      sums[a.legendProto(p.proto)][b] += metric === "bytes" ? p.len : 1;
+    }
+    const x = Array.from({ length: NV_TIME_BUCKETS }, (_, i) => new Date(a.tMin + (i + 0.5) * size));
+    return {
+      data: a.legend.map((proto) => ({
+        type: "bar", name: proto, x, y: sums[proto],
+        marker: { color: a.colorOf[proto], line: { width: 0 } },
+        hovertemplate: `<b>${proto}</b> %{y:,} ${metric === "bytes" ? "B" : "pkts"}<extra></extra>`,
+      })),
+      layout: {
+        barmode: "stack", bargap: 0.06, hovermode: "x unified",
+        margin: { l: 64, r: 20, t: 12, b: 48 },
+        legend: { font: { color: "#e8eaf0", size: 11, family: NV_FONT }, orientation: "h", y: 1.08 },
+        xaxis: { gridcolor: "rgba(255,255,255,0.06)", tickfont: { color: "#6b7280", size: 10 } },
+        yaxis: {
+          gridcolor: "rgba(255,255,255,0.06)", tickfont: { color: "#6b7280", size: 10 },
+          title: { text: metric === "bytes" ? "bytes per bucket" : "packets per bucket", font: { color: "#6b7280", size: 11 } },
+        },
+      },
+    };
+  }, [a, metric]);
+
+  return (
+    <>
+      <NvNote>{NV_TIME_BUCKETS} equal time buckets across the capture, stacked by top-layer protocol.</NvNote>
+      <div style={{ flex: 1, minHeight: 0 }}><NvPlot data={data} layout={layout} /></div>
+    </>
+  );
+}
+
+function NvNote({ children }) {
+  return (
+    <div style={{ fontFamily: NV_FONT, fontSize: 11, color: "var(--muted)", padding: "0 2px 8px", flexShrink: 0 }}>{children}</div>
+  );
+}
+
+function NvStat({ label, value }) {
+  return (
+    <div style={{
+      background: "var(--card-bg)", border: "1px solid var(--border)", borderRadius: 8,
+      padding: "8px 14px", minWidth: 110,
+    }}>
+      <div style={{ fontFamily: NV_FONT, fontSize: 9, color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.1em" }}>{label}</div>
+      <div style={{ fontFamily: "var(--font-display)", fontSize: 16, fontWeight: 700, color: "var(--text)", marginTop: 2 }}>{value}</div>
+    </div>
+  );
+}
+
+/**
+ * Props:
+ *   rows           – log rows (any rows that aren't "network capture" are ignored)
+ *   onPacketClick  – optional (row) => void, called when a 3D point is clicked
+ */
+function NetworkCaptureVisualizer({ rows, onPacketClick }) {
+  // Parsing hundreds of thousands of lines takes a moment: run it after the
+  // first paint so the modal opens instantly with a spinner.
+  const [a, setA] = useState(null);
+  useEffect(() => {
+    setA(null);
+    const id = setTimeout(() => setA(analyzeCapture(rows)), 30);
+    return () => clearTimeout(id);
+  }, [rows]);
+  const [view, setView] = useState("flow3d");
+  const [metric, setMetric] = useState("bytes");
+  const [rotate, setRotate] = useState(false);
+
+  if (!a) return <Spinner />;
+
+  if (a.pkts.length === 0) {
+    return <p style={{ color: "var(--muted)", padding: 16 }}>No decodable packets to visualize{rows && rows.length ? " — check the log filters." : "."}</p>;
+  }
+
+  const tabs = [
+    { id: "flow3d", label: "3D Flow Timeline" },
+    { id: "topo3d", label: "3D Host Topology" },
+    { id: "timeline", label: "Traffic Timeline" },
+  ];
+  const tabStyle = (active) => ({
+    padding: "7px 16px", borderRadius: 7, border: "none", cursor: "pointer",
+    fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 12, letterSpacing: "0.05em",
+    background: active ? "rgba(129,140,248,0.15)" : "transparent",
+    color: active ? "var(--accent)" : "var(--muted)", transition: "all 0.15s",
+  });
+  const is3D = view !== "timeline";
+
+  return (
+    <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", gap: 12 }}>
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", flexShrink: 0 }}>
+        <NvStat label="Packets" value={a.pkts.length.toLocaleString()} />
+        <NvStat label="Traffic" value={nvFormatBytes(a.bytes)} />
+        <NvStat label="Duration" value={nvFormatDuration((a.tMax - a.tMin) / 1000)} />
+        <NvStat label="Hosts" value={a.hosts.size.toLocaleString()} />
+        <NvStat label="Conversations" value={a.convs.size.toLocaleString()} />
+        <NvStat label="Top protocol" value={a.topProto} />
+      </div>
+
+      <div style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0, borderBottom: "1px solid var(--border)", paddingBottom: 8 }}>
+        {tabs.map((t) => (
+          <button key={t.id} style={tabStyle(view === t.id)} onClick={() => setView(t.id)}>{t.label}</button>
+        ))}
+        <div style={{ flex: 1 }} />
+        {is3D && (
+          <Btn size="sm" variant={rotate ? "primary" : "subtle"} onClick={() => setRotate((r) => !r)} title="Slowly spin the 3D camera">
+            <Icon name="refresh" size={12} />Auto-rotate
+          </Btn>
+        )}
+        {view === "timeline" && (
+          <>
+            <Btn size="sm" variant={metric === "bytes" ? "primary" : "subtle"} onClick={() => setMetric("bytes")}>Bytes</Btn>
+            <Btn size="sm" variant={metric === "packets" ? "primary" : "subtle"} onClick={() => setMetric("packets")}>Packets</Btn>
+          </>
+        )}
+      </div>
+
+      <div style={{ flex: 1, minHeight: 380, display: "flex", flexDirection: "column" }}>
+        {view === "flow3d" && <Flow3DView a={a} onPacketClick={onPacketClick} autoRotate={rotate} />}
+        {view === "topo3d" && <Topology3DView a={a} autoRotate={rotate} />}
+        {view === "timeline" && <TrafficTimelineView a={a} metric={metric} />}
+      </div>
+    </div>
+  );
+}
+
 // ── DOWNLOAD FORMATS ──────────────────────────────────────────────────────────
 const DOWNLOAD_FORMATS = [
-  { id: "csv",        label: "CSV",  icon: "📊", desc: "Spreadsheet-compatible" },
-  { id: "txt",        label: "TXT",  icon: "📄", desc: "Plain text, one row per line" },
-  { id: "json",       label: "JSON", icon: "🗂",  desc: "Structured JSON array" },
-  { id: "html-color", label: "HTML", icon: "🌐", desc: "Styled HTML with per-source color stripes" },
+  { id: "csv",        label: "CSV",  icon: "table", desc: "Spreadsheet-compatible" },
+  { id: "txt",        label: "TXT",  icon: "file", desc: "Plain text, one row per line" },
+  { id: "json",       label: "JSON", icon: "braces",  desc: "Structured JSON array" },
+  { id: "html-color", label: "HTML", icon: "globe", desc: "Styled HTML with per-source color stripes" },
 ];
 
 // ── DOWNLOAD MENU ─────────────────────────────────────────────────────────────
@@ -882,8 +2094,8 @@ function DownloadMenu({ onDownload, disabled = false, loading = false, isChart =
   // Chart mode: JSON + HTML; text mode: all formats
   const formats = isChart
     ? [
-        { id: "json",       label: "JSON", icon: "🗂",  desc: "Structured JSON array" },
-        { id: "html-color", label: "HTML", icon: "🌐", desc: "Interactive charts in a standalone page" },
+        { id: "json",       label: "JSON", icon: "braces",  desc: "Structured JSON array" },
+        { id: "html-color", label: "HTML", icon: "globe", desc: "Interactive charts in a standalone page" },
       ]
     : DOWNLOAD_FORMATS;
 
@@ -903,8 +2115,8 @@ function DownloadMenu({ onDownload, disabled = false, loading = false, isChart =
           transition: "all 0.15s",
         }}
       >
-        {loading ? "⏳ Fetching…" : "⬇ Download"}
-        {!loading && <span style={{ fontSize: 9, marginLeft: 2, opacity: 0.7 }}>{open ? "▲" : "▼"}</span>}
+        {loading ? <><Icon name="hourglass" size={13} />Fetching…</> : <><Icon name="download" size={13} />Download</>}
+        {!loading && <span style={{ marginLeft: 2, opacity: 0.7, display: "inline-flex" }}><Icon name={open ? "chevUp" : "chevDown"} size={11} /></span>}
       </button>
 
       {open && (
@@ -929,7 +2141,7 @@ function DownloadMenu({ onDownload, disabled = false, loading = false, isChart =
               onMouseEnter={(e) => e.currentTarget.style.background = "rgba(129,140,248,0.08)"}
               onMouseLeave={(e) => e.currentTarget.style.background = "transparent"}
             >
-              <span style={{ fontSize: 16 }}>{f.icon}</span>
+              <span style={{ display: "inline-flex", color: "var(--accent)" }}><Icon name={f.icon} size={16} /></span>
               <div>
                 <div style={{ fontFamily: "var(--font-mono)", fontSize: 12, fontWeight: 600, color: "var(--text)" }}>{f.label}</div>
                 <div style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--muted)" }}>{f.desc}</div>
@@ -962,8 +2174,8 @@ function DownloadSelectedBtn({ onDownload, disabled = false, loading = false, is
 
   const formats = isChart
     ? [
-        { id: "json",       label: "JSON", icon: "🗂",  desc: "Structured JSON array" },
-        { id: "html-color", label: "HTML", icon: "🌐", desc: "Interactive charts in a standalone page" },
+        { id: "json",       label: "JSON", icon: "braces",  desc: "Structured JSON array" },
+        { id: "html-color", label: "HTML", icon: "globe", desc: "Interactive charts in a standalone page" },
       ]
     : DOWNLOAD_FORMATS;
 
@@ -1026,8 +2238,8 @@ function DownloadSelectedBtn({ onDownload, disabled = false, loading = false, is
         onMouseLeave={e => { e.currentTarget.style.background = isOff ? "rgba(255,255,255,0.04)" : "var(--accent-dim)"; }}
       >
         {loading
-          ? <><span style={{ fontSize: 13 }}>⏳</span> Fetching…</>
-          : <><span style={{ fontSize: 13 }}>⬇</span> Download {currentFmtLabel}</>
+          ? <><Icon name="hourglass" size={13} style={{ marginRight: 4 }} /> Fetching…</>
+          : <><Icon name="download" size={13} style={{ marginRight: 4 }} /> Download {currentFmtLabel}</>
         }
       </button>
 
@@ -1045,7 +2257,7 @@ function DownloadSelectedBtn({ onDownload, disabled = false, loading = false, is
         onMouseEnter={e => { if (!isOff) e.currentTarget.style.background = "rgba(129,140,248,0.22)"; }}
         onMouseLeave={e => { e.currentTarget.style.background = isOff ? "rgba(255,255,255,0.04)" : "var(--accent-dim)"; }}
       >
-        {open ? "▲" : "▼"}
+        <Icon name={open ? "chevUp" : "chevDown"} size={12} />
       </button>
 
       {/* ── Dropdown ── */}
@@ -1085,7 +2297,7 @@ function DownloadSelectedBtn({ onDownload, disabled = false, loading = false, is
                 onMouseEnter={e => { if (!isActive) e.currentTarget.style.background = "rgba(129,140,248,0.08)"; }}
                 onMouseLeave={e => { e.currentTarget.style.background = isActive ? "rgba(129,140,248,0.1)" : "transparent"; }}
               >
-                <span style={{ fontSize: 15 }}>{f.icon}</span>
+                <span style={{ display: "inline-flex", color: "var(--accent)" }}><Icon name={f.icon} size={15} /></span>
                 <div style={{ flex: 1 }}>
                   <div style={{
                     fontFamily: "var(--font-mono)", fontSize: 12, fontWeight: 600,
@@ -1094,7 +2306,7 @@ function DownloadSelectedBtn({ onDownload, disabled = false, loading = false, is
                   <div style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--muted)" }}>{f.desc}</div>
                 </div>
                 {isActive && (
-                  <span style={{ fontSize: 10, color: accentColor, marginLeft: "auto" }}>✓</span>
+                  <span style={{ display: "inline-flex", color: accentColor, marginLeft: "auto" }}><Icon name="check" size={13} stroke={1.8} /></span>
                 )}
               </button>
             );
@@ -1237,17 +2449,20 @@ function SettingsModal({ open, onClose, isAdmin, onRequestLogin, auth, addToast,
         {/* Header */}
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "18px 24px", borderBottom: "1px solid var(--border)", flexShrink: 0 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-            <span style={{ fontSize: 20 }}>⚙️</span>
+            <span style={{ display: "inline-flex", color: "var(--accent)" }}><GearGlyph size={18} /></span>
             <h3 style={{ margin: 0, fontFamily: "var(--font-display)", fontSize: 16, fontWeight: 800, color: "var(--text)", letterSpacing: "0.04em" }}>Settings</h3>
           </div>
-          <button onClick={onClose} style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer", fontSize: 20, lineHeight: 1, padding: "2px 6px" }}>×</button>
+          <button onClick={onClose} style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer", fontSize: 20, lineHeight: 1, padding: "2px 6px" }}><Icon name="close" size={16} /></button>
         </div>
 
         {/* Tabs */}
         <div style={{ display: "flex", gap: 4, padding: "12px 20px 0", borderBottom: "1px solid var(--border)", flexShrink: 0 }}>
-          <button style={tabStyle(tab === "display")} onClick={() => setTab("display")}>🖥 Display</button>
-          <button style={tabStyle(tab === "security")} onClick={() => setTab("security")}>🔐 Security</button>
-          <button style={tabStyle(tab === "dissectors")} onClick={() => setTab("dissectors")}> 🌐 Network Capture</button>
+          <button style={tabStyle(tab === "display")} onClick={() => setTab("display")}><Icon name="monitor" size={13} style={{ marginRight: 6 }} />Display</button>
+          <button style={tabStyle(tab === "security")} onClick={() => setTab("security")}>
+            <span style={{ display: "inline-flex", verticalAlign: "-2px", marginRight: 6 }}><IconLock size={12} /></span>
+            Security
+          </button>
+          <button style={tabStyle(tab === "dissectors")} onClick={() => setTab("dissectors")}><Icon name="globe" size={13} style={{ marginRight: 6 }} />Network Capture</button>
         </div>
 
         {/* Body */}
@@ -1306,10 +2521,10 @@ function SettingsModal({ open, onClose, isAdmin, onRequestLogin, auth, addToast,
                   borderRadius: 8, padding: "24px 20px", textAlign: "center",
                   fontFamily: "var(--font-mono)", fontSize: 12, color: "#a78bfa",
                 }}>
-                  <div style={{ fontSize: 28, marginBottom: 12 }}>🔒</div>
+                  <div style={{ display: "flex", justifyContent: "center", color: "#a78bfa", marginBottom: 12 }}><IconLock size={26} /></div>
                   <div style={{ fontWeight: 600, marginBottom: 6 }}>Admin login required</div>
                   <div style={{ color: "var(--muted)", marginBottom: 16 }}>Sign in as admin to manage security settings.</div>
-                  <Btn variant="admin" onClick={onRequestLogin}>🔐 Sign In</Btn>
+                  <Btn variant="admin" onClick={onRequestLogin} style={{ display: "inline-flex", alignItems: "center", gap: 8 }}><IconLock size={12} /> Sign In</Btn>
                 </div>
               ) : (
                 <div style={{ animation: pwShake ? "shake 0.4s ease" : "none" }}>
@@ -1335,7 +2550,7 @@ function SettingsModal({ open, onClose, isAdmin, onRequestLogin, auth, addToast,
                       </div>
                       {pwError && (
                         <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "#f87171", background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.2)", borderRadius: 6, padding: "7px 12px" }}>
-                          ⚠ {pwError}
+                          <Icon name="warn" size={12} style={{ marginRight: 6 }} />{pwError}
                         </div>
                       )}
                       <Btn variant="primary" onClick={submitPasswordChange} style={{ justifyContent: "center", marginTop: 4 }}>
@@ -1364,7 +2579,7 @@ function SettingsModal({ open, onClose, isAdmin, onRequestLogin, auth, addToast,
               {/* Info card */}
               <div style={card}>
                 <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
-                  <span style={{ fontSize: 22 }}>🌐</span>
+                  <span style={{ display: "inline-flex", color: "var(--accent)" }}><Icon name="globe" size={22} /></span>
                   <div style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 14, color: "var(--text)" }}>Custom Dissectors</div>
                 </div>
                 <div style={{ fontFamily: "var(--font-mono)", fontSize: 12, color: "var(--muted)", lineHeight: 1.7, marginBottom: 0 }}>
@@ -1407,7 +2622,7 @@ function SettingsModal({ open, onClose, isAdmin, onRequestLogin, auth, addToast,
                     </div>
                   ) : (
                     <>
-                      <div style={{ fontSize: 24, marginBottom: 6 }}>📂</div>
+                      <div style={{ display: "flex", justifyContent: "center", marginBottom: 8, color: "var(--accent)" }}><Icon name="folder" size={26} /></div>
                       <div style={{ fontFamily: "var(--font-mono)", fontSize: 12, color: "var(--muted)" }}>
                         Click to upload <span style={{ color: "#22d3ee" }}>.lua</span>, <span style={{ color: "#22d3ee" }}>.so</span>, or <span style={{ color: "#22d3ee" }}>.dll</span> files
                       </div>
@@ -1419,7 +2634,7 @@ function SettingsModal({ open, onClose, isAdmin, onRequestLogin, auth, addToast,
                 </div>
                 {dissectorError && (
                   <div style={{ marginTop: 10, fontFamily: "var(--font-mono)", fontSize: 11, color: "#f87171", background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.2)", borderRadius: 6, padding: "7px 12px" }}>
-                    ⚠ {dissectorError}
+                    <Icon name="warn" size={12} style={{ marginRight: 6 }} />{dissectorError}
                   </div>
                 )}
               </div>
@@ -1433,7 +2648,7 @@ function SettingsModal({ open, onClose, isAdmin, onRequestLogin, auth, addToast,
                     disabled={dissectorsLoading}
                     style={{ background: "none", border: "none", cursor: "pointer", color: "var(--muted)", fontSize: 13, padding: "2px 6px", opacity: dissectorsLoading ? 0.4 : 1 }}
                     title="Refresh list"
-                  >↻</button>
+                  ><Icon name="refresh" size={13} /></button>
                 </div>
 
                 {dissectorsLoading ? (
@@ -1490,7 +2705,7 @@ function SettingsModal({ open, onClose, isAdmin, onRequestLogin, auth, addToast,
                           style={{ flexShrink: 0, background: "none", border: "none", color: "#f87171", cursor: "pointer", fontSize: 15, padding: "2px 4px", opacity: 0.7, lineHeight: 1 }}
                           onMouseEnter={e => e.currentTarget.style.opacity = "1"}
                           onMouseLeave={e => e.currentTarget.style.opacity = "0.7"}
-                        >×</button>
+                        ><Icon name="close" size={13} /></button>
                       </div>
                     ))}
                   </div>
@@ -1508,19 +2723,28 @@ function SettingsModal({ open, onClose, isAdmin, onRequestLogin, auth, addToast,
 function LoginModal({ open, onClose, onLogin }) {
   const [user, setUser] = useState("");
   const [pass, setPass] = useState("");
+  const [showPass, setShowPass] = useState(false);
   const [error, setError] = useState("");
   const [shaking, setShaking] = useState(false);
   const [loading, setLoading] = useState(false);
 
+  // Close on Escape, like every other modal in the app.
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e) => { if (e.key === "Escape") onClose(); };
+    document.addEventListener("keydown", handler);
+    return () => document.removeEventListener("keydown", handler);
+  }, [open, onClose]);
+
   // FIX: onLogin is now async (calls /api/auth/login).  Handle the Promise and
   // surface network errors rather than silently showing "Invalid credentials".
   const attempt = async () => {
-    if (loading) return;
+    if (loading || !user || !pass) return;
     setLoading(true);
     try {
       const ok = await onLogin(user, pass);
       if (ok) {
-        setUser(""); setPass(""); setError(""); onClose();
+        setUser(""); setPass(""); setError(""); setShowPass(false); onClose();
       } else {
         setError("Invalid credentials");
         setShaking(true);
@@ -1537,105 +2761,172 @@ function LoginModal({ open, onClose, onLogin }) {
 
   if (!open) return null;
 
+  const labelStyle = {
+    display: "block", marginBottom: 6,
+    fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--muted)",
+    textTransform: "uppercase", letterSpacing: "0.09em",
+  };
+  const canSubmit = !!user && !!pass && !loading;
+
   return (
     <div
-      style={{
-        position: "fixed",
-        inset: 0,
-        zIndex: 2000,
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-      }}
+      style={{ position: "fixed", inset: 0, zIndex: 2000, display: "flex", alignItems: "center", justifyContent: "center" }}
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
+      <style>{`
+        @keyframes shake { 0%,100%{transform:translateX(0)} 25%{transform:translateX(-8px)} 75%{transform:translateX(8px)} }
+        @keyframes lo-login-in { from{opacity:0;transform:translateY(10px) scale(0.985)} to{opacity:1;transform:translateY(0) scale(1)} }
+        .lo-login-field {
+          display: flex; align-items: center; gap: 10px;
+          background: rgba(255,255,255,0.04); border: 1px solid var(--border);
+          border-radius: 10px; padding: 0 12px;
+          transition: border-color 0.15s, box-shadow 0.15s, background 0.15s;
+        }
+        .lo-login-field:hover { border-color: rgba(129,140,248,0.25); }
+        .lo-login-field:focus-within {
+          border-color: rgba(129,140,248,0.55); background: rgba(129,140,248,0.05);
+          box-shadow: 0 0 0 3px rgba(129,140,248,0.12);
+        }
+        .lo-login-field.lo-err, .lo-login-field.lo-err:focus-within {
+          border-color: rgba(248,113,113,0.5); box-shadow: 0 0 0 3px rgba(248,113,113,0.10);
+        }
+        .lo-login-field .lo-login-ic { display: inline-flex; color: var(--muted); transition: color 0.15s; }
+        .lo-login-field:focus-within .lo-login-ic { color: var(--accent); }
+        .lo-login-field input {
+          flex: 1; min-width: 0; background: transparent; border: none; outline: none;
+          color: var(--text); font-family: var(--font-mono); font-size: 13px; padding: 12px 0;
+        }
+        .lo-login-field input::placeholder { color: rgba(107,114,128,0.75); }
+        .lo-login-eye {
+          display: inline-flex; background: none; border: none; padding: 4px; margin-right: -4px;
+          border-radius: 6px; color: var(--muted); cursor: pointer; transition: color 0.15s, background 0.15s;
+        }
+        .lo-login-eye:hover { color: var(--text); background: rgba(255,255,255,0.06); }
+        .lo-login-close {
+          position: absolute; top: 14px; right: 14px; display: inline-flex; padding: 6px;
+          background: none; border: none; border-radius: 8px; color: var(--muted); cursor: pointer;
+          transition: color 0.15s, background 0.15s;
+        }
+        .lo-login-close:hover { color: var(--text); background: rgba(255,255,255,0.06); }
+        .lo-login-cancel {
+          background: none; border: none; cursor: pointer; padding: 6px 10px; border-radius: 6px;
+          font-family: var(--font-mono); font-size: 11px; color: var(--muted); transition: color 0.15s;
+        }
+        .lo-login-cancel:hover { color: var(--text); }
+      `}</style>
+
       <div style={{ position: "absolute", inset: 0, background: "rgba(0,0,0,0.8)", backdropFilter: "blur(6px)" }} />
+
       <div
         style={{
-          position: "relative",
-          zIndex: 1,
-          background: "var(--modal-bg)",
-          border: "1px solid var(--border)",
-          borderRadius: 14,
-          padding: "36px 40px",
-          width: 380,
-          boxShadow: "0 24px 80px rgba(129,140,248,0.08), 0 0 0 1px rgba(129,140,248,0.08)",
-          animation: shaking ? "shake 0.4s ease" : "none",
+          position: "relative", zIndex: 1, width: 400, maxWidth: "calc(100vw - 32px)",
+          background: "radial-gradient(120% 60% at 50% 0%, rgba(129,140,248,0.11), transparent 62%), var(--modal-bg)",
+          border: "1px solid var(--border)", borderRadius: 16, padding: "38px 36px 26px",
+          boxShadow: "0 24px 80px rgba(0,0,0,0.55), 0 0 0 1px rgba(129,140,248,0.08)",
+          animation: shaking ? "shake 0.4s ease" : "lo-login-in 0.22s ease-out",
         }}
       >
-        <style>{`@keyframes shake { 0%,100%{transform:translateX(0)} 25%{transform:translateX(-8px)} 75%{transform:translateX(8px)} }`}</style>
+        <button className="lo-login-close" onClick={onClose} title="Close" aria-label="Close">
+          <Icon name="close" size={15} />
+        </button>
+
+        {/* Identity */}
         <div style={{ textAlign: "center", marginBottom: 28 }}>
           <div
             style={{
-              width: 48,
-              height: 48,
-              borderRadius: "50%",
-              background: "rgba(129,140,248,0.12)",
-              border: "1px solid rgba(129,140,248,0.3)",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              margin: "0 auto 16px",
-              fontSize: 22,
+              width: 56, height: 56, borderRadius: "50%", margin: "0 auto 18px",
+              display: "flex", alignItems: "center", justifyContent: "center",
+              color: "var(--accent)",
+              background: "linear-gradient(135deg, rgba(129,140,248,0.22), rgba(167,139,250,0.08))",
+              border: "1px solid rgba(129,140,248,0.35)",
+              boxShadow: "0 0 32px rgba(129,140,248,0.18), inset 0 0 0 5px rgba(129,140,248,0.05)",
             }}
           >
-            🔐
+            <IconLock size={24} />
           </div>
-          <h3
-            style={{
-              margin: 0,
-              fontFamily: "var(--font-display)",
-              fontSize: 18,
-              fontWeight: 800,
-              color: "var(--text)",
-              letterSpacing: "-0.01em",
-            }}
-          >
+          <h3 style={{ margin: 0, fontFamily: "var(--font-display)", fontSize: 20, fontWeight: 800, color: "var(--text)", letterSpacing: "-0.01em" }}>
             Admin Login
           </h3>
-          <p style={{ margin: "6px 0 0", fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--muted)" }}>
-            Required to view device configuration
+          <p style={{ margin: "7px 0 0", fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--muted)", lineHeight: 1.5 }}>
+            Sign in to view and edit device configuration
           </p>
         </div>
 
-        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-          <input
-            value={user}
-            onChange={(e) => setUser(e.target.value)}
-            placeholder="Username"
-            autoFocus
-            onKeyDown={(e) => e.key === "Enter" && attempt()}
-            style={inputStyle}
-          />
-          <input
-            type="password"
-            value={pass}
-            onChange={(e) => setPass(e.target.value)}
-            placeholder="Password"
-            onKeyDown={(e) => e.key === "Enter" && attempt()}
-            style={inputStyle}
-          />
+        {/* Form */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+          <div>
+            <label style={labelStyle} htmlFor="lo-login-user">Username</label>
+            <div className={`lo-login-field${error ? " lo-err" : ""}`}>
+              <span className="lo-login-ic"><Icon name="user" size={15} /></span>
+              <input
+                id="lo-login-user"
+                value={user}
+                onChange={(e) => { setUser(e.target.value); if (error) setError(""); }}
+                placeholder="admin"
+                autoFocus
+                autoComplete="username"
+                spellCheck={false}
+                onKeyDown={(e) => e.key === "Enter" && attempt()}
+              />
+            </div>
+          </div>
+
+          <div>
+            <label style={labelStyle} htmlFor="lo-login-pass">Password</label>
+            <div className={`lo-login-field${error ? " lo-err" : ""}`}>
+              <span className="lo-login-ic"><IconLock size={15} /></span>
+              <input
+                id="lo-login-pass"
+                type={showPass ? "text" : "password"}
+                value={pass}
+                onChange={(e) => { setPass(e.target.value); if (error) setError(""); }}
+                placeholder="••••••••"
+                autoComplete="current-password"
+                onKeyDown={(e) => e.key === "Enter" && attempt()}
+              />
+              <button
+                type="button"
+                className="lo-login-eye"
+                onClick={() => setShowPass((v) => !v)}
+                title={showPass ? "Hide password" : "Show password"}
+                aria-label={showPass ? "Hide password" : "Show password"}
+              >
+                <Icon name={showPass ? "eyeOff" : "eye"} size={15} />
+              </button>
+            </div>
+          </div>
+
           {error && (
             <div
               style={{
-                fontFamily: "var(--font-mono)",
-                fontSize: 11,
-                color: "#f87171",
-                background: "rgba(248,113,113,0.08)",
-                border: "1px solid rgba(248,113,113,0.2)",
-                borderRadius: 6,
-                padding: "7px 12px",
+                display: "flex", alignItems: "center", gap: 8,
+                fontFamily: "var(--font-mono)", fontSize: 11, color: "#f87171",
+                background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.22)",
+                borderRadius: 8, padding: "8px 12px",
               }}
             >
-              ⚠ {error}
+              <Icon name="warn" size={13} />
+              <span>{error}</span>
             </div>
           )}
-          <Btn variant="primary" onClick={attempt} disabled={loading} style={{ width: "100%", justifyContent: "center", marginTop: 4 }}>
-            {loading ? "Signing in…" : "Sign In"}
+
+          <Btn
+            variant="primary"
+            size="lg"
+            onClick={attempt}
+            disabled={!canSubmit}
+            style={{ width: "100%", justifyContent: "center", marginTop: 2 }}
+          >
+            {loading ? "Signing in…" : (<><IconLock size={14} />Sign In</>)}
           </Btn>
-          <Btn variant="ghost" onClick={onClose} style={{ width: "100%", justifyContent: "center" }}>
-            Cancel
-          </Btn>
+        </div>
+
+        {/* Footer */}
+        <div style={{ marginTop: 18, display: "flex", flexDirection: "column", alignItems: "center", gap: 10 }}>
+          <button className="lo-login-cancel" onClick={onClose}>Cancel</button>
+          <div style={{ width: "100%", borderTop: "1px solid var(--border)", paddingTop: 12, textAlign: "center", fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--muted)", opacity: 0.75 }}>
+            Session ends when this tab is closed
+          </div>
         </div>
       </div>
     </div>
@@ -1656,7 +2947,7 @@ const inputStyle = {
 };
 
 // ── MODAL ─────────────────────────────────────────────────────────────────────
-function Modal({ open, onClose, title, size = "lg", children, footer }) {
+function Modal({ open, onClose, title, icon, size = "lg", children, footer }) {
   useEffect(() => {
     const handler = (e) => { if (e.key === "Escape") onClose(); };
     if (open) document.addEventListener("keydown", handler);
@@ -1704,17 +2995,20 @@ function Modal({ open, onClose, title, size = "lg", children, footer }) {
             flexShrink: 0,
           }}
         >
-          <h3
-            style={{
-              margin: 0,
-              fontSize: 16,
-              fontFamily: "var(--font-display)",
-              letterSpacing: "0.04em",
-              color: "var(--text)",
-            }}
-          >
-            {title}
-          </h3>
+          <div style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 0 }}>
+            {icon && <span style={{ display: "inline-flex", color: "var(--accent)" }}>{icon}</span>}
+            <h3
+              style={{
+                margin: 0,
+                fontSize: 16,
+                fontFamily: "var(--font-display)",
+                letterSpacing: "0.04em",
+                color: "var(--text)",
+              }}
+            >
+              {title}
+            </h3>
+          </div>
           <button
             onClick={onClose}
             style={{
@@ -1727,7 +3021,7 @@ function Modal({ open, onClose, title, size = "lg", children, footer }) {
               padding: "2px 6px",
             }}
           >
-            ×
+            <Icon name="close" size={16} />
           </button>
         </div>
         <div
@@ -1788,7 +3082,7 @@ function ConfirmDialog({ open, title, message, count, itemLabel = "item", confir
       footer={
         <>
           <Btn variant="danger" onClick={onConfirm} disabled={loading}>
-            {loading ? "Removing…" : `🗑 ${confirmLabel}`}
+            {loading ? "Removing…" : <><Icon name="trash" size={13} />{confirmLabel}</>}
           </Btn>
           <Btn variant="ghost" onClick={onCancel} disabled={loading}>Cancel</Btn>
         </>
@@ -1844,7 +3138,7 @@ function Badge({ color = "default", children }) {
 }
 
 // ── BUTTON ────────────────────────────────────────────────────────────────────
-function Btn({ variant = "default", size = "md", onClick, disabled, children, style }) {
+function Btn({ variant = "default", size = "md", onClick, disabled, children, style, title }) {
   const base = {
     cursor: disabled ? "not-allowed" : "pointer",
     border: "none",
@@ -1876,10 +3170,147 @@ function Btn({ variant = "default", size = "md", onClick, disabled, children, st
     <button
       onClick={disabled ? undefined : onClick}
       disabled={disabled}
+      title={title}
       style={{ ...base, ...sizes[size], ...variants[variant], ...style }}
     >
       {children}
     </button>
+  );
+}
+
+// ── ICONS ─────────────────────────────────────────────────────────────────────
+// Minimal single-weight line icons, drawn in the same idiom as the app's own
+// logo mark (thin strokes, round caps, currentColor) — used in place of
+// emoji for the auth / settings / API affordances. Emoji render differently
+// per OS/font and can't pick up the app's accent color the way an inline
+// SVG glyph does.
+function IconLock({ size = 14, style }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 16 16" fill="none" style={style} aria-hidden="true">
+      <path d="M4.75 7.1V5a3.25 3.25 0 0 1 6.5 0v2.1" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+      <rect x="3.1" y="7.1" width="9.8" height="6.9" rx="1.7" stroke="currentColor" strokeWidth="1.4" />
+      <circle cx="8" cy="10.35" r="0.95" fill="currentColor" />
+    </svg>
+  );
+}
+
+// The one gear used everywhere in the UI — the same "⚙" glyph as the header
+// "Settings" button. Always render a gear through this component (never a
+// raw ⚙ character or a different icon) so every settings/config affordance
+// stays identical. Inherits colour from its parent.
+function GearGlyph({ size = 14, style }) {
+  return (
+    <span aria-hidden="true" style={{ fontSize: size, lineHeight: 1, display: "inline-flex", ...style }}>⚙</span>
+  );
+}
+
+// Shared gear button (device cards). Uses the same GearGlyph as the header
+// "Settings" control so both read as the same affordance.
+//   size="sm" → compact (device cards)   size="md" → header toolbar height
+function GearBtn({ onClick, title, active = false, size = "sm", style }) {
+  const md = size === "md";
+  return (
+    <button
+      onClick={onClick}
+      title={title}
+      aria-label={title}
+      style={{
+        background: active ? "rgba(129,140,248,0.15)" : "rgba(255,255,255,0.05)",
+        border: `1px solid ${active ? "rgba(129,140,248,0.4)" : "var(--border)"}`,
+        borderRadius: 6,
+        color: active ? "var(--accent)" : "var(--muted)",
+        cursor: "pointer",
+        fontSize: md ? 15 : 13,
+        padding: md ? "0 11px" : "2px 7px",
+        height: md ? 28 : undefined,
+        display: "inline-flex",
+        alignItems: "center",
+        justifyContent: "center",
+        transition: "all 0.15s",
+        ...style,
+      }}
+      onMouseEnter={(e) => { if (!active) { e.currentTarget.style.color = "var(--accent)"; e.currentTarget.style.borderColor = "rgba(129,140,248,0.4)"; } }}
+      onMouseLeave={(e) => { if (!active) { e.currentTarget.style.color = "var(--muted)"; e.currentTarget.style.borderColor = "var(--border)"; } }}
+    >
+      <GearGlyph size={md ? 15 : 13} />
+    </button>
+  );
+}
+
+// Two opposing brackets around a center dot — reads as "endpoint" / API
+// exchange without leaning on a generic </> code glyph.
+function IconApi({ size = 14, style }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 16 16" fill="none" style={style} aria-hidden="true">
+      <path d="M6.1 3.3 2 8l4.1 4.7" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M9.9 3.3 14 8l-4.1 4.7" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+      <circle cx="8" cy="8" r="1.15" fill="currentColor" />
+    </svg>
+  );
+}
+
+// ── ICON SET ──────────────────────────────────────────────────────────────────
+// One registry of line icons drawn in the same idiom as IconLock /
+// IconApi: 16×16 grid, 1.4 stroke, round caps & joins, currentColor. Replaces
+// the emoji and Unicode symbols (🗑 📄 ✔ ⚠ ▶ ⬇ …) that used to be scattered
+// through the UI, so every glyph picks up the app's colours and renders the
+// same on every OS.  Usage: <Icon name="trash" size={13} />
+const ICONS = {
+  play:      <path d="M5.2 3.3 12.4 8l-7.2 4.7z" />,
+  stop:      <rect x="4" y="4" width="8" height="8" rx="1.6" />,
+  trash:     <path d="M2.8 4.3h10.4M6.2 4.3V2.9h3.6v1.4M4.1 4.3l.6 8.4a1 1 0 0 0 1 .9h4.6a1 1 0 0 0 1-.9l.6-8.4M6.7 7v3.6M9.3 7v3.6" />,
+  close:     <path d="M4 4l8 8M12 4l-8 8" />,
+  check:     <path d="M3.4 8.6l3.2 3.2 6-7.2" />,
+  plus:      <path d="M8 3.2v9.6M3.2 8h9.6" />,
+  warn:      <><path d="M8 2.6 14 13H2z" /><path d="M8 6.6v3" /><circle cx="8" cy="11.4" r=".8" fill="currentColor" stroke="none" /></>,
+  download:  <path d="M8 2.5v7.2M4.9 6.8 8 9.9l3.1-3.1M3 12.6h10" />,
+  upload:    <path d="M8 10.5V3.3M4.9 6.2 8 3.1l3.1 3.1M3 12.6h10" />,
+  copy:      <><rect x="5.6" y="5.6" width="7.6" height="7.6" rx="1.6" /><path d="M10.4 5.6V3.4a1 1 0 0 0-1-1H3.7a1 1 0 0 0-1 1v5.7a1 1 0 0 0 1 1h1.9" /></>,
+  save:      <><path d="M3.6 2.6h7.6l2.2 2.2v7.6a1 1 0 0 1-1 1H3.6a1 1 0 0 1-1-1V3.6a1 1 0 0 1 1-1z" /><path d="M5.3 2.7v3h4.6v-3M5 13.4V9.3h6v4.1" /></>,
+  edit:      <path d="M10.6 3.2l2.2 2.2-7.4 7.4-2.6.4.4-2.6zM9.2 4.6l2.2 2.2" />,
+  sliders:   <><path d="M3 5h5.5M11.5 5H13M3 11h1.5M7.5 11H13" /><circle cx="10" cy="5" r="1.5" /><circle cx="6" cy="11" r="1.5" /></>,
+  braces:    <path d="M6 2.8c-1.6 0-2 .8-2 2v1.6c0 1-.6 1.6-1.6 1.6 1 0 1.6.6 1.6 1.6v1.6c0 1.2.4 2 2 2M10 2.8c1.6 0 2 .8 2 2v1.6c0 1 .6 1.6 1.6 1.6-1 0-1.6.6-1.6 1.6v1.6c0 1.2-.4 2-2 2" />,
+  clock:     <><circle cx="8" cy="8" r="5.6" /><path d="M8 4.8V8l2.2 1.4" /></>,
+  hourglass: <path d="M4.4 2.6h7.2M4.4 13.4h7.2M5 2.6c0 3 3 3.4 3 5.4s-3 2.4-3 5.4M11 2.6c0 3-3 3.4-3 5.4s3 2.4 3 5.4" />,
+  link:      <path d="M6.9 9.1a2.6 2.6 0 0 0 3.7 0l2.2-2.2a2.6 2.6 0 0 0-3.7-3.7l-.6.6M9.1 6.9a2.6 2.6 0 0 0-3.7 0L3.2 9.1a2.6 2.6 0 0 0 3.7 3.7l.6-.6" />,
+  file:      <><path d="M4.2 2.4h5l3 3v7.2a1 1 0 0 1-1 1H4.2a1 1 0 0 1-1-1V3.4a1 1 0 0 1 1-1z" /><path d="M9.2 2.5v3h3M5.6 8.6h4.8M5.6 11h3.2" /></>,
+  table:     <><rect x="2.6" y="3.2" width="10.8" height="9.6" rx="1.4" /><path d="M2.6 6.6h10.8M2.6 9.8h10.8M7.2 6.6v6.2" /></>,
+  chart:     <path d="M2.8 2.8v10.4h10.4M5.4 10 8 6.8l2 2 3-4.2" />,
+  clipboard: <><rect x="3.6" y="3.4" width="8.8" height="10.2" rx="1.4" /><path d="M6 3.4v-.6a.6.6 0 0 1 .6-.6h2.8a.6.6 0 0 1 .6.6v.6M5.8 7.4h4.4M5.8 10h3" /></>,
+  search:    <><circle cx="7" cy="7" r="4.2" /><path d="M10.2 10.2l3.2 3.2" /></>,
+  chevUp:    <path d="M4 10l4-4 4 4" />,
+  chevDown:  <path d="M4 6l4 4 4-4" />,
+  chevLeft:  <path d="M10 4L6 8l4 4" />,
+  chevRight: <path d="M6 4l4 4-4 4" />,
+  arrowLeft: <path d="M13 8H3.4M7.4 4l-4 4 4 4" />,
+  enter:     <path d="M12.6 3.6v4.2a1 1 0 0 1-1 1H3.8M6.2 6.4 3.4 8.8l2.8 2.4" />,
+  refresh:   <path d="M13 8a5 5 0 1 1-1.5-3.55M13 2.8v2.8h-2.8" />,
+  globe:     <><circle cx="8" cy="8" r="5.6" /><path d="M2.4 8h11.2" /><ellipse cx="8" cy="8" rx="2.6" ry="5.6" /></>,
+  folder:    <path d="M2.6 4.4a1 1 0 0 1 1-1h2.7l1.4 1.6h4.7a1 1 0 0 1 1 1v5.6a1 1 0 0 1-1 1H3.6a1 1 0 0 1-1-1z" />,
+  key:       <><circle cx="5.4" cy="10.6" r="2.4" /><path d="M7.1 8.9 13 3M11 5l1.8 1.8" /></>,
+  plug:      <path d="M5.8 2.6v3M10.2 2.6v3M4.2 5.6h7.6v2.2a3.8 3.8 0 0 1-7.6 0zM8 11.6v2.2" />,
+  pin:       <><path d="M8 13.6s4.2-3.6 4.2-7a4.2 4.2 0 0 0-8.4 0c0 3.4 4.2 7 4.2 7z" /><circle cx="8" cy="6.6" r="1.5" /></>,
+  spark:     <path d="M8 2.4c.4 3.2 2.4 5.2 5.6 5.6-3.2.4-5.2 2.4-5.6 5.6-.4-3.2-2.4-5.2-5.6-5.6C5.6 7.6 7.6 5.6 8 2.4z" />,
+  bolt:      <path d="M9 2.4 4.2 9h3.6L7 13.6 11.8 7H8.2z" />,
+  ban:       <><circle cx="8" cy="8" r="5.6" /><path d="M4.1 4.1l7.8 7.8" /></>,
+  monitor:   <><rect x="2.4" y="3" width="11.2" height="7.6" rx="1.4" /><path d="M6 13.2h4M8 10.6v2.6" /></>,
+  terminal:  <path d="M3 4.4 6.6 8 3 11.6M8 12h5" />,
+  user:      <><circle cx="8" cy="5.6" r="2.7" /><path d="M2.9 13.4c.4-2.6 2.5-4.1 5.1-4.1s4.7 1.5 5.1 4.1" /></>,
+  eye:       <><path d="M1.6 8s2.4-4.6 6.4-4.6S14.4 8 14.4 8s-2.4 4.6-6.4 4.6S1.6 8 1.6 8z" /><circle cx="8" cy="8" r="1.9" /></>,
+  eyeOff:    <><path d="M1.6 8s2.4-4.6 6.4-4.6c1.1 0 2.1.3 3 .8M14.4 8s-2.4 4.6-6.4 4.6c-1.1 0-2.1-.3-3-.8" /><path d="M3 2.8l10 10.4" /></>,
+  grid:      <><rect x="2.8" y="2.8" width="4.2" height="4.2" rx="1" /><rect x="9" y="2.8" width="4.2" height="4.2" rx="1" /><rect x="2.8" y="9" width="4.2" height="4.2" rx="1" /><rect x="9" y="9" width="4.2" height="4.2" rx="1" /></>,
+};
+
+function Icon({ name, size = 14, stroke = 1.4, style }) {
+  return (
+    <svg
+      width={size} height={size} viewBox="0 0 16 16" fill="none"
+      stroke="currentColor" strokeWidth={stroke} strokeLinecap="round" strokeLinejoin="round"
+      style={{ display: "inline-block", verticalAlign: "-0.15em", flexShrink: 0, ...style }}
+      aria-hidden="true"
+    >
+      {ICONS[name]}
+    </svg>
   );
 }
 
@@ -1916,14 +3347,14 @@ function Toast({ message, type = "error", onDismiss }) {
         onClick={onDismiss}
         style={{ background: "none", border: "none", color: c.text, cursor: "pointer", fontSize: 18 }}
       >
-        ×
+        <Icon name="close" size={16} />
       </button>
     </div>
   );
 }
 
 // ── DEVICE GROUP ──────────────────────────────────────────────────────────────
-function DeviceGroup({ group, groupDevices, collapsed, onToggleCollapse, selectedDevices, onSelect, onSelectAll, onInfo, onAutoCollectionSave, onDropDevice, onRemoveDevice, onReorderDevice, onRename, onDelete, addToast, isUngrouped }) {
+function DeviceGroup({ group, groupDevices, collapsed, onToggleCollapse, selectedDevices, onSelect, onSelectAll, onInfo, onDropDevice, onRemoveDevice, onReorderDevice, onRename, onDelete, isUngrouped }) {
   const [dragOver, setDragOver] = useState(false);
   const [editingName, setEditingName] = useState(false);
   const [nameInput, setNameInput] = useState(group.name || "");
@@ -2014,11 +3445,11 @@ function DeviceGroup({ group, groupDevices, collapsed, onToggleCollapse, selecte
                 transform: isCollapsed ? "rotate(-90deg)" : "rotate(0deg)",
                 flexShrink: 0,
               }}
-            >▼</button>
+            ><Icon name="chevDown" size={12} /></button>
           )}
 
           {/* Drag-drop hint icon */}
-          <span style={{ fontSize: 14, opacity: 0.5 }}>⊞</span>
+          <span style={{ display: "inline-flex", opacity: 0.5 }}><Icon name="grid" size={14} /></span>
 
           {editingName ? (
             <input
@@ -2063,7 +3494,7 @@ function DeviceGroup({ group, groupDevices, collapsed, onToggleCollapse, selecte
               onClick={onDelete}
               title="Delete group"
               style={{ marginLeft: "auto", background: "none", border: "none", color: "var(--muted)", cursor: "pointer", fontSize: 14, padding: "2px 6px", opacity: 0.6 }}
-            >🗑</button>
+            ><Icon name="trash" size={14} /></button>
           )}
         </div>
       )}
@@ -2103,11 +3534,9 @@ function DeviceGroup({ group, groupDevices, collapsed, onToggleCollapse, selecte
                   selected={selectedDevices.includes(d.id)}
                   onSelect={(checked) => onSelect(d.id, checked)}
                   onInfo={() => onInfo(d)}
-                  onAutoCollectionSave={onAutoCollectionSave}
                   onDragStart={() => { setDragSrcId(d.id); }}
                   onDragEnd={() => { setDragSrcId(null); setDragOverId(null); }}
                   srcGroupId={group.id}
-                  addToast={addToast}
                 />
               </div>
             ))}
@@ -2119,41 +3548,13 @@ function DeviceGroup({ group, groupDevices, collapsed, onToggleCollapse, selecte
 }
 
 // ── DEVICE CARD ───────────────────────────────────────────────────────────────
-function DeviceCard({ device, selected, onSelect, onInfo, onAutoCollectionSave, onDragStart, onDragEnd, srcGroupId, addToast }) {
-  const [hovered,       setHovered]       = useState(false);
-  const [settingsOpen,  setSettingsOpen]  = useState(false);
-  const [autoEnabled,   setAutoEnabled]   = useState(device.autoCollectionEnabled ?? false);
-  const [intervalHours, setIntervalHours] = useState(device.autoCollectionInterval ?? 1);
-  const [saving,        setSaving]        = useState(false);
+function DeviceCard({ device, selected, onSelect, onInfo, onDragStart, onDragEnd, srcGroupId }) {
+  const [hovered, setHovered] = useState(false);
 
-  // Sync if device prop changes (e.g. after a poll refresh)
-  useEffect(() => {
-    setAutoEnabled(device.autoCollectionEnabled ?? false);
-    setIntervalHours(device.autoCollectionInterval ?? 1);
-  }, [device.autoCollectionEnabled, device.autoCollectionInterval]);
-
-  const saveAutoCollection = async () => {
-    setSaving(true);
-    try {
-      await apiFetch("/api/settings/auto-collection", {
-        method: "POST",
-        body: JSON.stringify({ enabled: autoEnabled, interval_hours: intervalHours, device_ids: [device.id] }),
-      });
-      onAutoCollectionSave?.(device.id, autoEnabled, intervalHours);
-      addToast?.(
-        autoEnabled
-          ? `Auto-collection on "${device.name}" — every ${intervalHours}h.`
-          : `Auto-collection disabled for "${device.name}".`,
-        "success"
-      );
-    } catch (e) {
-      addToast?.(`Failed to save: ${e.message}`);
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const INTERVALS = [1, 2, 4, 6, 12, 24];
+  // Auto-collection is edited inside the Device Details modal; the card only
+  // reflects the current state via the badge below.
+  const autoEnabled   = device.autoCollectionEnabled ?? false;
+  const intervalHours = device.autoCollectionInterval ?? 1;
 
   return (
     <div
@@ -2188,9 +3589,9 @@ function DeviceCard({ device, selected, onSelect, onInfo, onAutoCollectionSave, 
           style={{ position: "absolute", top: 12, left: 12, width: 16, height: 16, accentColor: "var(--accent)", cursor: "pointer" }}
         />
 
-        {/* Info + Settings toggle buttons */}
+        {/* Single gear → full device details (incl. auto-collection) */}
         <div style={{ position: "absolute", top: 10, right: 10, display: "flex", alignItems: "center", gap: 4 }}>
-          {/* Pcap collection ongoing indicator — shown left of the info button
+          {/* Pcap collection ongoing indicator — shown left of the gear button
               whenever this device is collecting AND has a packets_capture_config.
               Rendered as an animated triangular dorsal fin (as seen breaking
               the water's surface) evoking Wireshark. */}
@@ -2219,26 +3620,7 @@ function DeviceCard({ device, selected, onSelect, onInfo, onAutoCollectionSave, 
       </svg>
         </span>
       )}
-          <button
-            onClick={onInfo}
-            title="Device details"
-            style={{ background: "rgba(255,255,255,0.05)", border: "1px solid var(--border)", borderRadius: 6, color: "var(--muted)", cursor: "pointer", fontSize: 13, padding: "2px 7px" }}
-          >
-            ℹ
-          </button>
-          <button
-            onClick={() => setSettingsOpen(v => !v)}
-            title="Auto-collection settings"
-            style={{
-              background: settingsOpen ? "rgba(129,140,248,0.15)" : "rgba(255,255,255,0.05)",
-              border: `1px solid ${settingsOpen ? "rgba(129,140,248,0.4)" : "var(--border)"}`,
-              borderRadius: 6, color: settingsOpen ? "var(--accent)" : "var(--muted)",
-              cursor: "pointer", fontSize: 13, padding: "2px 7px",
-              transition: "all 0.15s",
-            }}
-          >
-            ⚙
-          </button>
+          <GearBtn onClick={onInfo} title="Device details & auto-collection settings" />
         </div>
 
         <div style={{ marginTop: 20, marginBottom: 10, fontFamily: "var(--font-display)", fontSize: 15, fontWeight: 700, color: "var(--text)", letterSpacing: "0.03em" }}>
@@ -2266,65 +3648,9 @@ function DeviceCard({ device, selected, onSelect, onInfo, onAutoCollectionSave, 
           </div>
         )}
 
-        {/* Network capture indicator now lives solely next to the info button above. */}
+        {/* Network capture indicator now lives solely next to the gear button above. */}
       </div>
 
-      {/* ── Auto-collection settings panel ── */}
-      {settingsOpen && (
-        <div style={{
-          borderTop: "1px solid var(--border)",
-          padding: "14px 14px 12px",
-          background: "rgba(0,0,0,0.18)",
-        }}>
-          {/* Enable toggle */}
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
-            <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--muted)" }}>Auto-collection</span>
-            <Toggle checked={autoEnabled} onChange={setAutoEnabled} />
-          </div>
-
-          {/* Interval grid */}
-          <div style={{ opacity: autoEnabled ? 1 : 0.4, pointerEvents: autoEnabled ? "auto" : "none", transition: "opacity 0.15s" }}>
-            <div style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 7 }}>
-              Interval
-            </div>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 5 }}>
-              {INTERVALS.map(h => {
-                const active = intervalHours === h;
-                return (
-                  <button key={h} onClick={() => setIntervalHours(h)}
-                    style={{
-                      padding: "6px 0", borderRadius: 6, border: "1px solid",
-                      fontFamily: "var(--font-mono)", fontSize: 11, fontWeight: 600,
-                      cursor: "pointer", textAlign: "center",
-                      background: active ? "rgba(129,140,248,0.16)" : "rgba(255,255,255,0.03)",
-                      color: active ? "var(--accent)" : "var(--muted)",
-                      borderColor: active ? "rgba(129,140,248,0.45)" : "var(--border)",
-                      transition: "all 0.12s",
-                    }}>
-                    {h}h
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
-          {/* Save button */}
-          <button
-            onClick={saveAutoCollection}
-            disabled={saving}
-            style={{
-              marginTop: 11, width: "100%", padding: "7px 0",
-              borderRadius: 7, border: "1px solid rgba(129,140,248,0.35)",
-              background: "rgba(129,140,248,0.12)", color: "var(--accent)",
-              fontFamily: "var(--font-mono)", fontSize: 11, fontWeight: 600,
-              cursor: saving ? "not-allowed" : "pointer", opacity: saving ? 0.6 : 1,
-              transition: "all 0.15s",
-            }}
-          >
-            {saving ? "Saving…" : "💾 Save"}
-          </button>
-        </div>
-      )}
     </div>
   );
 }
@@ -2342,7 +3668,7 @@ function StatusRow({ label, ok, pulseWhenTrue }) {
         }}
       />
       <span style={{ color: "var(--muted)" }}>{label}</span>
-      <span style={{ marginLeft: "auto", color: ok ? "#4ade80" : "#cb0f0f", fontSize: 16 }}>{ok ? "✔" : "✖"}</span>
+      <span style={{ marginLeft: "auto", color: ok ? "#4ade80" : "#cb0f0f", display: "inline-flex" }}><Icon name={ok ? "check" : "close"} size={15} stroke={1.8} /></span>
     </div>
   );
 }
@@ -2386,7 +3712,7 @@ function SnapshotsPagination({ page, totalPages, total, pageSize, onPage }) {
     }}>
       <span>{total === 0 ? "No results" : `${from}–${to} of ${total}`}</span>
       <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
-        <button style={btnStyle(false, page <= 1)} onClick={() => page > 1 && onPage(page - 1)} disabled={page <= 1}>‹ Prev</button>
+        <button style={btnStyle(false, page <= 1)} onClick={() => page > 1 && onPage(page - 1)} disabled={page <= 1}><Icon name="chevLeft" size={12} style={{ marginRight: 4 }} />Prev</button>
         {pages.map((p, i) =>
           p === "..." ? (
             <span key={`e${i}`} style={{ padding: "0 4px", color: "var(--muted)" }}>…</span>
@@ -2394,7 +3720,7 @@ function SnapshotsPagination({ page, totalPages, total, pageSize, onPage }) {
             <button key={p} style={btnStyle(p === page, false)} onClick={() => p !== page && onPage(p)}>{p}</button>
           )
         )}
-        <button style={btnStyle(false, page >= totalPages)} onClick={() => page < totalPages && onPage(page + 1)} disabled={page >= totalPages}>Next ›</button>
+        <button style={btnStyle(false, page >= totalPages)} onClick={() => page < totalPages && onPage(page + 1)} disabled={page >= totalPages}>Next<Icon name="chevRight" size={12} style={{ marginLeft: 4 }} /></button>
       </div>
     </div>
   );
@@ -2408,7 +3734,72 @@ function trimFractionalSeconds(ts) {
   return ts.split(".")[0];
 }
 
-function SnapshotsTable({ snapshots, selected, onSelect, onView }) {
+// Small icon button shown in the snapshots list for "network capture"
+// snapshots — lets the user grab the raw .pcap straight from the list,
+// without opening the log content modal first. Tracks its own loading
+// state so a slow download only spins the one row's button.
+function PcapDownloadButton({ snap, onDownloadPcap }) {
+  const [downloading, setDownloading] = useState(false);
+
+  const handleClick = async (e) => {
+    e.stopPropagation();
+    if (downloading) return;
+    setDownloading(true);
+    try {
+      await onDownloadPcap(snap);
+    } finally {
+      setDownloading(false);
+    }
+  };
+
+  return (
+    <button
+      onClick={handleClick}
+      disabled={downloading}
+      title="Download raw .pcap file"
+      aria-label="Download raw .pcap file"
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 5,
+        height: 28,
+        padding: "0 10px 0 8px",
+        borderRadius: 7,
+        border: "1px solid rgba(129,140,248,0.3)",
+        background: "rgba(129,140,248,0.1)",
+        color: "#818cf8",
+        fontFamily: "var(--font-mono)",
+        fontSize: 10,
+        fontWeight: 700,
+        letterSpacing: "0.04em",
+        lineHeight: 1,
+        cursor: downloading ? "not-allowed" : "pointer",
+        opacity: downloading ? 0.65 : 1,
+        transition: "background 0.15s, border-color 0.15s, transform 0.1s",
+      }}
+      onMouseEnter={(e) => { if (!downloading) { e.currentTarget.style.background = "rgba(129,140,248,0.22)"; e.currentTarget.style.borderColor = "rgba(129,140,248,0.5)"; } }}
+      onMouseLeave={(e) => { e.currentTarget.style.background = "rgba(129,140,248,0.1)"; e.currentTarget.style.borderColor = "rgba(129,140,248,0.3)"; }}
+      onMouseDown={(e) => { if (!downloading) e.currentTarget.style.transform = "scale(0.95)"; }}
+      onMouseUp={(e) => { e.currentTarget.style.transform = "scale(1)"; }}
+    >
+      {downloading ? (
+        <svg width="12" height="12" viewBox="0 0 16 16" style={{ animation: "spin 1s linear infinite", flexShrink: 0 }}>
+          <circle cx="8" cy="8" r="6" fill="none" stroke="#818cf8" strokeWidth="2" strokeDasharray="20" strokeDashoffset="10" />
+        </svg>
+      ) : (
+        // Download-tray glyph, drawn to match the app's line-icon style
+        // rather than relying on emoji rendering across platforms.
+        <svg width="13" height="13" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0 }}>
+          <path d="M8 1.5v8.5M8 10l-3-3M8 10l3-3" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+          <path d="M2.5 11.5v1.5a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1v-1.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      )}
+      <span>PCAP</span>
+    </button>
+  );
+}
+
+function SnapshotsTable({ snapshots, selected, onSelect, onView, onDownloadPcap }) {
   if (snapshots.length === 0) {
     return (
       <div style={{ padding: "40px 0", textAlign: "center", color: "var(--muted)", fontFamily: "var(--font-mono)", fontSize: 13 }}>
@@ -2477,7 +3868,12 @@ function SnapshotsTable({ snapshots, selected, onSelect, onView }) {
                 )}
               </td>
               <td style={{ padding: "10px 14px" }}>
-                <Btn size="sm" variant="subtle" onClick={() => onView([s])}>View</Btn>
+                <div style={{ display: "flex", gap: 6, justifyContent: "flex-end", alignItems: "center" }}>
+                  {onDownloadPcap && s.logName === "network capture" && (
+                    <PcapDownloadButton snap={s} onDownloadPcap={onDownloadPcap} />
+                  )}
+                  <Btn size="sm" variant="subtle" onClick={() => onView([s])}>View</Btn>
+                </div>
               </td>
             </tr>
           ))}
@@ -2631,7 +4027,7 @@ requests.post(f"{BASE}/api/stop-logs-collection",
             borderTop: "1px solid var(--border)", borderRadius: "6px 0 0 6px",
           }}
         >
-          <span style={{ fontSize: 14 }}>🐍</span>
+          <span style={{ display: "inline-flex", color: "var(--accent)" }}><Icon name="terminal" size={14} /></span>
           <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: active === endpoints.length ? "var(--text)" : "var(--muted)" }}>
             Python example
           </span>
@@ -2656,7 +4052,7 @@ requests.post(f"{BASE}/api/stop-logs-collection",
               </code>
               <button onClick={() => copy(ep.path, "path")}
                 style={{ marginLeft: "auto", background: "transparent", border: "none", cursor: "pointer", color: "var(--muted)", fontSize: 12, fontFamily: "var(--font-mono)", padding: "3px 8px" }}>
-                {copied === "path" ? "✓ copied" : "copy"}
+                {copied === "path" ? <><Icon name="check" size={11} style={{ marginRight: 4 }} />copied</> : "copy"}
               </button>
             </div>
 
@@ -2672,7 +4068,7 @@ requests.post(f"{BASE}/api/stop-logs-collection",
                   <span>Request Body</span>
                   <button onClick={() => copy(ep.req, "req")}
                     style={{ background: "transparent", border: "none", cursor: "pointer", color: "var(--muted)", fontSize: 11, fontFamily: "var(--font-mono)" }}>
-                    {copied === "req" ? "✓ copied" : "copy"}
+                    {copied === "req" ? <><Icon name="check" size={11} style={{ marginRight: 4 }} />copied</> : "copy"}
                   </button>
                 </div>
                 <pre style={{
@@ -2690,7 +4086,7 @@ requests.post(f"{BASE}/api/stop-logs-collection",
                 <span>Response</span>
                 <button onClick={() => copy(ep.res, "res")}
                   style={{ background: "transparent", border: "none", cursor: "pointer", color: "var(--muted)", fontSize: 11, fontFamily: "var(--font-mono)" }}>
-                  {copied === "res" ? "✓ copied" : "copy"}
+                  {copied === "res" ? <><Icon name="check" size={11} style={{ marginRight: 4 }} />copied</> : "copy"}
                 </button>
               </div>
               <pre style={{
@@ -2710,11 +4106,11 @@ requests.post(f"{BASE}/api/stop-logs-collection",
           /* Python example panel */
           <>
             <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-              <span style={{ fontSize: 18 }}>🐍</span>
+              <span style={{ display: "inline-flex", color: "var(--accent)" }}><Icon name="terminal" size={18} /></span>
               <span style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 14, color: "var(--text)" }}>Python Quick-Start</span>
               <button onClick={() => copy(pyCode, "py")}
                 style={{ marginLeft: "auto", background: "var(--accent-dim)", border: "1px solid var(--accent-border)", borderRadius: 6, cursor: "pointer", color: "var(--accent)", fontSize: 11, fontFamily: "var(--font-mono)", padding: "4px 12px" }}>
-                {copied === "py" ? "✓ Copied" : "Copy"}
+                {copied === "py" ? <><Icon name="check" size={11} style={{ marginRight: 4 }} />Copied</> : "Copy"}
               </button>
             </div>
             <p style={{ color: "var(--muted)", fontSize: 12, margin: 0, fontFamily: "var(--font-mono)", lineHeight: 1.7 }}>
@@ -2734,16 +4130,91 @@ requests.post(f"{BASE}/api/stop-logs-collection",
 }
 
 // ── DEVICE DETAILS ────────────────────────────────────────────────────────────
-function DeviceDetails({ device, isAdmin, onRequestLogin }) {
+// Small pill used in the device header to show a boolean status at a glance.
+function StatusPill({ label, ok, onLabel, offLabel, pulse }) {
+  return (
+    <div
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 7,
+        background: ok ? "rgba(74,222,128,0.10)" : "rgba(248,113,113,0.08)",
+        border: `1px solid ${ok ? "rgba(74,222,128,0.28)" : "rgba(248,113,113,0.22)"}`,
+        borderRadius: 20,
+        padding: "5px 12px 5px 10px",
+        fontFamily: "var(--font-mono)",
+        fontSize: 11.5,
+        whiteSpace: "nowrap",
+      }}
+    >
+      <span
+        style={{
+          width: 6,
+          height: 6,
+          borderRadius: "50%",
+          background: ok ? "#4ade80" : "#f87171",
+          animation: pulse ? "pulse 1.6s ease-in-out infinite" : "none",
+          flexShrink: 0,
+        }}
+      />
+      <span style={{ color: "var(--muted)" }}>{label}</span>
+      <span style={{ color: ok ? "#4ade80" : "#f87171", fontWeight: 700 }}>{ok ? onLabel : offLabel}</span>
+    </div>
+  );
+}
+
+function DeviceDetails({ device, isAdmin, onRequestLogin, onEdit, onAutoCollectionSave, addToast }) {
   const [configVisible, setConfigVisible] = useState(false);
+  // Auto logs collection (moved here from the device card gear panel)
+  const AUTO_INTERVALS = [1, 2, 4, 6, 12, 24];
+  const [autoEnabled,   setAutoEnabled]   = useState(device.autoCollectionEnabled ?? false);
+  const [intervalHours, setIntervalHours] = useState(device.autoCollectionInterval ?? 1);
+  const [savedAuto,     setSavedAuto]     = useState({
+    enabled:  device.autoCollectionEnabled ?? false,
+    interval: device.autoCollectionInterval ?? 1,
+  });
+  const [autoSaving, setAutoSaving] = useState(false);
+  const autoDirty = autoEnabled !== savedAuto.enabled || (autoEnabled && intervalHours !== savedAuto.interval);
+
+  const saveAutoCollection = async () => {
+    setAutoSaving(true);
+    try {
+      await apiFetch("/api/settings/auto-collection", {
+        method: "POST",
+        body: JSON.stringify({ enabled: autoEnabled, interval_hours: intervalHours, device_ids: [device.id] }),
+      });
+      setSavedAuto({ enabled: autoEnabled, interval: intervalHours });
+      onAutoCollectionSave?.(device.id, autoEnabled, intervalHours);
+      addToast?.(
+        autoEnabled
+          ? `Auto-collection on "${device.name}" — every ${intervalHours}h.`
+          : `Auto-collection disabled for "${device.name}".`,
+        "success"
+      );
+    } catch (e) {
+      addToast?.(`Failed to save: ${e.message}`);
+    } finally {
+      setAutoSaving(false);
+    }
+  };
+
   const [errors, setErrors] = useState(null);
   const [errorsLoading, setErrorsLoading] = useState(false);
   const [errorsLoadError, setErrorsLoadError] = useState(null);
   const [errorsVisible, setErrorsVisible] = useState(false);
+  const [idCopied, setIdCopied] = useState(false);
 
   const handleShowConfig = () => {
     if (!isAdmin) { onRequestLogin(); return; }
     setConfigVisible((v) => !v);
+  };
+
+  const copyConfigId = () => {
+    if (!device.id) return;
+    navigator.clipboard.writeText(String(device.id)).then(() => {
+      setIdCopied(true);
+      setTimeout(() => setIdCopied(false), 1600);
+    });
   };
 
   const fetchErrors = async () => {
@@ -2772,41 +4243,199 @@ function DeviceDetails({ device, isAdmin, onRequestLogin }) {
 
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
-      <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
-        {[
-          ["Name",       device.name],
-          ["Connection", device.connection ? "✅ Online" : "❌ Offline"],
-          ["Log Access", device.logAccess  ? "✅ Yes"    : "❌ No"],
-          ["Collecting", device.collecting ? "🟢 Active" : "🟡 Idle"],
-        ].map(([k, v]) => (
-          <div
-            key={k}
+    <div style={{ display: "flex", flexDirection: "column", gap: 22 }}>
+      {/* Header card — device identity, live status pills, and the config id */}
+      <div
+        style={{
+          background: "linear-gradient(135deg, rgba(129,140,248,0.09), rgba(167,139,250,0.03))",
+          border: "1px solid var(--border)",
+          borderRadius: 12,
+          padding: "18px 20px",
+          display: "flex",
+          flexDirection: "column",
+          gap: 16,
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
+            <span
+              title={device.connection ? "Online" : "Offline"}
+              style={{
+                width: 10,
+                height: 10,
+                borderRadius: "50%",
+                background: device.connection ? "#4ade80" : "#f87171",
+                boxShadow: device.connection ? "0 0 8px rgba(74,222,128,0.7)" : "0 0 8px rgba(248,113,113,0.6)",
+                flexShrink: 0,
+              }}
+            />
+            <span
+              style={{
+                fontFamily: "var(--font-display)",
+                fontSize: 18,
+                fontWeight: 700,
+                color: "var(--text)",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {device.name}
+            </span>
+          </div>
+
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <StatusPill label="Connection" ok={device.connection} onLabel="Online" offLabel="Offline" />
+            <StatusPill label="Log Access" ok={device.logAccess} onLabel="Yes" offLabel="No" />
+            <StatusPill label="Collecting" ok={device.collecting} onLabel="Active" offLabel="Idle" pulse={device.collecting} />
+          </div>
+        </div>
+
+        {/* Device Config ID — copyable */}
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 12,
+            background: "rgba(0,0,0,0.28)",
+            border: "1px solid var(--border)",
+            borderRadius: 8,
+            padding: "10px 10px 10px 14px",
+          }}
+        >
+          <span
             style={{
-              background: "var(--card-bg)",
-              border: "1px solid var(--border)",
-              borderRadius: 8,
-              padding: "12px 18px",
-              minWidth: 140,
+              fontSize: 10,
+              color: "var(--muted)",
+              textTransform: "uppercase",
+              letterSpacing: "0.07em",
+              fontFamily: "var(--font-display)",
+              fontWeight: 600,
+              whiteSpace: "nowrap",
+              flexShrink: 0,
             }}
           >
-            <div style={{ fontSize: 10, color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>{k}</div>
-            <div style={{ fontFamily: "var(--font-mono)", fontSize: 14, color: "var(--text)" }}>{v}</div>
+            Device ID
+          </span>
+          <code
+            title={device.id ? String(device.id) : undefined}
+            style={{
+              flex: 1,
+              minWidth: 0,
+              fontFamily: "var(--font-mono)",
+              fontSize: 12.5,
+              color: "#a5b4fc",
+              overflowX: "auto",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {device.id || "—"}
+          </code>
+          <Btn
+            size="sm"
+            variant={idCopied ? "success" : "subtle"}
+            onClick={copyConfigId}
+            disabled={!device.id}
+            style={{ flexShrink: 0 }}
+          >
+            {idCopied ? <><Icon name="check" size={12} />Copied</> : <><Icon name="copy" size={12} />Copy</>}
+          </Btn>
+        </div>
+      </div>
+
+      {/* Auto logs collection */}
+      <div style={{ borderTop: "1px solid var(--border)", paddingTop: 18 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 12 }}>
+          <h4 style={{ fontFamily: "var(--font-display)", fontSize: 13, color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.08em", margin: 0, display: "flex", alignItems: "center", gap: 7 }}>
+            <Icon name="clock" size={14} /> Auto Logs Collection
+          </h4>
+          {autoEnabled && !autoDirty && (
+            <span style={{
+              display: "inline-flex", alignItems: "center", gap: 5,
+              background: "rgba(129,140,248,0.13)", border: "1px solid rgba(129,140,248,0.35)",
+              borderRadius: 20, padding: "3px 9px",
+              fontFamily: "var(--font-mono)", fontSize: 10, fontWeight: 600, color: "var(--accent)",
+            }}>
+              <span style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--accent)", boxShadow: "0 0 5px var(--accent)", display: "inline-block" }} />
+              Auto collection - {savedAuto.interval}h
+            </span>
+          )}
+        </div>
+
+        <div style={{
+          background: "rgba(0,0,0,0.18)", border: "1px solid var(--border)", borderRadius: 10,
+          padding: "16px 18px", display: "flex", flexDirection: "column", gap: 14,
+        }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+            <span style={{ fontFamily: "var(--font-mono)", fontSize: 12, color: "var(--muted)" }}>
+              Collect logs for this device on a schedule
+            </span>
+            <Toggle checked={autoEnabled} onChange={setAutoEnabled} />
           </div>
-        ))}
+
+          <div style={{ opacity: autoEnabled ? 1 : 0.4, pointerEvents: autoEnabled ? "auto" : "none", transition: "opacity 0.15s" }}>
+            <div style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 8 }}>
+              Interval
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(6, minmax(0, 1fr))", gap: 6, maxWidth: 420 }}>
+              {AUTO_INTERVALS.map((h) => {
+                const active = intervalHours === h;
+                return (
+                  <button
+                    key={h}
+                    onClick={() => setIntervalHours(h)}
+                    style={{
+                      padding: "7px 0", borderRadius: 6, border: "1px solid",
+                      fontFamily: "var(--font-mono)", fontSize: 12, fontWeight: 600,
+                      cursor: "pointer", textAlign: "center",
+                      background: active ? "rgba(129,140,248,0.16)" : "rgba(255,255,255,0.03)",
+                      color: active ? "var(--accent)" : "var(--muted)",
+                      borderColor: active ? "rgba(129,140,248,0.45)" : "var(--border)",
+                      transition: "all 0.12s",
+                    }}
+                  >
+                    {h}h
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div style={{ display: "flex", justifyContent: "flex-end" }}>
+            <button
+              onClick={saveAutoCollection}
+              disabled={autoSaving || !autoDirty}
+              style={{
+                padding: "7px 18px", borderRadius: 7, border: "1px solid rgba(129,140,248,0.35)",
+                background: "rgba(129,140,248,0.12)", color: "var(--accent)",
+                fontFamily: "var(--font-mono)", fontSize: 11, fontWeight: 600,
+                cursor: autoSaving || !autoDirty ? "not-allowed" : "pointer",
+                opacity: autoSaving || !autoDirty ? 0.5 : 1,
+                transition: "all 0.15s",
+              }}
+            >
+              {autoSaving ? "Saving…" : <><Icon name="save" size={12} style={{ marginRight: 6 }} />Save</>}
+            </button>
+          </div>
+        </div>
       </div>
 
       {/* Config section — guarded by admin role */}
-      <div>
+      <div style={{ borderTop: "1px solid var(--border)", paddingTop: 18 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 10 }}>
-          <h4 style={{ fontFamily: "var(--font-display)", fontSize: 13, color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.08em", margin: 0 }}>
-            JSON Configuration
+          <h4 style={{ fontFamily: "var(--font-display)", fontSize: 13, color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.08em", margin: 0, display: "flex", alignItems: "center", gap: 7 }}>
+            <GearGlyph size={14} /> JSON Configuration
           </h4>
-          <Btn size="sm" variant={isAdmin ? "subtle" : "admin"} onClick={handleShowConfig}>
+          <Btn size="sm" variant={isAdmin ? "subtle" : "admin"} onClick={handleShowConfig} style={{ display: "inline-flex", alignItems: "center", gap: isAdmin ? 0 : 7 }}>
             {isAdmin
-              ? configVisible ? "🙈 Hide" : "👁 Show"
-              : "🔐 Admin only"}
+              ? configVisible ? "Hide" : "Show"
+              : (<><IconLock size={11} /> Admin only</>)}
           </Btn>
+          {isAdmin && (
+            <Btn size="sm" variant="primary" onClick={() => onEdit(device)}>
+              <Icon name="edit" size={12} />Edit Config
+            </Btn>
+          )}
         </div>
 
         {!isAdmin && (
@@ -2824,7 +4453,7 @@ function DeviceDetails({ device, isAdmin, onRequestLogin }) {
               color: "#a78bfa",
             }}
           >
-            <span style={{ fontSize: 22 }}>🔒</span>
+            <span style={{ display: "inline-flex", color: "#a78bfa", flexShrink: 0 }}><IconLock size={20} /></span>
             <div>
               <div style={{ fontWeight: 600, marginBottom: 4 }}>Configuration is restricted</div>
               <div style={{ color: "var(--muted)" }}>Sign in as admin to view the raw device JSON configuration.</div>
@@ -2859,10 +4488,10 @@ function DeviceDetails({ device, isAdmin, onRequestLogin }) {
       </div>
 
       {/* Error Logs section */}
-      <div>
+      <div style={{ borderTop: "1px solid var(--border)", paddingTop: 18 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 10 }}>
-          <h4 style={{ fontFamily: "var(--font-display)", fontSize: 13, color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.08em", margin: 0 }}>
-            Error Logs
+          <h4 style={{ fontFamily: "var(--font-display)", fontSize: 13, color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.08em", margin: 0, display: "flex", alignItems: "center", gap: 7 }}>
+            <Icon name="warn" size={14} /> Error Logs
           </h4>
           {errors !== null && errors.length > 0 && (
             <span style={{
@@ -2956,6 +4585,7 @@ const EMPTY_LOG_ENTRY = () => ({
   log_type: "text",
   data_unit: "",
   description: "",
+  append_unmatched_to_last: false,
 });
 
 const FIELD_LABEL = {
@@ -3221,9 +4851,9 @@ function LogEntryEditor({ entry, conn, index, onChange, onRemove, onDuplicate })
 
   // Tab config
   const TABS = [
-    { key: "collect",    icon: "▶", label: "collect",    cmdKey: "log_file_cmd",        hint: "Command that fetches log data" },
-    { key: "activate",   icon: "⚡", label: "activate",   cmdKey: "log_activation_cmd",  hint: "Runs before collection. Must exit 0 to enable. Use `true` to always enable." },
-    { key: "deactivate", icon: "⛔", label: "deactivate", cmdKey: "log_deactivation_cmd", hint: "Runs on collection stop to disable the log source. Optional." },
+    { key: "collect",    icon: "play", label: "collect",    cmdKey: "log_file_cmd",        hint: "Command that fetches log data" },
+    { key: "activate",   icon: "bolt", label: "activate",   cmdKey: "log_activation_cmd",  hint: "Runs before collection. Must exit 0 to enable. Use `true` to always enable." },
+    { key: "deactivate", icon: "ban", label: "deactivate", cmdKey: "log_deactivation_cmd", hint: "Runs on collection stop to disable the log source. Optional." },
   ];
   const currentTab = TABS.find(t => t.key === activeTab);
 
@@ -3305,9 +4935,9 @@ function LogEntryEditor({ entry, conn, index, onChange, onRemove, onDuplicate })
 
         {/* badges */}
         <Badge color={logTypeColors[entry.log_type] || "default"}>{entry.log_type}</Badge>
-        {outputs.collect    && <Badge color="green">collect ✔</Badge>}
-        {outputs.activate   && <Badge color="cyan">activate ✔</Badge>}
-        {outputs.deactivate && <Badge color="violet">deactivate ✔</Badge>}
+        {outputs.collect    && <Badge color="green">collect <Icon name="check" size={10} stroke={1.8} style={{ marginLeft: 2 }} /></Badge>}
+        {outputs.activate   && <Badge color="cyan">activate <Icon name="check" size={10} stroke={1.8} style={{ marginLeft: 2 }} /></Badge>}
+        {outputs.deactivate && <Badge color="violet">deactivate <Icon name="check" size={10} stroke={1.8} style={{ marginLeft: 2 }} /></Badge>}
         {entry.data_extraction_regex && !reErr && matchCount && (
           <Badge color={matchCount.matched > 0 ? "green" : "red"}>
             {matchCount.matched}/{matchCount.total} lines
@@ -3315,10 +4945,10 @@ function LogEntryEditor({ entry, conn, index, onChange, onRemove, onDuplicate })
         )}
 
         <button onClick={e => { e.stopPropagation(); onDuplicate(); }} title="Duplicate"
-          style={{ background: "none", border: "none", cursor: "pointer", color: "var(--muted)", fontSize: 13, padding: "2px 6px" }}>⎘</button>
+          style={{ background: "none", border: "none", cursor: "pointer", color: "var(--muted)", fontSize: 13, padding: "2px 6px" }}><Icon name="copy" size={13} /></button>
         <button onClick={e => { e.stopPropagation(); onRemove(); }} title="Remove"
-          style={{ background: "none", border: "none", cursor: "pointer", color: "#f87171", fontSize: 15, padding: "2px 6px" }}>×</button>
-        <span style={{ color: "var(--muted)", fontSize: 10 }}>{expanded ? "▲" : "▼"}</span>
+          style={{ background: "none", border: "none", cursor: "pointer", color: "#f87171", fontSize: 15, padding: "2px 6px" }}><Icon name="close" size={13} /></button>
+        <span style={{ color: "var(--muted)", display: "inline-flex" }}><Icon name={expanded ? "chevUp" : "chevDown"} size={12} /></span>
       </div>
 
       {expanded && (
@@ -3342,7 +4972,7 @@ function LogEntryEditor({ entry, conn, index, onChange, onRemove, onDuplicate })
                     color: entry.log_type === t ? (t === "text" ? "#22d3ee" : "#a78bfa") : "var(--muted)",
                     borderColor: entry.log_type === t ? (t === "text" ? "rgba(34,211,238,0.4)" : "rgba(167,139,250,0.4)") : "var(--border)",
                     transition: "all 0.12s",
-                  }}>{t === "text" ? "📄 text" : "📈 chart"}</button>
+                  }}>{t === "text" ? <><Icon name="file" size={12} style={{ marginRight: 6 }} />text</> : <><Icon name="chart" size={12} style={{ marginRight: 6 }} />chart</>}</button>
                 ))}
               </div>
             </div>
@@ -3385,6 +5015,28 @@ function LogEntryEditor({ entry, conn, index, onChange, onRemove, onDuplicate })
               style={{ ...inputStyle, fontSize: 11, padding: "7px 12px", background: "rgba(255,255,255,0.02)" }} />
           </div>
 
+          {/* ── Append unmatched lines (text logs only) ── */}
+          {entry.log_type === "text" && <label style={{
+            display: "inline-flex", alignItems: "center", gap: 9,
+            marginBottom: 14, cursor: "pointer", userSelect: "none",
+          }}>
+            <input
+              type="checkbox"
+              checked={!!entry.append_unmatched_to_last}
+              onChange={e => set("append_unmatched_to_last", e.target.checked)}
+              style={{ accentColor: "var(--accent)", width: 14, height: 14, flexShrink: 0, cursor: "pointer" }}
+            />
+            <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--muted)" }}>
+              Append unmatched lines to last entry
+            </span>
+            <span style={{
+              fontFamily: "var(--font-mono)", fontSize: 10,
+              color: "var(--muted)", opacity: 0.55,
+            }}>
+              — folds continuation lines (e.g. stack traces) into the preceding matched entry
+            </span>
+          </label>}
+
           {/* ── Terminal Panel ── */}
           <div style={S.terminal}>
             {/* Tab bar */}
@@ -3402,7 +5054,7 @@ function LogEntryEditor({ entry, conn, index, onChange, onRemove, onDuplicate })
                     outputs[tab.key] != null,
                     !!errors[tab.key],
                   )}>
-                  <span>{tab.icon}</span>
+                  <Icon name={tab.icon} size={11} />
                   <span>{tab.label}</span>
                   {running === tab.key && (
                     <svg width="9" height="9" viewBox="0 0 9 9" style={{ animation: "spin 1s linear infinite", flexShrink: 0 }}>
@@ -3411,7 +5063,7 @@ function LogEntryEditor({ entry, conn, index, onChange, onRemove, onDuplicate })
                   )}
                   {outputs[tab.key] != null && running !== tab.key && (
                     <span style={{ fontSize: 9, color: errors[tab.key] ? "#f87171" : "#4ade80" }}>
-                      {errors[tab.key] ? "✖" : "✔"}
+                      <Icon name={errors[tab.key] ? "close" : "check"} size={10} stroke={2} />
                     </span>
                   )}
                 </button>
@@ -3437,7 +5089,7 @@ function LogEntryEditor({ entry, conn, index, onChange, onRemove, onDuplicate })
                   <><svg width="9" height="9" viewBox="0 0 9 9" style={{ animation: "spin 1s linear infinite" }}>
                     <circle cx="4.5" cy="4.5" r="3.5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeDasharray="11" strokeDashoffset="5.5" />
                   </svg> running</>
-                ) : "run ↵"}
+                ) : <>run <Icon name="enter" size={11} /></>}
               </button>
             </div>
 
@@ -3447,7 +5099,7 @@ function LogEntryEditor({ entry, conn, index, onChange, onRemove, onDuplicate })
                 fontFamily: "var(--font-mono)", fontSize: 11, color: "#f87171",
                 background: "rgba(248,113,113,0.07)", borderTop: "1px solid rgba(248,113,113,0.15)",
                 padding: "6px 14px",
-              }}>⚠ {errors[activeTab]}</div>
+              }}><Icon name="warn" size={12} style={{ marginRight: 6 }} />{errors[activeTab]}</div>
             )}
 
             {/* Output area */}
@@ -3466,7 +5118,7 @@ function LogEntryEditor({ entry, conn, index, onChange, onRemove, onDuplicate })
               }}>
                 {running === activeTab
                   ? "executing…"
-                  : `press run ↵ to test ${activeTab} command`}
+                  : <>press run <Icon name="enter" size={11} /> to test {activeTab} command</>}
               </div>
             )}
           </div>
@@ -3491,7 +5143,7 @@ function LogEntryEditor({ entry, conn, index, onChange, onRemove, onDuplicate })
                     border: `1px solid ${matchCount.matched > 0 ? "rgba(74,222,128,0.2)" : "rgba(248,113,113,0.2)"}`,
                     borderRadius: 4, padding: "2px 7px",
                   }}>
-                    {matchCount.matched > 0 ? `✔ ${matchCount.matched}/${matchCount.total} lines matched` : `✖ 0/${matchCount.total} matched`}
+                    {matchCount.matched > 0 ? <><Icon name="check" size={11} stroke={1.8} style={{ marginRight: 5 }} />{matchCount.matched}/{matchCount.total} lines matched</> : <><Icon name="close" size={11} stroke={1.8} style={{ marginRight: 5 }} />0/{matchCount.total} matched</>}
                   </span>
                 )}
                 <div style={{ flex: 1 }} />
@@ -3501,17 +5153,17 @@ function LogEntryEditor({ entry, conn, index, onChange, onRemove, onDuplicate })
                   onClick={() => setMarkMode(markMode === "TIME" ? null : "TIME")}
                   style={S.markBtn(markMode === "TIME", "#f59e0b")}
                 >
-                  {timeSpan ? `TIME: "${timeSpan.text.slice(0,16)}${timeSpan.text.length>16?"…":""}"` : "⏱ mark TIME"}
+                  {timeSpan ? `TIME: "${timeSpan.text.slice(0,16)}${timeSpan.text.length>16?"…":""}"` : <><Icon name="clock" size={11} style={{ marginRight: 5 }} />mark TIME</>}
                 </button>
                 <button
                   onClick={() => setMarkMode(markMode === "ENTRY" ? null : "ENTRY")}
                   style={S.markBtn(markMode === "ENTRY", "#86efac")}
                 >
-                  {entrySpan ? `ENTRY: "${entrySpan.text.slice(0,16)}${entrySpan.text.length>16?"…":""}"` : "📌 mark ENTRY"}
+                  {entrySpan ? `ENTRY: "${entrySpan.text.slice(0,16)}${entrySpan.text.length>16?"…":""}"` : <><Icon name="pin" size={11} style={{ marginRight: 5 }} />mark ENTRY</>}
                 </button>
                 {(timeSpan || entrySpan) && (
                   <button onClick={clearSpans} style={{ background: "none", border: "none", color: "#374151", fontFamily: "var(--font-mono)", fontSize: 10, cursor: "pointer", padding: "2px 4px" }}>
-                    ✕ clear
+                    <Icon name="close" size={10} style={{ marginRight: 4 }} />clear
                   </button>
                 )}
               </div>
@@ -3525,7 +5177,7 @@ function LogEntryEditor({ entry, conn, index, onChange, onRemove, onDuplicate })
                   border: `1px solid ${markMode === "TIME" ? "rgba(245,158,11,0.25)" : "rgba(134,239,172,0.2)"}`,
                   borderRadius: 5, padding: "6px 10px", marginBottom: 8,
                 }}>
-                  ✦ Select the <strong>{markMode}</strong> portion in the terminal output above, then release.
+                  <Icon name="spark" size={12} style={{ marginRight: 6 }} />Select the <strong>{markMode}</strong> portion in the terminal output above, then release.
                   {markMode === "TIME" ? " This will capture the timestamp." : " This will capture the log value/content."}
                 </div>
               )}
@@ -3545,7 +5197,7 @@ function LogEntryEditor({ entry, conn, index, onChange, onRemove, onDuplicate })
               />
               {reErr && (
                 <div style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "#f87171", marginTop: 5 }}>
-                  ⚠ {reErr}
+                  <Icon name="warn" size={12} style={{ marginRight: 6 }} />{reErr}
                 </div>
               )}
               <div style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "#1f2937", marginTop: 5 }}>
@@ -3561,27 +5213,120 @@ function LogEntryEditor({ entry, conn, index, onChange, onRemove, onDuplicate })
 }
 
 // ── CONFIG BUILDER WIZARD ──────────────────────────────────────────────────────
-function ConfigBuilderModal({ open, onClose, onSave }) {
+// ── CONFIG → BUILDER STATE ───────────────────────────────────────────────────
+// Converts a raw device.config object (as returned by the API) into the
+// conn / entries / packetCapture shapes that ConfigBuilderModal uses.
+// Called when the user clicks "Edit Config" on an existing device.
+function configToBuilderState(config) {
+  // ── connection fields ────────────────────────────────────────────────────
+  // Flatten the nested gateway chain back into the flat gateways[] array
+  // that the builder uses internally.
+  const flatGateways = [];
+  let hop = config.gateway;
+  while (hop) {
+    flatGateways.push({
+      _id: Math.random().toString(36).slice(2),
+      ip_address: hop.ip_address || "",
+      port: hop.port ?? 22,
+      user: hop.user || "",
+      password: hop.password || "",
+      ssh_key_string: hop.ssh_key_string || "",
+      authMode: hop.ssh_key_string ? "key" : "password",
+    });
+    hop = hop.gateway;
+  }
+
+  const conn = {
+    device_name:         config.device_name || "",
+    ip_address:          config.ip_address  || "",
+    port:                config.port        ?? 22,
+    user:                config.user        || "pi",
+    password:            config.password    || "",
+    ssh_key_string:      config.ssh_key_string || "",
+    authMode:            config.ssh_key_string ? "key" : "password",
+    collection_interval: config.collection_interval ?? 30,
+    gateways:            flatGateways,
+  };
+
+  // ── log entries ──────────────────────────────────────────────────────────
+  const entries = (config.log_file_configs || []).map(e => ({
+    _id:                      Math.random().toString(36).slice(2),
+    log_name:                 e.log_name                 || "",
+    log_file_cmd:             e.log_file_cmd             || "",
+    data_extraction_regex:    e.data_extraction_regex    || "",
+    log_activation_cmd:       e.log_activation_cmd       || "",
+    log_deactivation_cmd:     e.log_deactivation_cmd     || "",
+    custom_shell_prompt:      e.custom_shell_prompt      || "",
+    log_type:                 e.log_type                 || "text",
+    data_unit:                e.data_unit                || "",
+    description:              e.description              || "",
+    append_unmatched_to_last: e.append_unmatched_to_last ?? false,
+  }));
+
+  // ── packet capture ───────────────────────────────────────────────────────
+  const pcc = config.packets_capture_config;
+  const packetCapture = pcc
+    ? {
+        enabled:             true,
+        capture_start_cmd:   pcc.capture_start_cmd   || "tcpdump -i any",
+        capture_stop_cmd:    pcc.capture_stop_cmd     || "pkill -INT -f 'tcpdump -i any'",
+        capture_description: pcc.capture_description || "Network packet capture",
+        max_pcap_size_mb:    pcc.max_pcap_size_mb != null ? String(pcc.max_pcap_size_mb) : "",
+        decoder_cmd:         pcc.decoder_cmd          || "",
+      }
+    : {
+        enabled:             false,
+        capture_start_cmd:   "tcpdump -i any",
+        capture_stop_cmd:    "pkill -INT -f 'tcpdump -i any'",
+        capture_description: "Network packet capture",
+        max_pcap_size_mb:    "",
+        decoder_cmd:         "",
+      };
+
+  return { conn, entries, packetCapture };
+}
+
+function ConfigBuilderModal({ open, onClose, onSave, initialDevice }) {
   const [step, setStep] = useState(1); // 1=connection, 2=log entries
   const EMPTY_CONN = () => ({
     device_name: "", ip_address: "", port: 22,
     user: "pi", password: "", ssh_key_string: "", authMode: "password", collection_interval: 30,
     gateways: [],
   });
-  const [conn, setConn] = useState(EMPTY_CONN);
-  const [entries, setEntries] = useState([EMPTY_LOG_ENTRY()]);
-  const [connStatus, setConnStatus] = useState(null); // null | "testing" | {success, message}
-  const [saving, setSaving] = useState(false);
-
   const EMPTY_PACKET_CAPTURE = () => ({
     enabled: false,
     capture_start_cmd: "tcpdump -i any",
     capture_stop_cmd: "pkill -INT -f 'tcpdump -i any'",
     capture_description: "Network packet capture",
     max_pcap_size_mb: "",
+    decoder_cmd: "",
   });
+
+  const [conn, setConn] = useState(EMPTY_CONN);
+  const [entries, setEntries] = useState([EMPTY_LOG_ENTRY()]);
+  const [connStatus, setConnStatus] = useState(null); // null | "testing" | {success, message}
+  const [saving, setSaving] = useState(false);
   const [packetCapture, setPacketCapture] = useState(EMPTY_PACKET_CAPTURE);
   const setPC = (k, v) => setPacketCapture(prev => ({ ...prev, [k]: v }));
+
+  // When the modal opens for editing an existing device, pre-populate all
+  // fields from the device's current config.  When it opens for a new device
+  // (initialDevice is null/undefined) reset everything to blank.
+  useEffect(() => {
+    if (!open) return;
+    if (initialDevice?.config) {
+      const { conn: c, entries: e, packetCapture: pc } = configToBuilderState(initialDevice.config);
+      setConn(c);
+      setEntries(e.length > 0 ? e : [EMPTY_LOG_ENTRY()]);
+      setPacketCapture(pc);
+    } else {
+      setConn(EMPTY_CONN());
+      setEntries([EMPTY_LOG_ENTRY()]);
+      setPacketCapture(EMPTY_PACKET_CAPTURE());
+    }
+    setStep(1);
+    setConnStatus(null);
+  }, [open, initialDevice]);
 
   const setC = (k, v) => setConn(prev => ({ ...prev, [k]: v }));
 
@@ -3623,9 +5368,10 @@ function ConfigBuilderModal({ open, onClose, onSave }) {
     const log_file_configs = entries.map(({ _id, ...rest }) => {
       // Drop optional keys that were left empty so they don't appear in the config
       const entry = { ...rest };
-      if (!entry.log_activation_cmd)   delete entry.log_activation_cmd;
-      if (!entry.log_deactivation_cmd) delete entry.log_deactivation_cmd;
-      if (!entry.custom_shell_prompt)  delete entry.custom_shell_prompt;
+      if (!entry.log_activation_cmd)       delete entry.log_activation_cmd;
+      if (!entry.log_deactivation_cmd)     delete entry.log_deactivation_cmd;
+      if (!entry.custom_shell_prompt)      delete entry.custom_shell_prompt;
+      if (!entry.append_unmatched_to_last) delete entry.append_unmatched_to_last;
       return entry;
     });
     const config = {
@@ -3672,6 +5418,10 @@ function ConfigBuilderModal({ open, onClose, onSave }) {
       if (packetCapture.max_pcap_size_mb !== "" && packetCapture.max_pcap_size_mb != null) {
         pcc.max_pcap_size_mb = Number(packetCapture.max_pcap_size_mb);
       }
+      // Omit when blank so the backend falls back to the default tshark binary.
+      if (packetCapture.decoder_cmd && packetCapture.decoder_cmd.trim()) {
+        pcc.decoder_cmd = packetCapture.decoder_cmd.trim();
+      }
       config.packets_capture_config = pcc;
     }
 
@@ -3682,15 +5432,16 @@ function ConfigBuilderModal({ open, onClose, onSave }) {
     setSaving(true);
     try {
       const config = buildConfig();
-      const b64 = btoa(JSON.stringify(config, null, 2));
-      await onSave(`data:application/json;base64,${b64}`);
+      const b64 = btoa(unescape(encodeURIComponent(JSON.stringify(config, null, 2))));
+      const contents = `data:application/json;base64,${b64}`;
+      if (initialDevice) {
+        // Edit mode: update the existing device in-place via PUT
+        await onSave(contents, initialDevice.id);
+      } else {
+        // Create mode: add a new device via POST
+        await onSave(contents, null);
+      }
       onClose();
-      // Reset
-      setStep(1);
-      setConn(EMPTY_CONN());
-      setEntries([EMPTY_LOG_ENTRY()]);
-      setPacketCapture(EMPTY_PACKET_CAPTURE());
-      setConnStatus(null);
     } finally {
       setSaving(false);
     }
@@ -3739,24 +5490,28 @@ function ConfigBuilderModal({ open, onClose, onSave }) {
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "20px 28px", borderBottom: "1px solid var(--border)", flexShrink: 0, background: "rgba(129,140,248,0.03)" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
             <div style={{ width: 38, height: 38, borderRadius: 10, background: "linear-gradient(135deg, rgba(129,140,248,0.2) 0%, rgba(167,139,250,0.12) 100%)", border: "1px solid rgba(129,140,248,0.3)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, boxShadow: "0 2px 8px rgba(129,140,248,0.15)" }}>
-              🛠
+              <span style={{ display: "inline-flex", color: "var(--accent)" }}><GearGlyph size={19} /></span>
             </div>
             <div>
-              <div style={{ fontFamily: "var(--font-display)", fontWeight: 800, fontSize: 17, color: "var(--text)", letterSpacing: "0.02em" }}>Device Config Builder</div>
-              <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--muted)", marginTop: 2 }}>Build and test your configuration interactively</div>
+              <div style={{ fontFamily: "var(--font-display)", fontWeight: 800, fontSize: 17, color: "var(--text)", letterSpacing: "0.02em" }}>
+                {initialDevice ? `Edit Config — ${initialDevice.name}` : "Device Config Builder"}
+              </div>
+              <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--muted)", marginTop: 2 }}>
+                {initialDevice ? "Modify the device configuration. Changes take effect on the next collection cycle." : "Build and test your configuration interactively"}
+              </div>
             </div>
           </div>
           <button onClick={onClose} style={{ background: "rgba(255,255,255,0.06)", border: "1px solid var(--border)", borderRadius: 8, color: "var(--muted)", cursor: "pointer", fontSize: 18, lineHeight: 1, padding: "5px 9px", transition: "all 0.15s" }}
             onMouseEnter={e => e.currentTarget.style.color = "var(--text)"}
             onMouseLeave={e => e.currentTarget.style.color = "var(--muted)"}
-          >×</button>
+          ><Icon name="close" size={16} /></button>
         </div>
 
         {/* Step tabs */}
         <div style={{ display: "flex", borderBottom: "1px solid var(--border)", flexShrink: 0 }}>
           <button style={stepTabStyle(1)} onClick={() => setStep(1)}>
             <span style={{ width: 20, height: 20, borderRadius: "50%", background: step > 1 ? "rgba(74,222,128,0.2)" : "rgba(129,140,248,0.15)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontWeight: 800, color: step > 1 ? "#4ade80" : "var(--accent)" }}>
-              {step > 1 ? "✔" : "1"}
+              {step > 1 ? <Icon name="check" size={11} stroke={2} /> : "1"}
             </span>
             Connection
           </button>
@@ -3802,7 +5557,7 @@ function ConfigBuilderModal({ open, onClose, onSave }) {
                         color: conn.authMode === mode ? "var(--accent)" : "var(--muted)",
                         transition: "all 0.12s",
                       }}>
-                        {mode === "password" ? "🔑 Password" : "📄 SSH Key"}
+                        {mode === "password" ? <><Icon name="key" size={12} style={{ marginRight: 6 }} />Password</> : <><Icon name="file" size={12} style={{ marginRight: 6 }} />SSH Key</>}
                       </button>
                     ))}
                   </div>
@@ -3877,7 +5632,7 @@ function ConfigBuilderModal({ open, onClose, onSave }) {
                       <><svg width="11" height="11" viewBox="0 0 11 11" style={{ animation: "spin 1s linear infinite" }}>
                         <circle cx="5.5" cy="5.5" r="4.5" fill="none" stroke="var(--accent)" strokeWidth="1.6" strokeDasharray="14" strokeDashoffset="7" />
                       </svg> Testing…</>
-                    ) : "🔌 Test Connection"}
+                    ) : <><Icon name="plug" size={12} style={{ marginRight: 6 }} />Test Connection</>}
                   </button>
 
                   {connStatus && connStatus !== "testing" && (
@@ -3889,7 +5644,7 @@ function ConfigBuilderModal({ open, onClose, onSave }) {
                       border: `1px solid ${connStatus.success ? "rgba(74,222,128,0.25)" : "rgba(248,113,113,0.25)"}`,
                       borderRadius: 7, padding: "7px 13px",
                     }}>
-                      {connStatus.success ? "✔" : "✖"} {connStatus.message}
+                      <Icon name={connStatus.success ? "check" : "close"} size={13} stroke={1.8} />{connStatus.message}
                     </div>
                   )}
                 </div>
@@ -3939,9 +5694,9 @@ function ConfigBuilderModal({ open, onClose, onSave }) {
                           </span>
                         )}
                         <div style={{ marginLeft: "auto", display: "flex", gap: 4 }}>
-                          <button onClick={moveUp}   disabled={hi === 0}                        title="Move up"   style={{ background: "none", border: "none", color: hi === 0 ? "var(--border)" : "var(--muted)", cursor: hi === 0 ? "default" : "pointer", fontSize: 13, padding: "2px 5px" }}>▲</button>
-                          <button onClick={moveDown} disabled={hi === conn.gateways.length - 1} title="Move down" style={{ background: "none", border: "none", color: hi === conn.gateways.length - 1 ? "var(--border)" : "var(--muted)", cursor: hi === conn.gateways.length - 1 ? "default" : "pointer", fontSize: 13, padding: "2px 5px" }}>▼</button>
-                          <button onClick={removeHop} title="Remove" style={{ background: "none", border: "none", color: "#f87171", cursor: "pointer", fontSize: 15, padding: "2px 5px" }}>×</button>
+                          <button onClick={moveUp}   disabled={hi === 0}                        title="Move up"   style={{ background: "none", border: "none", color: hi === 0 ? "var(--border)" : "var(--muted)", cursor: hi === 0 ? "default" : "pointer", fontSize: 13, padding: "2px 5px" }}><Icon name="chevUp" size={12} /></button>
+                          <button onClick={moveDown} disabled={hi === conn.gateways.length - 1} title="Move down" style={{ background: "none", border: "none", color: hi === conn.gateways.length - 1 ? "var(--border)" : "var(--muted)", cursor: hi === conn.gateways.length - 1 ? "default" : "pointer", fontSize: 13, padding: "2px 5px" }}><Icon name="chevDown" size={12} /></button>
+                          <button onClick={removeHop} title="Remove" style={{ background: "none", border: "none", color: "#f87171", cursor: "pointer", fontSize: 15, padding: "2px 5px" }}><Icon name="close" size={13} /></button>
                         </div>
                       </div>
                       {/* Hop fields */}
@@ -4019,7 +5774,7 @@ function ConfigBuilderModal({ open, onClose, onSave }) {
             <div>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
                 <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--muted)" }}>
-                  {entries.length} log entr{entries.length === 1 ? "y" : "ies"} · Click ▶ Run on Device to test each command live
+                  {entries.length} log entr{entries.length === 1 ? "y" : "ies"} · Click <Icon name="play" size={9} style={{ marginLeft: 2, marginRight: 2 }} /> Run on Device to test each command live
                 </div>
                 <div style={{ display: "flex", gap: 8 }}>
                   <button
@@ -4134,6 +5889,18 @@ function ConfigBuilderModal({ open, onClose, onSave }) {
                         </div>
                       </div>
                     </div>
+                    <div style={{ marginTop: 12 }}>
+                      <div style={FIELD_LABEL}>Custom PCAP Decoder Command</div>
+                      <input
+                        value={packetCapture.decoder_cmd}
+                        onChange={e => setPC("decoder_cmd", e.target.value)}
+                        placeholder="Default: tshark"
+                        style={{ ...inputStyle, fontFamily: "var(--font-mono)" }}
+                      />
+                      <div style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--muted)", marginTop: 4 }}>
+                        Optional. Override the local binary used to decode pcap files. The command must accept the pcap file path as its last argument and write tab-separated lines in tshark field order to stdout. Leave blank to use the default <span style={{ color: "var(--text)" }}>tshark</span>.
+                      </div>
+                    </div>
                   </>
                 )}
               </div>
@@ -4149,7 +5916,7 @@ function ConfigBuilderModal({ open, onClose, onSave }) {
                 onClick={downloadConfig}
                 style={{ background: "rgba(255,255,255,0.04)", border: "1px solid var(--border)", borderRadius: 7, color: "var(--muted)", fontFamily: "var(--font-mono)", fontSize: 12, padding: "8px 14px", cursor: "pointer", display: "flex", alignItems: "center", gap: 6 }}
               >
-                ⬇ Download JSON
+                <Icon name="download" size={12} />Download JSON
               </button>
             )}
           </div>
@@ -4161,9 +5928,9 @@ function ConfigBuilderModal({ open, onClose, onSave }) {
             )}
             {step === 2 && (
               <>
-                <Btn variant="ghost" onClick={() => setStep(1)}>← Back</Btn>
+                <Btn variant="ghost" onClick={() => setStep(1)}><Icon name="arrowLeft" size={13} />Back</Btn>
                 <Btn variant="success" onClick={handleSave} disabled={saving || !step2Valid}>
-                  {saving ? "Saving…" : "💾 Save Device"}
+                  {saving ? "Saving…" : initialDevice ? <><Icon name="save" size={13} />Save Changes</> : <><Icon name="save" size={13} />Save Device</>}
                 </Btn>
               </>
             )}
@@ -4205,7 +5972,7 @@ function AddDeviceBtn({ onUpload, onBuildConfig }) {
   return (
     <>
       <input ref={fileRef} type="file" accept=".json" multiple style={{ display: "none" }} onChange={handleFile} />
-      <Btn variant="primary" onClick={() => setChoiceOpen(true)}>＋ Add Device</Btn>
+      <Btn variant="primary" onClick={() => setChoiceOpen(true)}><Icon name="plus" size={13} />Add Device</Btn>
 
       {choiceOpen && (
         <div style={{ position: "fixed", inset: 0, zIndex: 1100, display: "flex", alignItems: "center", justifyContent: "center" }}
@@ -4222,7 +5989,7 @@ function AddDeviceBtn({ onUpload, onBuildConfig }) {
                 width: 52, height: 52, borderRadius: "50%", margin: "0 auto 16px",
                 background: "rgba(129,140,248,0.12)", border: "1px solid rgba(129,140,248,0.3)",
                 display: "flex", alignItems: "center", justifyContent: "center", fontSize: 24,
-              }}>＋</div>
+              }}><Icon name="plus" size={24} style={{ color: "var(--accent)" }} /></div>
               <h3 style={{ margin: "0 0 6px", fontFamily: "var(--font-display)", fontWeight: 800, fontSize: 18, color: "var(--text)", letterSpacing: "-0.01em" }}>
                 Add Device
               </h3>
@@ -4243,7 +6010,7 @@ function AddDeviceBtn({ onUpload, onBuildConfig }) {
                 onMouseEnter={e => { e.currentTarget.style.borderColor = "rgba(129,140,248,0.4)"; e.currentTarget.style.background = "rgba(129,140,248,0.06)"; }}
                 onMouseLeave={e => { e.currentTarget.style.borderColor = "var(--border)"; e.currentTarget.style.background = "rgba(255,255,255,0.03)"; }}
               >
-                <div style={{ fontSize: 32, marginBottom: 12 }}>📄</div>
+                <div style={{ display: "flex", justifyContent: "center", marginBottom: 12, color: "var(--muted)" }}><Icon name="upload" size={30} /></div>
                 <div style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 14, color: "var(--text)", marginBottom: 6 }}>
                   Upload JSON
                 </div>
@@ -4263,7 +6030,7 @@ function AddDeviceBtn({ onUpload, onBuildConfig }) {
                 onMouseEnter={e => { e.currentTarget.style.borderColor = "rgba(129,140,248,0.55)"; e.currentTarget.style.background = "rgba(129,140,248,0.12)"; }}
                 onMouseLeave={e => { e.currentTarget.style.borderColor = "rgba(129,140,248,0.25)"; e.currentTarget.style.background = "rgba(129,140,248,0.06)"; }}
               >
-                <div style={{ fontSize: 32, marginBottom: 12 }}>🛠</div>
+                <div style={{ display: "flex", justifyContent: "center", marginBottom: 12, color: "var(--accent)" }}><GearGlyph size={30} /></div>
                 <div style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 14, color: "var(--accent)", marginBottom: 6 }}>
                   Build Config
                 </div>
@@ -4498,7 +6265,7 @@ function SessionInfo({ sessionId, textUrl, chartUrl, partial = false }) {
             textAlign: "center",
           }}
         >
-          ⚠ More log snapshots may still land under this session ID.
+          <Icon name="warn" size={12} style={{ marginRight: 6 }} />More log snapshots may still land under this session ID.
         </div>
       )}
       <div style={{ textAlign: "center" }}>
@@ -4508,8 +6275,8 @@ function SessionInfo({ sessionId, textUrl, chartUrl, partial = false }) {
         </code>
       </div>
       <div style={{ display: "flex", gap: 12 }}>
-        {textUrl  && <a href={textUrl}  target="_blank" rel="noreferrer"><Btn variant="subtle">📄 Show Text Logs</Btn></a>}
-        {chartUrl && <a href={chartUrl} target="_blank" rel="noreferrer"><Btn variant="subtle">📈 Show Chart Logs</Btn></a>}
+        {textUrl  && <a href={textUrl}  target="_blank" rel="noreferrer"><Btn variant="subtle"><Icon name="file" size={13} />Show Text Logs</Btn></a>}
+        {chartUrl && <a href={chartUrl} target="_blank" rel="noreferrer"><Btn variant="subtle"><Icon name="chart" size={13} />Show Chart Logs</Btn></a>}
       </div>
     </div>
   );
@@ -4658,12 +6425,25 @@ export default function App() {
   const [systemStats,     setSystemStats]     = useState(null);
   const [selectedDevices, setSelectedDevices] = useState([]);
   // Device groups: { id, name, deviceIds[] }
-  const [groups, setGroups] = useState(() => {
-    try { return JSON.parse(localStorage.getItem("lo_device_groups") || "[]"); } catch { return []; }
-  });
+  // Loaded from the server so all users share the same grouping configuration.
+  const [groups, setGroups] = useState([]);
+  // Collapsed state is intentionally kept local — it is a UI preference, not
+  // shared data, so each user can expand/collapse independently.
   const [collapsedGroups, setCollapsedGroups] = useState(() => {
     try { return new Set(JSON.parse(localStorage.getItem("lo_collapsed_groups") || "[]")); } catch { return new Set(); }
   });
+  // Whether the page was opened via a link to the snapshots list — i.e. the
+  // URL already carries list-level params (log_type from a share/filter
+  // link, or an active search_param/search_value filter), filtered or not.
+  // Captured once at initial mount. When true, every device group is force-
+  // collapsed as soon as the group list loads (below), so a shared list link
+  // opens focused on the snapshots rather than on expanded device groups. A
+  // bare URL with no params leaves the user's own saved collapse preference
+  // untouched.
+  const openedViaListLinkRef = useRef((() => {
+    const p = new URLSearchParams(window.location.search);
+    return !!(p.get("log_type") || p.get("search_param") || p.get("search_value"));
+  })());
   const [newGroupName, setNewGroupName] = useState("");
   const [creatingGroup, setCreatingGroup] = useState(false);
   const [snapshots,       setSnapshots]       = useState([]);
@@ -4676,10 +6456,17 @@ export default function App() {
   });
   const [snapsLoading,    setSnapsLoading]    = useState(true);
   const [selectedSnaps,   setSelectedSnaps]   = useState([]);
-  const [isChart,         setIsChart]         = useState(false);
-  const [searchParam,     setSearchParam]     = useState("");
-  const [searchValue,     setSearchValue]     = useState("");
-  const [filterActive,    setFilterActive]    = useState(false);
+  // Initialise filter state directly from the URL so the correct values are
+  // available before the first render and before any fetch fires.  This
+  // eliminates all races: no effect needs to read the URL and set state after
+  // mount, so there is no window where the wrong (empty) filter is visible.
+  const [isChart,      setIsChart]      = useState(() => new URLSearchParams(window.location.search).get("log_type") === "chart");
+  const [searchParam,  setSearchParam]  = useState(() => new URLSearchParams(window.location.search).get("search_param") || "");
+  const [searchValue,  setSearchValue]  = useState(() => new URLSearchParams(window.location.search).get("search_value")  || "");
+  const [filterActive, setFilterActive] = useState(() => {
+    const p = new URLSearchParams(window.location.search);
+    return !!(p.get("search_param") || p.get("search_value"));
+  });
 
   // stop-collection loading overlay
   const [stoppingCollection, setStoppingCollection] = useState(false);
@@ -4693,9 +6480,12 @@ export default function App() {
   const [viewingSnaps,    setViewingSnaps]    = useState([]); // snapshots currently open in the log modal
   const [logLoadProgress, setLogLoadProgress] = useState({ done: 0, total: 0 });
   const [colorMode,       setColorMode]       = useState(false);
+  // Per-device regex filter: Map<deviceName, regexString>
+  const [deviceRegexFilters, setDeviceRegexFilters] = useState({});
 
   // packet_capture "view packet details" modal
   const [packetModal,        setPacketModal]        = useState(false);
+  const [vizModal,           setVizModal]           = useState(false); // network capture visualizer
   const [packetModalData,    setPacketModalData]    = useState(null); // { packet_number, details }
   const [packetModalLoading, setPacketModalLoading] = useState(false);
   const [packetModalError,   setPacketModalError]   = useState("");
@@ -4703,6 +6493,7 @@ export default function App() {
   const [sessionModal,    setSessionModal]    = useState(null);
   const [apiModal,        setApiModal]        = useState(false);
   const [builderModal,    setBuilderModal]    = useState(false);
+  const [editBuilderDevice, setEditBuilderDevice] = useState(null); // Device being edited, or null for new
   const [loginModal,              setLoginModal]              = useState(false);
   const [settingsModal,           setSettingsModal]           = useState(false);
   const [scenarioModal,           setScenarioModal]           = useState(false);
@@ -4715,6 +6506,12 @@ export default function App() {
   const [removingDevices,         setRemovingDevices]         = useState(false);
   const [confirmRemoveSnaps,      setConfirmRemoveSnaps]      = useState(false);
   const [removingSnaps,           setRemovingSnaps]           = useState(false);
+
+  // share-link feature: ref to Monaco's getCurrentLine helper, and the
+  // highlighted line number injected when opening via a shared URL
+  const monacoEditorApiRef  = useRef(null); // { getCurrentLine: () => number }
+  const [shareLinkCopied,   setShareLinkCopied]   = useState(false);
+  const [highlightLine,     setHighlightLine]      = useState(null); // line number to highlight on open
 
   // toasts
   const [toasts, setToasts] = useState([]);
@@ -4759,8 +6556,41 @@ export default function App() {
     }
   }, [addToast, pageSize]);
 
+  // Load groups from the server once on mount so all users share the same
+  // device-group configuration.
   useEffect(() => {
-    localStorage.setItem("lo_device_groups", JSON.stringify(groups));
+    apiFetch("/api/settings/device-groups")
+      .then((data) => {
+        if (!Array.isArray(data)) return;
+        setGroups(data);
+        // Force-collapse every group when this page load came from a link
+        // to the snapshots list (see openedViaListLinkRef above).
+        if (openedViaListLinkRef.current) {
+          setCollapsedGroups(new Set(data.map((g) => g.id)));
+        }
+      })
+      .catch(() => {}); // non-critical — fall back to empty groups
+  }, []);
+
+  // Persist the full groups array to the server whenever it changes.
+  // We skip the first render (empty initial state) by checking length, but
+  // still save when the user explicitly empties all groups.
+  const groupsRef = useRef(null);
+  useEffect(() => {
+    // Don't save the uninitialised empty array that exists before the server
+    // fetch completes — only save after the first real server response has
+    // set groupsRef.current to a non-null value.
+    if (groupsRef.current === null) {
+      // Mark that we have now received the server state; subsequent changes
+      // (including user-driven deletions down to []) will be persisted.
+      groupsRef.current = groups;
+      return;
+    }
+    groupsRef.current = groups;
+    apiFetch("/api/settings/device-groups", {
+      method: "PUT",
+      body: JSON.stringify({ groups }),
+    }).catch(() => {}); // best-effort
   }, [groups]);
 
   useEffect(() => {
@@ -4851,7 +6681,14 @@ export default function App() {
   );
 
   useEffect(() => { fetchDevices(); }, [fetchDevices]);
-  useEffect(() => { fetchSnapshots("", "", false); }, [fetchSnapshots]);
+
+  // On mount, filter state is already correct (initialised from URL params via
+  // lazy useState), so we just fire the fetch directly with those values.
+  // No URL-reading or setState needed here — that's what prevents the flicker.
+  useEffect(() => {
+    fetchSnapshots(filterActive ? searchParam : "", filterActive ? searchValue : "", isChart);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
   useEffect(() => { fetchSystemStats(); }, [fetchSystemStats]);
 
   useEffect(() => {
@@ -4864,23 +6701,100 @@ export default function App() {
     return () => clearInterval(id);
   }, [fetchSystemStats]);
 
-  // FIX: this effect previously had no dependency array, causing it to run
-  // after every render and rely on a manual ref comparison to detect changes.
-  // Using [isChart] as the dependency array is correct and idiomatic.
+  // Re-fetch when the user manually toggles text/chart.
+  // isChart is stable on mount (set from URL before first render) so this
+  // effect only fires on genuine user-driven toggles, never on initial load.
+  const isMountedRef = useRef(false);
   useEffect(() => {
+    if (!isMountedRef.current) { isMountedRef.current = true; return; }
     fetchSnapshots(filterActive ? searchParam : "", filterActive ? searchValue : "", isChart);
   }, [isChart]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Auto-open a snapshot view (and optionally jump to a line) when the URL
+  // contains ?open_snaps=<id1,id2,...>&log_type=chart|text, with optional
+  // &line=<N> (text, single snapshot), &log_filters=<json> (text, the
+  // per-device regex filters that were active when the link was shared),
+  // and &color_mode=1 (text, whether color mode was on when shared).
+  // The legacy singular ?open_snap=<id> is still accepted for old links.
+  // These params are written by the share-link feature; clean them from the
+  // URL after consuming them so refreshing doesn't re-trigger the open.
+  const autoOpenHandledRef = useRef(false);
   useEffect(() => {
+    if (autoOpenHandledRef.current || snapsLoading) return;
     const p = new URLSearchParams(window.location.search);
-    const sp = p.get("search_param") || "";
-    const sv = p.get("search_value")  || "";
-    const lt = p.get("log_type") === "chart";
-    if (sp || sv) {
-      setSearchParam(sp); setSearchValue(sv); setIsChart(lt); setFilterActive(true);
-      fetchSnapshots(sp, sv, lt);
-    }
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+    const snapsParam = p.get("open_snaps") || p.get("open_snap");
+    if (!snapsParam) return;
+    autoOpenHandledRef.current = true;
+
+    const snapIds = [...new Set(snapsParam.split(",").map((s) => s.trim()).filter(Boolean))];
+    const lineParam      = p.get("line");
+    const filtersParam   = p.get("log_filters");
+    const colorModeParam = p.get("color_mode");
+
+    // Remove share-link params from the URL without a page reload
+    p.delete("open_snap");
+    p.delete("open_snaps");
+    p.delete("line");
+    p.delete("log_filters");
+    p.delete("color_mode");
+    const newSearch = p.toString();
+    window.history.replaceState(null, "", newSearch ? `?${newSearch}` : window.location.pathname);
+
+    // Find the snapshots in the current page; if any are missing, fetch the
+    // full list for the relevant log type to locate them (they may be on a
+    // different page, or excluded by the current list filter).
+    const findAndOpen = async () => {
+      let targets = snapshots.filter((s) => snapIds.includes(s.id));
+      if (targets.length < snapIds.length) {
+        try {
+          const logType = isChart ? "chart" : "text";
+          const data = await apiFetch(`/api/snapshots?log_type=${logType}&page_size=9999`);
+          const all = data.items ?? [];
+          targets = snapIds.map((id) => all.find((s) => s.id === id)).filter(Boolean);
+        } catch { /* ignore */ }
+      }
+
+      if (targets.length === 0) {
+        addToast("Shared snapshot(s) not found.", "error");
+        return;
+      }
+      if (targets.length < snapIds.length) {
+        addToast(`Only found ${targets.length} of ${snapIds.length} shared snapshots.`, "error");
+      }
+
+      // Set highlight line before opening so it is available when Monaco
+      // mounts. Safe even for multi-snapshot merged views: rows are always
+      // sorted by timestamp with a stable sort, and `targets` preserves the
+      // same snapshot order the link was shared with, so the merged row
+      // order — and therefore the line number — reproduces identically as
+      // long as the underlying snapshot content hasn't changed.
+      if (lineParam) {
+        const ln = parseInt(lineParam, 10);
+        if (ln > 0) setHighlightLine(ln);
+      }
+
+      // Color mode has no meaning for chart views (the toggle is only shown
+      // for text logs) — only honor it when the shared link's log_type was
+      // "text", so a stray/old color_mode param on a chart link is a no-op.
+      if (colorModeParam === "1" && !isChart) setColorMode(true);
+
+      // Parse the shared per-device regex filters (if any) and hand them to
+      // openLogContent directly so they land in the very first render of
+      // the modal's content, rather than one render later — see the note
+      // on openLogContent for why that ordering matters for share links.
+      let initialFilters;
+      if (filtersParam) {
+        try {
+          const parsed = JSON.parse(filtersParam);
+          if (parsed && typeof parsed === "object") initialFilters = parsed;
+        } catch { /* ignore malformed filter param */ }
+      }
+
+      await openLogContent(targets, { initialFilters });
+    };
+
+    findAndOpen();
+  }, [snapsLoading]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── handlers ───────────────────────────────────────────────────────────────
   const uploadOne = async (contents) => {
@@ -4891,7 +6805,25 @@ export default function App() {
     setDevices((prev) => [...prev, device]);
   };
 
-  const handleUpload = async (contents) => {
+  // handleUpload is called by ConfigBuilderModal.onSave with (contents, deviceId).
+  // When deviceId is set it is an edit (PUT); otherwise it is a new device (POST).
+  const handleUpload = async (contents, deviceId = null) => {
+    if (deviceId) {
+      // ── Edit existing device ────────────────────────────────────────────
+      try {
+        const { device } = await apiFetch(`/api/devices/${encodeURIComponent(deviceId)}`, {
+          method: "PUT",
+          body: JSON.stringify({ contents }),
+        });
+        setDevices(prev => prev.map(d => d.id === deviceId ? device : d));
+        addToast(`Device "${device.name}" updated successfully.`, "success");
+      } catch (e) {
+        addToast(e.status === 422 ? "Invalid configuration — could not update device." : `Update failed: ${e.message}`);
+      }
+      return;
+    }
+
+    // ── Add new device ────────────────────────────────────────────────────
     // Single file: keep the original behaviour/messages unchanged.
     if (!Array.isArray(contents)) {
       try {
@@ -5080,14 +7012,22 @@ export default function App() {
    * For chart mode: fetches each snapshot separately and builds chartGroups
    * so each snapshot gets its own Plotly panel inside the modal.
    * For text mode: merges all rows as before.
+   *
+   * `initialFilters`, when provided (e.g. by a shared-link URL), is applied
+   * in the same pass as the reset instead of being set in a follow-up call
+   * after this function returns — setting it a render later would mean the
+   * editor first mounts with the unfiltered content, then has its entire
+   * buffer replaced once the filters land, which clears any decoration
+   * (such as the shared-line highlight) applied in between.
    */
-  const openLogContent = async (snapsToView) => {
+  const openLogContent = async (snapsToView, { initialFilters } = {}) => {
     setLogModal(true);
     setLogRowsLoading(true);
     setLogRows([]);
     setChartGroups([]);
     setViewingSnaps(snapsToView);
     setLogLoadProgress({ done: 0, total: snapsToView.length });
+    setDeviceRegexFilters(initialFilters || {});
 
     try {
       let done = 0;
@@ -5156,6 +7096,71 @@ export default function App() {
     } finally {
       setPacketModalLoading(false);
     }
+  };
+
+  // ── share-link helpers ─────────────────────────────────────────────────────
+
+  /**
+   * Builds a shareable URL that reproduces the currently open log/chart
+   * view: every snapshot in `snapsToShare` (via ?open_snaps=id1,id2,...),
+   * the active log_type, — for text logs — any per-device regex filters
+   * currently applied (?log_filters=<json>), and — also text logs only,
+   * since chart views have no color mode — whether color mode is on
+   * (?color_mode=1). List-level filters (search_param/search_value)
+   * already live in the current URL and are carried over automatically
+   * since we start from the existing query string.
+   */
+  const buildShareUrl = (snapsToShare, { line } = {}) => {
+    const p = new URLSearchParams(window.location.search);
+    p.set("open_snaps", snapsToShare.map((s) => s.id).join(","));
+    p.delete("open_snap"); // legacy singular param, superseded by open_snaps
+    p.set("log_type", isChart ? "chart" : "text");
+
+    if (line) p.set("line", String(line));
+    else p.delete("line");
+
+    const activeFilters = isChart
+      ? {}
+      : Object.fromEntries(Object.entries(deviceRegexFilters).filter(([, v]) => v && v.trim()));
+    if (Object.keys(activeFilters).length > 0) p.set("log_filters", JSON.stringify(activeFilters));
+    else p.delete("log_filters");
+
+    if (!isChart && colorMode) p.set("color_mode", "1");
+    else p.delete("color_mode");
+
+    return `${window.location.origin}${window.location.pathname}?${p.toString()}`;
+  };
+
+  const copyShareUrl = (url, successMessage) => {
+    navigator.clipboard.writeText(url)
+      .then(() => addToast(successMessage, "success"))
+      .catch(() => addToast("Could not copy to clipboard.", "error"));
+  };
+
+  /**
+   * Copies a shareable URL for the current cursor line in the Monaco viewer.
+   * Includes every snapshot currently open (not just the first) plus any
+   * active per-device filters, so the recipient sees the exact same merged,
+   * filtered view before landing on the highlighted line.
+   */
+  const shareCurrentLine = () => {
+    if (viewingSnaps.length === 0) return;
+    const lineNumber = monacoEditorApiRef.current?.getCurrentLine?.() ?? 1;
+    const url = buildShareUrl(viewingSnaps, { line: lineNumber });
+    setShareLinkCopied(true);
+    setTimeout(() => setShareLinkCopied(false), 2500);
+    copyShareUrl(url, `Link to line ${lineNumber} copied to clipboard.`);
+  };
+
+  /**
+   * Copies a shareable URL for a single chart snapshot — used by the
+   * per-chart "🔗 Share Chart" button inside a multi-chart view.
+   */
+  const shareChart = (snapId) => {
+    const target = viewingSnaps.find((s) => s.id === snapId);
+    if (!target) return;
+    const url = buildShareUrl([target]);
+    copyShareUrl(url, "Chart link copied to clipboard.");
   };
 
   const applyFilter = () => {
@@ -5606,6 +7611,16 @@ ${rowsHtml}
     }
   };
 
+  // Apply per-(device, logName) regex filters to the full log rows.
+  // Filter keys use the same FILTER_SEP-delimited format as LogFilterBar.
+  // Runs in time-sliced chunks (see useChunkedRowFilter) so very large logs
+  // no longer freeze the tab while the regexes are evaluated.
+  const {
+    rows:      filteredLogRows,
+    filtering: logsFiltering,
+    progress:  logsFilterProgress,
+  } = useChunkedRowFilter(logRows, deviceRegexFilters);
+
   // Modal title with chart count info
   const logModalTitle = isChart && chartGroups.length > 0
     ? `Chart Data — ${chartGroups.length} snapshot${chartGroups.length > 1 ? "s" : ""}`
@@ -5728,6 +7743,9 @@ ${rowsHtml}
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                 <span
                   style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 6,
                     fontFamily: "var(--font-mono)",
                     fontSize: 11,
                     color: "#a78bfa",
@@ -5737,16 +7755,41 @@ ${rowsHtml}
                     padding: "3px 10px",
                   }}
                 >
-                  🔐 Admin
+                  <IconLock size={11} /> Admin
                 </span>
-                <Btn variant="ghost" size="sm" onClick={auth.logout}>Sign out</Btn>
+                <Btn
+                  variant="ghost" size="sm" title="Sign out of admin session"
+                  onClick={auth.logout}
+                  style={{ justifyContent: "center", height: 30, minWidth: 128 }}
+                >
+                  Sign out
+                </Btn>
               </div>
             ) : (
-              <Btn variant="admin" size="sm" onClick={() => setLoginModal(true)}>🔐 Admin Login</Btn>
+              <Btn
+                variant="admin" size="sm" title="Sign in as admin"
+                onClick={() => setLoginModal(true)}
+                style={{ justifyContent: "center", height: 30, minWidth: 128 }}
+              >
+                <IconLock size={13} /> Admin Login
+              </Btn>
             )}
 
-            <Btn variant="subtle" size="sm" onClick={() => setSettingsModal(true)}>⚙️ Settings</Btn>
-            <Btn variant="subtle" size="sm" onClick={() => setApiModal(true)}>⚡ REST API</Btn>
+            {/* Header toolbar buttons — identical size so they sit as a matched pair */}
+            <Btn
+              variant="subtle" size="sm" title="Open settings"
+              onClick={() => setSettingsModal(true)}
+              style={{ justifyContent: "center", height: 30, minWidth: 128 }}
+            >
+              <GearGlyph size={14} /> Settings
+            </Btn>
+            <Btn
+              variant="subtle" size="sm" title="Open REST API documentation"
+              onClick={() => setApiModal(true)}
+              style={{ justifyContent: "center", height: 30, minWidth: 128 }}
+            >
+              <IconApi size={13} /> REST API
+            </Btn>
           </div>
         </header>
 
@@ -5760,9 +7803,9 @@ ${rowsHtml}
           {/* ACTION BAR */}
           <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 24, alignItems: "center" }}>
             <AddDeviceBtn onUpload={handleUpload} onBuildConfig={() => setBuilderModal(true)} />
-            <Btn variant="success" onClick={startCollection} disabled={!anySelected}>▶ Start Collection</Btn>
-            <Btn variant="danger"  onClick={stopCollection}  disabled={!anySelected}>⏹ Stop Collection</Btn>
-            <Btn variant="ghost"   onClick={() => setConfirmRemoveDevices(true)}  disabled={!anySelected}>🗑 Remove Selected</Btn>
+            <Btn variant="success" onClick={startCollection} disabled={!anySelected}><Icon name="play" size={12} />Start Collection</Btn>
+            <Btn variant="danger"  onClick={stopCollection}  disabled={!anySelected}><Icon name="stop" size={12} />Stop Collection</Btn>
+            <Btn variant="ghost"   onClick={() => setConfirmRemoveDevices(true)}  disabled={!anySelected}><Icon name="trash" size={13} />Remove Selected</Btn>
             <div style={{ marginLeft: "auto", fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--muted)" }}>
               {selectedDevices.length} device(s) selected
             </div>
@@ -5786,10 +7829,10 @@ ${rowsHtml}
                       style={{ ...inputStyle, width: 160, padding: "6px 10px", fontSize: 12 }}
                     />
                     <Btn variant="success" size="sm" onClick={createGroup}>Create</Btn>
-                    <Btn variant="ghost" size="sm" onClick={() => { setCreatingGroup(false); setNewGroupName(""); }}>✕</Btn>
+                    <Btn variant="ghost" size="sm" onClick={() => { setCreatingGroup(false); setNewGroupName(""); }}><Icon name="close" size={12} /></Btn>
                   </div>
                 ) : (
-                  <Btn variant="subtle" size="sm" onClick={() => setCreatingGroup(true)}>＋ New Group</Btn>
+                  <Btn variant="subtle" size="sm" onClick={() => setCreatingGroup(true)}><Icon name="plus" size={12} />New Group</Btn>
                 )}
               </div>
             </div>
@@ -5815,15 +7858,11 @@ ${rowsHtml}
                       onSelect={(id, checked) => toggleDevice(id, checked)}
                       onSelectAll={selectAllInGroup}
                       onInfo={(d) => setDeviceModal(d)}
-                      onAutoCollectionSave={(id, enabled, interval) => {
-                        setDevices(prev => prev.map(dev => dev.id === id ? { ...dev, autoCollectionEnabled: enabled, autoCollectionInterval: interval } : dev));
-                      }}
                       onDropDevice={moveDeviceToGroup}
                       onRemoveDevice={removeDeviceFromGroups}
                       onReorderDevice={reorderDeviceInGroup}
                       onRename={(name) => renameGroup(group.id, name)}
                       onDelete={() => deleteGroup(group.id)}
-                      addToast={addToast}
                     />
                   );
                 })}
@@ -5837,12 +7876,8 @@ ${rowsHtml}
                   onSelect={(id, checked) => toggleDevice(id, checked)}
                   onSelectAll={selectAllInGroup}
                   onInfo={(d) => setDeviceModal(d)}
-                  onAutoCollectionSave={(id, enabled, interval) => {
-                    setDevices(prev => prev.map(dev => dev.id === id ? { ...dev, autoCollectionEnabled: enabled, autoCollectionInterval: interval } : dev));
-                  }}
                   onDropDevice={moveDeviceToGroup}
                   onRemoveDevice={removeDeviceFromGroups}
-                  addToast={addToast}
                   isUngrouped
                 />
                 )}
@@ -5859,7 +7894,7 @@ ${rowsHtml}
               onClick={() => openLogContent(snapshots.filter((s) => selectedSnaps.includes(s.id)))}
               disabled={selectedSnaps.length === 0}
             >
-              {isChart ? `📈 View ${selectedSnaps.length > 1 ? `${selectedSnaps.length} Charts` : "Chart"}` : "📋 View Selected"}
+              {isChart ? <><Icon name="chart" size={13} />View {selectedSnaps.length > 1 ? `${selectedSnaps.length} Charts` : "Chart"}</> : <><Icon name="clipboard" size={13} />View Selected</>}
             </Btn>
             <DownloadSelectedBtn
               onDownload={downloadSelectedLogs}
@@ -5872,7 +7907,7 @@ ${rowsHtml}
               onClick={() => setConfirmRemoveSnaps(true)}
               disabled={selectedSnaps.length === 0}
             >
-              🗑 Remove Selected
+              <Icon name="trash" size={13} />Remove Selected
             </Btn>
             <Toggle checked={isChart} onChange={(v) => { setIsChart(v); setSelectedSnaps([]); }} labelLeft="Text" labelRight="Chart" />
             <div style={{ display: "flex", alignItems: "center", gap: 8, marginLeft: 8 }}>
@@ -5892,8 +7927,8 @@ ${rowsHtml}
                 onKeyDown={(e) => { if (e.key === "Enter") applyFilter(); }}
                 style={{ background: "var(--card-bg)", border: "1px solid var(--border)", borderRadius: 7, color: "var(--text)", fontFamily: "var(--font-mono)", fontSize: 12, padding: "7px 12px", width: 160 }}
               />
-              <Btn variant="subtle" size="sm" onClick={applyFilter}>🔍 Filter</Btn>
-              {filterActive && <Btn variant="ghost" size="sm" onClick={clearFilter}>✕ Clear</Btn>}
+              <Btn variant="subtle" size="sm" onClick={applyFilter}><Icon name="search" size={12} />Filter</Btn>
+              {filterActive && <Btn variant="ghost" size="sm" onClick={clearFilter}><Icon name="close" size={11} />Clear</Btn>}
             </div>
             <div style={{ marginLeft: "auto", fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--muted)" }}>
               {snapsTotal} snapshot(s)
@@ -5914,6 +7949,7 @@ ${rowsHtml}
                 selected={selectedSnaps}
                 onSelect={toggleSnap}
                 onView={openLogContent}
+                onDownloadPcap={downloadRawPcap}
               />
             )}
             {!snapsLoading && snapsTotalPages > 1 && (
@@ -5934,11 +7970,12 @@ ${rowsHtml}
 
       {/* MODALS */}
 
-      {/* Config Builder Modal */}
+      {/* Config Builder Modal — used for both creating new devices and editing existing ones */}
       <ConfigBuilderModal
         open={builderModal}
-        onClose={() => setBuilderModal(false)}
+        onClose={() => { setBuilderModal(false); setEditBuilderDevice(null); }}
         onSave={handleUpload}
+        initialDevice={editBuilderDevice}
       />
 
       {/* Session scenario modal — shown when the user clicks ▶ Start Collection */}
@@ -5949,7 +7986,7 @@ ${rowsHtml}
         size="sm"
         footer={
           <>
-            <Btn variant="success" onClick={confirmStartCollection}>▶ Start</Btn>
+            <Btn variant="success" onClick={confirmStartCollection}><Icon name="play" size={12} />Start</Btn>
             <Btn variant="ghost" onClick={() => setScenarioModal(false)}>Cancel</Btn>
           </>
         }
@@ -6041,19 +8078,34 @@ ${rowsHtml}
 
       <Modal
         open={logModal}
-        onClose={() => setLogModal(false)}
+        onClose={() => { setLogModal(false); setHighlightLine(null); monacoEditorApiRef.current = null; setShareLinkCopied(false); }}
         title={logModalTitle}
         size="full"
         footer={
           <>
             {!isChart && <Toggle checked={colorMode} onChange={setColorMode} labelLeft="Raw" labelRight="Color mode" />}
+            {!isChart && !logRowsLoading && filteredLogRows.length > 0 && (
+              <Btn
+                variant="subtle"
+                size="sm"
+                onClick={shareCurrentLine}
+                title="Copy a link to this view, with the currently selected line highlighted"
+              >
+                {shareLinkCopied ? <><Icon name="check" size={12} />Copied!</> : <><Icon name="link" size={12} />Share</>}
+              </Btn>
+            )}
+            {!isChart && networkCaptureSnaps.length > 0 && !logRowsLoading && (
+              <Btn size="sm" variant="subtle" onClick={() => setVizModal(true)} title="Interactive 3D and timeline views of this capture">
+                <Icon name="chart" size={12} />Visualize
+              </Btn>
+            )}
             {networkCaptureSnaps.map((s) => (
               <Btn key={s.id} size="sm" variant="subtle" onClick={() => downloadRawPcap(s)}>
-                ⬇ Raw PCAP{networkCaptureSnaps.length > 1 ? `: ${s.deviceName}` : ""}
+                <Icon name="download" size={12} />Raw PCAP{networkCaptureSnaps.length > 1 ? `: ${s.deviceName}` : ""}
               </Btn>
             ))}
             <DownloadMenu onDownload={downloadLogs} isChart={isChart} />
-            <Btn variant="ghost" onClick={() => setLogModal(false)}>Close</Btn>
+            <Btn variant="ghost" onClick={() => { setLogModal(false); setHighlightLine(null); monacoEditorApiRef.current = null; setShareLinkCopied(false); }}>Close</Btn>
           </>
         }
       >
@@ -6061,18 +8113,48 @@ ${rowsHtml}
           <LogLoadProgressBar done={logLoadProgress.done} total={logLoadProgress.total} />
         ) : (
           <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
-            <LogContentView
-              rows={logRows}
-              isChart={isChart}
-              colorMode={colorMode}
-              chartGroups={chartGroups}
-              onPacketClick={openPacketDetails}
-            />
+            {!isChart && logRows.length > 0 && (
+              <LogFilterBar
+                logRows={logRows}
+                filters={deviceRegexFilters}
+                onFiltersChange={setDeviceRegexFilters}
+                filteredCount={filteredLogRows.length}
+                totalCount={logRows.length}
+                filtering={logsFiltering}
+                progress={logsFilterProgress}
+              />
+            )}
+            <LogViewErrorBoundary resetKey={deviceRegexFilters}>
+              <LogContentView
+                rows={filteredLogRows}
+                isChart={isChart}
+                colorMode={colorMode}
+                chartGroups={chartGroups}
+                onPacketClick={openPacketDetails}
+                onShareChart={shareChart}
+                onEditorReady={(api) => { monacoEditorApiRef.current = api; }}
+                highlightLine={highlightLine}
+                filtering={logsFiltering}
+              />
+            </LogViewErrorBoundary>
           </div>
         )}
       </Modal>
 
-      {/* Packet details modal — opened from the 🔎 glyph next to packet_capture rows */}
+      {/* Network capture visualizer — rendered before the packet modal so that
+          clicking a 3D point opens the packet details on top of it. */}
+      <Modal
+        open={vizModal}
+        onClose={() => setVizModal(false)}
+        title="Network Capture Visualizer"
+        icon={<Icon name="chart" size={18} />}
+        size="full"
+        footer={<Btn variant="ghost" onClick={() => setVizModal(false)}>Close</Btn>}
+      >
+        {vizModal && <NetworkCaptureVisualizer rows={filteredLogRows} onPacketClick={openPacketDetails} />}
+      </Modal>
+
+      {/* Packet details modal — opened from the search icon next to packet_capture rows */}
       <Modal
         open={packetModal}
         onClose={() => setPacketModal(false)}
@@ -6084,7 +8166,7 @@ ${rowsHtml}
           <Spinner />
         ) : packetModalError ? (
           <p style={{ color: "#f87171", fontFamily: "var(--font-mono)", fontSize: 13 }}>
-            ⚠ {packetModalError}
+            <Icon name="warn" size={12} style={{ marginRight: 6 }} />{packetModalError}
           </p>
         ) : packetModalData?.details && Object.keys(packetModalData.details).length > 0 ? (
           <PacketFieldTree data={packetModalData.details} />
@@ -6096,7 +8178,8 @@ ${rowsHtml}
       <Modal
         open={!!deviceModal}
         onClose={() => setDeviceModal(null)}
-        title="Device Details"
+        title="Device Details & Settings"
+        icon={<GearGlyph size={18} />}
         size="xl"
         footer={<Btn variant="ghost" onClick={() => setDeviceModal(null)}>Close</Btn>}
       >
@@ -6105,6 +8188,15 @@ ${rowsHtml}
             device={deviceModal}
             isAdmin={auth.isAdmin}
             onRequestLogin={() => setLoginModal(true)}
+            addToast={addToast}
+            onAutoCollectionSave={(id, enabled, interval) => {
+              setDevices(prev => prev.map(dev => dev.id === id ? { ...dev, autoCollectionEnabled: enabled, autoCollectionInterval: interval } : dev));
+            }}
+            onEdit={(device) => {
+              setEditBuilderDevice(device);
+              setBuilderModal(true);
+              setDeviceModal(null);
+            }}
           />
         )}
       </Modal>
