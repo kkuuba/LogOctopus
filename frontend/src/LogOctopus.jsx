@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from "react";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
-const API_BASE = (import.meta.env.VITE_API_BASE) || "http://localhost:8050"
+const API_BASE = (import.meta.env.VITE_API_BASE) || ""
 ;
 
 // Plotly is expected as a global (loaded via CDN script tag in index.html):
