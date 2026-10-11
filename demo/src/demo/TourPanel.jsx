@@ -9,14 +9,14 @@ const here = () => window.location.pathname;
 const link = (ids, type) => `${here()}?open_snaps=${ids.join(",")}&log_type=${type}`;
 
 // Steps complete automatically when the mock API sees the matching request.
+// (Collecting and browsing work as a guest — only config editing needs admin.)
 const STEPS = [
-  { id: "signIn", title: "Sign in as admin", hint: "Top right → Sign In (admin / admin). Unlocks device configs and settings." },
   { id: "startCollection", title: "Start a collection", hint: "Tick Router-Beta and IoT-Gateway, press Start Collection and name the scenario." },
   { id: "stopCollection", title: "Stop it and open the session", hint: "Press Stop Collection, watch the snapshots get saved, then follow the session link." },
   { id: "openCapture", title: "Explore a network capture", hint: "Opens a packet capture. Try the Visualize button for 3D flow and topology views.", action: () => ({ label: "Open sample capture", href: link([SAMPLE_LINKS.captureId], "text") }) },
   { id: "inspectPacket", title: "Inspect a packet", hint: "Click the 🔎 icon in the gutter next to a packet line, or click a point in the 3D view." },
   { id: "openCharts", title: "Chart some metrics", hint: "Plots temperature, humidity and Wi-Fi signal from one sensor session.", action: () => ({ label: "Open sample charts", href: link(SAMPLE_LINKS.chartIds, "chart") }) },
-  { id: "buildConfig", title: "Build a device config", hint: "Add Device → Build a config: test the connection, run a command, mark a log line to auto-generate the regex." },
+  { id: "buildConfig", title: "Build a device config", hint: "Needs admin (Sign In, top right: admin / admin). Then Add Device → build a config: test the connection, run a command, mark a log line to auto-generate the regex." },
 ];
 
 export default function TourPanel() {

@@ -6,6 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createMockApi } from "../src/mock/mockApi.js";
 import { checkApiCoverage } from "../scripts/check-api-coverage.mjs";
+import { applyFrontendPatches, PATCHES } from "../scripts/frontend-patches.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const JSX = path.join(here, "../src/LogOctopus.jsx");
@@ -169,4 +170,47 @@ test("auto-collection, dissectors, exec-command, test-connection, snapshot delet
 test("unknown route → 404 JSON error", async () => {
   const r = await call(api(), "GET", "/api/nope");
   assert.equal(r.status, 404); assert.ok(r.data.error);
+});
+
+test("build-time frontend patches still match LogOctopus.jsx", () => {
+  const { missing, applied, code } = applyFrontendPatches(fs.readFileSync(JSX, "utf8"));
+  assert.deepEqual(missing, [], "a demo patch no longer matches — update scripts/frontend-patches.mjs");
+  assert.equal(applied.length, PATCHES.length);
+  assert.ok(!/setCollapsedGroups\(new Set\(data\.map/.test(code), "forced group collapse must be gone");
+});
+
+test("two tabs share state: work done in tab A is visible in a freshly opened tab B", async () => {
+  // Minimal localStorage shared by both "tabs" (as in a real browser origin).
+  const mem = new Map();
+  globalThis.localStorage = { getItem: (k) => (mem.has(k) ? mem.get(k) : null), setItem: (k, v) => mem.set(k, String(v)), removeItem: (k) => mem.delete(k) };
+  try {
+    const A = createMockApi({ latency: false, persist: true });
+    const devs = (await call(A, "GET", "/api/devices")).data;
+    const beta = devs.find((d) => d.name === "Router-Beta");
+    const start = await call(A, "POST", "/api/start-logs-collection", { selected_devices: [beta.id], session_scenario: "cross-tab" });
+    const stop = await call(A, "POST", "/api/stop-logs-collection", { selected_devices: [beta.id], session_id: start.data.session_id });
+
+    // The new tab opens the URL from the "Show Text Logs" button.
+    const url = new URL(stop.data.text_logs_url);
+    const B = createMockApi({ latency: false, persist: true });
+    const q = `/api/snapshots?${url.searchParams.get("log_type") && "log_type=text"}&page_size=9999&search_param=${encodeURIComponent(url.searchParams.get("search_param"))}&search_value=${url.searchParams.get("search_value")}`;
+    const seen = (await call(B, "GET", q)).data;
+    assert.ok(seen.total >= 2 && seen.items.every((s) => s.sessionScenario === "cross-tab"));
+    const charts = (await call(B, "GET", q.replace("log_type=text", "log_type=chart"))).data;
+    assert.ok(charts.total >= 1, "chart link must also have data");
+
+    // Changes keep flowing between already-open tabs…
+    await call(B, "PUT", "/api/settings/device-groups", { groups: [{ id: "g", name: "From B", deviceIds: [] }] });
+    assert.equal((await call(A, "GET", "/api/settings/device-groups")).data[0].name, "From B");
+
+    // …and "Reset demo" in one tab resets the other too.
+    A.reset();
+    assert.ok((await call(B, "GET", "/api/settings/device-groups")).data.some((g) => g.name === "Core network"));
+    assert.equal((await call(B, "GET", q)).data.total, 0);
+  } finally { delete globalThis.localStorage; }
+});
+
+test("main.jsx does not use React.StrictMode (it makes the app wipe device groups in dev)", () => {
+  const main = fs.readFileSync(path.join(here, "../src/main.jsx"), "utf8").replace(/\/\/.*$/gm, "");
+  assert.ok(!/StrictMode/.test(main));
 });

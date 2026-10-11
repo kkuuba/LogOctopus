@@ -7,8 +7,10 @@
 //  • All routes live in one table (see `on(...)` below). `npm run check:api`
 //    compares that table against every /api path used in LogOctopus.jsx, so a
 //    newly-added frontend endpoint can't silently go missing in the demo.
-//  • State is kept in memory and mirrored to sessionStorage, so a page reload
-//    (or a deep-link) keeps the visitor's work; closing the tab resets it.
+//  • State is kept in memory and mirrored to localStorage, so a reload — or a
+//    new tab such as the "Show Text/Chart Logs" buttons open — sees the same
+//    data. Every request first adopts any newer state another tab has saved.
+//    State expires after STATE_TTL_MS; "Reset demo" restores the seed data.
 //  • Row content is never stored — it is derived from snapshot ids (generators.js).
 
 import {
@@ -22,7 +24,8 @@ import { fmtMetaTime } from "./prng.js";
 const STORAGE_KEY = "lo_demo_state";
 // Bump when the *shape* of persisted state changes; the fixture counts below
 // also invalidate stale state automatically when the seed data grows/shrinks.
-const STATE_REV = 2;
+const STATE_REV = 3;
+const STATE_TTL_MS = 8 * 3_600_000; // returning visitors get fresh "x hours ago" timestamps
 const SIGNATURE = `${STATE_REV}.${DEMO_DEVICES.length}.${DEMO_SNAPSHOTS.length}.${Object.keys(DEMO_SESSIONS).length}`;
 
 const clone = (x) => JSON.parse(JSON.stringify(x));
@@ -36,7 +39,7 @@ const fail = (status, message) => json({ error: message }, status);
 const noContent = () => new Response(null, { status: 204 });
 
 const hasStorage = () => {
-  try { return typeof sessionStorage !== "undefined"; } catch { return false; }
+  try { return typeof localStorage !== "undefined"; } catch { return false; }
 };
 
 function freshState() {
@@ -50,14 +53,16 @@ function freshState() {
     autoCollection: {},
     password: "admin",
     counter: 0,
+    rev: 0,
+    savedAt: Date.now(),
   };
 }
 
-function loadState() {
+function readStored() {
   if (!hasStorage()) return null;
   try {
-    const s = JSON.parse(sessionStorage.getItem(STORAGE_KEY) || "null");
-    return s && s.sig === SIGNATURE ? s : null;
+    const s = JSON.parse(localStorage.getItem(STORAGE_KEY) || "null");
+    return s && s.sig === SIGNATURE && Date.now() - (s.savedAt || 0) < STATE_TTL_MS ? s : null;
   } catch { return null; }
 }
 
@@ -115,10 +120,18 @@ const SEARCH_FIELDS = {
 };
 
 export function createMockApi({ latency = true, persist = true } = {}) {
-  let state = (persist && loadState()) || freshState();
+  let state = (persist && readStored()) || freshState();
   const save = () => {
+    state.savedAt = Date.now();
+    state.rev = Math.max(state.savedAt, (state.rev || 0) + 1);
     if (!persist || !hasStorage()) return;
-    try { sessionStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch { /* quota */ }
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch { /* quota */ }
+  };
+  // Adopt state saved by another tab (or a reset) if it is newer than ours.
+  const syncFromStorage = () => {
+    if (!persist) return;
+    const stored = readStored();
+    if (stored && (stored.rev || 0) > (state.rev || 0)) state = stored;
   };
   const sleep = (ms) => (latency ? new Promise((r) => setTimeout(r, ms)) : Promise.resolve());
   const findDevice = (id) => state.devices.find((d) => d.id === id);
@@ -325,8 +338,11 @@ export function createMockApi({ latency = true, persist = true } = {}) {
     for (const meta of jobs) {
       await sleep(perSnap);
       state.snapshots.push(meta);
+      save(); // visible to other tabs straight away
     }
-    for (const d of targets) {
+    for (const t of targets) {
+      const d = findDevice(t.id);
+      if (!d) continue;
       d.collecting = false;
       const { current_session_id: _gone, ...rest } = d.config || {};
       d.config = rest;
@@ -407,7 +423,6 @@ export function createMockApi({ latency = true, persist = true } = {}) {
     await sleep(250);
     const { username, password } = body || {};
     if (username !== "admin" || password !== state.password) return fail(401, "invalid credentials");
-    emit("signIn");
     return { status: "ok", token: Array.from({ length: 32 }, () => Math.floor(Math.random() * 16).toString(16)).join("") };
   });
 
@@ -430,6 +445,7 @@ export function createMockApi({ latency = true, persist = true } = {}) {
     else if (typeof init.body === "string" && init.body) { try { body = JSON.parse(init.body); } catch { body = null; } }
 
     await sleep(rand(110, 300));
+    syncFromStorage();
     try {
       const out = await route.handler({ params, query: url.searchParams, body, form, method });
       return out instanceof Response ? out : json(out);
@@ -444,7 +460,7 @@ export function createMockApi({ latency = true, persist = true } = {}) {
     getState: () => state,
     reset() {
       state = freshState();
-      if (persist && hasStorage()) { try { sessionStorage.removeItem(STORAGE_KEY); } catch { /* ignore */ } }
+      save();
     },
   };
 }
