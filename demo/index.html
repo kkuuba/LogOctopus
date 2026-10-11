@@ -4,11 +4,39 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>LogOctopus — Live Demo</title>
-    <meta name="description" content="Interactive demo of LogOctopus, a log-collection dashboard, running on fake data with no backend." />
-    <script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
+    <meta name="description" content="Try LogOctopus in your browser: collect logs, charts and packet captures from simulated devices. No install, no backend." />
+    <meta name="theme-color" content="#09090f" />
+    <meta name="color-scheme" content="dark" />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="LogOctopus — Live Demo" />
+    <meta property="og:description" content="Collect and analyze logs, charts and network captures. Interactive demo with simulated devices — no backend needed." />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+
+    <!-- The app loads fonts, Monaco and Plotly from these hosts at runtime. -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin />
+    <!-- defer: doesn't block first paint, still runs before the app module (document order). -->
+    <script defer src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
+
+    <style>
+      html, body { margin: 0; background: #09090f; color: #e4e4f0; }
+      #boot { min-height: 100vh; display: grid; place-items: center; font: 12px/1.6 ui-monospace, "JetBrains Mono", monospace; color: #64648a; letter-spacing: .08em; }
+      #boot svg { display: block; margin: 0 auto 14px; animation: boot-spin 6s linear infinite; }
+      @keyframes boot-spin { to { transform: rotate(360deg); } }
+    </style>
   </head>
-  <body style="margin:0;background:#09090f;">
-    <div id="root"></div>
+  <body>
+    <div id="root">
+      <!-- Replaced by React on mount. -->
+      <div id="boot">
+        <div style="text-align:center">
+          <svg width="40" height="40" viewBox="0 0 36 36" aria-hidden="true"><circle cx="18" cy="18" r="14" fill="none" stroke="#818cf8" stroke-width="1.5"/><circle cx="18" cy="18" r="5" fill="#818cf8"/></svg>
+          LOADING DEMO…
+        </div>
+      </div>
+    </div>
+    <noscript><p style="padding:24px;font-family:sans-serif;color:#e4e4f0">This demo needs JavaScript enabled.</p></noscript>
     <script type="module" src="/src/main.jsx"></script>
   </body>
 </html>
