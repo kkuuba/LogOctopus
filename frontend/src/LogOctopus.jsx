@@ -3780,6 +3780,7 @@ const ICONS = {
   user:      <><circle cx="8" cy="5.6" r="2.7" /><path d="M2.9 13.4c.4-2.6 2.5-4.1 5.1-4.1s4.7 1.5 5.1 4.1" /></>,
   eye:       <><path d="M1.6 8s2.4-4.6 6.4-4.6S14.4 8 14.4 8s-2.4 4.6-6.4 4.6S1.6 8 1.6 8z" /><circle cx="8" cy="8" r="1.9" /></>,
   eyeOff:    <><path d="M1.6 8s2.4-4.6 6.4-4.6c1.1 0 2.1.3 3 .8M14.4 8s-2.4 4.6-6.4 4.6c-1.1 0-2.1-.3-3-.8" /><path d="M3 2.8l10 10.4" /></>,
+  help:      <><circle cx="8" cy="8" r="5.6" /><path d="M6.3 6.5a1.75 1.75 0 1 1 2.65 1.5c-.62.4-.95.8-.95 1.5" /><circle cx="8" cy="11.5" r=".8" fill="currentColor" stroke="none" /></>,
   grid:      <><rect x="2.8" y="2.8" width="4.2" height="4.2" rx="1" /><rect x="9" y="2.8" width="4.2" height="4.2" rx="1" /><rect x="2.8" y="9" width="4.2" height="4.2" rx="1" /><rect x="9" y="9" width="4.2" height="4.2" rx="1" /></>,
 };
 
@@ -3793,6 +3794,407 @@ function Icon({ name, size = 14, stroke = 1.4, style }) {
     >
       {ICONS[name]}
     </svg>
+  );
+}
+
+// ── LOGO MARK ─────────────────────────────────────────────────────────────────
+// Octopus glyph with a terminal prompt (>_) for eyes, drawn in the same idiom as the Icon set (round caps/joins,
+// currentColor) and set on a soft accent tile, so the brand mark reads as part
+// of the UI rather than a separate illustration.
+function LogoMark({ size = 38 }) {
+  return (
+    <div
+      aria-hidden="true"
+      style={{
+        width: size, height: size, borderRadius: 11, flexShrink: 0,
+        display: "flex", alignItems: "center", justifyContent: "center",
+        color: "var(--accent)",
+        background: "linear-gradient(145deg, rgba(129,140,248,0.22), rgba(129,140,248,0.06))",
+        border: "1px solid var(--accent-border)",
+        boxShadow: "0 0 18px rgba(129,140,248,0.14), inset 0 1px 0 rgba(255,255,255,0.06)",
+      }}
+    >
+      <svg width={size * 0.64} height={size * 0.64} viewBox="0 0 24 24" fill="none"
+        stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M5.5 11V9.5C5.5 5.8 8.4 3.5 12 3.5s6.5 2.3 6.5 6V11" />
+        <path d="M5.5 11v6.5a1.6 1.6 0 0 1-3.2 0" />
+        <path d="M9.7 11.5V18" />
+        <path d="M14.3 11.5V18" />
+        <path d="M18.5 11v6.5a1.6 1.6 0 0 0 3.2 0" />
+        <path d="M8.6 6.4 11 8.3 8.6 10.2" />
+        <path d="M12.8 10.2h3" />
+      </svg>
+    </div>
+  );
+}
+
+// ── GUIDED TOUR ───────────────────────────────────────────────────────────────
+// Spotlight-style walkthrough. Each step points at an element tagged with
+// data-tour="<target>" (steps without a target are shown centred). The target
+// is highlighted by a cut-out in a dimmed overlay and a card explains it.
+// Keyboard: → / Enter next, ← back, Esc close.
+const TOUR_STEPS = [
+  {
+    target: null,
+    title: "Welcome to LogOctopus",
+    body: "LogOctopus collects logs from your devices, stores them as snapshots, and lets you browse, chart and export them. This short tour walks through the main areas of the app.",
+  },
+  {
+    target: "stats",
+    title: "Host health",
+    body: "Live CPU, RAM and disk usage of the backend host that stores your logs. Hover it for exact GB figures.",
+  },
+  {
+    target: "add-device",
+    title: "Add devices",
+    body: "Register a device by uploading a JSON config, or build one step by step with the config builder (connection details and the log entries to collect).",
+  },
+  {
+    target: "collection",
+    title: "Start & stop collection",
+    body: "Select one or more devices below, then press Start Collection and give the session a scenario name. Stop Collection saves what was captured as snapshots.",
+  },
+  {
+    target: "devices",
+    title: "Managed devices",
+    body: "Tick cards to select devices and open a card's details to see its settings, including auto-collection. Use New Group to organise devices and drag cards between groups.",
+  },
+  {
+    target: "snap-toolbar",
+    title: "Work with snapshots",
+    body: "Select snapshots in the table, then view, download or remove them. Switch Text / Chart to flip between raw log text and charts, and filter by device, log name, session, scenario or time.",
+  },
+  {
+    target: "snapshots",
+    title: "Snapshots table",
+    body: "Every collection session lands here. Open a snapshot to read it in the log viewer with filters, colour mode and share links. Network captures also offer packet details and 3D visualizations.",
+  },
+  {
+    target: "admin",
+    title: "Admin access",
+    body: "Sign in as admin to unlock protected actions such as editing device settings and managing security options.",
+  },
+  {
+    target: "tools",
+    title: "Settings & REST API",
+    body: "Settings holds preferences like page size and scheduled collection. REST API documents the endpoints for automating collection from your own scripts.",
+  },
+  {
+    target: "help",
+    title: "You're all set",
+    body: "Click Help at any time to replay this tour.",
+  },
+];
+
+// Optional per-step fields:  fallback — second data-tour name tried when the
+// target isn't on screen;  before(api) — runs when the step is entered (e.g. to
+// switch the builder to the right wizard step);  api — passed to before().
+// ── DEVICE BUILDER TOUR ──────────────────────────────────────────────────────
+// Walks through every option of the Device Config Builder. before() hooks
+// switch the wizard to the right step (api.setStep) so each target is on screen.
+const openEntryFields = () => {
+  // Make sure the first log entry is expanded so its fields can be pointed at.
+  setTimeout(() => {
+    if (!document.querySelector('[data-tour="entry-fields"]')) {
+      const h = document.querySelector('[data-tour="entry-header"]');
+      if (h) h.click();
+    }
+  }, 80);
+};
+const toConnection = (api) => api.setStep(1);
+const toEntries = (api) => api.setStep(2);
+const toEntry = (api) => { api.setStep(2); openEntryFields(); };
+
+const BUILDER_TOUR_STEPS = [
+  {
+    target: null,
+    before: toConnection,
+    title: "Building a device config",
+    body: "A device config tells LogOctopus how to reach a device over SSH and which commands produce its logs. The builder has two steps: Connection, then Log Entries. You can test everything live before saving.",
+  },
+  {
+    target: "bt-tabs",
+    before: toConnection,
+    title: "Two wizard steps",
+    body: "Use these tabs to move between Connection and Log Entries. Log Entries unlocks once the IP address, port and username are filled in. The counter shows how many log entries the device has.",
+  },
+  {
+    target: "bt-identity",
+    before: toConnection,
+    title: "Device identity",
+    body: "Device Name is how the device appears in the app (if left empty it becomes device-<ip>). Collection Interval is how often, in seconds, logs are collected while collection runs; the minimum is 5.",
+  },
+  {
+    target: "bt-ssh",
+    before: toConnection,
+    title: "SSH credentials",
+    body: "Enter the device IP address (required), SSH port (22 by default) and username (required). Use the Password / Key switch to log in with a password or paste a private key (PEM) instead.",
+  },
+  {
+    target: "bt-test",
+    before: toConnection,
+    title: "Test the connection",
+    body: "Test Connection tries a real SSH login using the details above, including any gateway hops. A green result means you're good to go; a red one shows the reason so you can fix it before moving on.",
+  },
+  {
+    target: "bt-gateways",
+    before: toConnection,
+    title: "Gateway hops (optional)",
+    body: "If the device is only reachable through jump hosts, add hops here. They are chained in order (hop 1 → hop 2 → … → device), and each has its own address and password or key. Reorder with the arrows or remove a hop with ×. Leave it empty for a direct connection.",
+  },
+  {
+    target: "bt-footer",
+    before: toConnection,
+    title: "Continue to log entries",
+    body: "When the connection details are complete, Next: Log Entries becomes available. Cancel closes the builder without saving anything.",
+  },
+  {
+    target: "bt-entries-toolbar",
+    before: toEntries,
+    title: "Log entries",
+    body: "Each log entry is one source of data to collect, such as a log file or a metric. + Add Entry creates a blank one. + Add Templates inserts two ready-made examples (syslog via journalctl and a CPU usage chart) that you can adapt.",
+  },
+  {
+    target: "entry-header",
+    before: toEntry,
+    title: "Entry card header",
+    body: "Click the header to expand or collapse an entry. It shows the entry number, name and type, plus badges once you've tested commands and a regex match count. The copy icon duplicates the entry; × removes it.",
+  },
+  {
+    target: "entry-basics",
+    before: toEntry,
+    title: "Name, type, unit, description",
+    body: "Log Name (required) identifies the log in the snapshots table. Type is text for readable log lines, or chart for numeric values plotted over time. Charts also get a Unit (%, °C, ms…). Description (required) says what the log captures.",
+  },
+  {
+    target: "entry-options",
+    before: toEntry,
+    title: "Shell prompt & unmatched lines",
+    body: "Shell prompt is optional: leave it empty for standard command execution, or set it (for example router# or $) for devices with an interactive CLI. For text logs, \"Append unmatched lines to last entry\" folds continuation lines, such as stack traces, into the preceding matched entry.",
+  },
+  {
+    target: "entry-terminal",
+    before: toEntry,
+    title: "Commands: collect, activate, deactivate",
+    body: "Pick a tab, type a command after the $ and press Enter or run to execute it on the device. collect (required) fetches the log data. activate runs before collection and must exit 0 to enable the log (use true to always enable). deactivate runs when collection stops and is optional. Tabs turn green when a command worked and red when it failed.",
+  },
+  {
+    target: "entry-regex",
+    fallback: "entry-terminal",
+    before: toEntry,
+    title: "Extraction regex",
+    body: "After you run the collect command, an extraction regex panel appears under the terminal. Click mark TIME or mark ENTRY and select that part of a line in the output to build the regex automatically, or write it by hand using named groups (?P<TIME>…) for the timestamp and (?P<ENTRY>…) for the content. The badge shows how many output lines match. For chart logs, ENTRY should capture a number.",
+  },
+  {
+    target: "bt-packet",
+    before: toEntries,
+    title: "Network packet capture (optional)",
+    body: "Enable this to capture raw traffic over SSH next to your logs. Set the start command (writes pcap data to stdout; don't add output redirection) and the stop command that ends it cleanly. You can also set a description, a Max PCAP Size in MB (blank means unlimited) and a custom decoder command (tshark by default).",
+  },
+  {
+    target: "bt-footer",
+    before: toEntries,
+    title: "Save your device",
+    body: "Save Device is enabled once every entry has a name and a collect command (and the packet capture commands, if enabled). Download JSON exports the config as a file you can later upload through Add Device. Back returns to Connection.",
+  },
+  {
+    target: "bt-help",
+    before: toEntries,
+    title: "That's the builder",
+    body: "To change a device later, open its details and choose Edit, which reopens this builder with its current config. Click Help here any time to replay this guide.",
+  },
+];
+
+function GuidedTour({ open, onClose, steps = TOUR_STEPS, api }) {
+  const [idx, setIdx] = useState(0);
+  const [rect, setRect] = useState(null);
+  const [vp, setVp] = useState({ w: window.innerWidth, h: window.innerHeight });
+  const [cardH, setCardH] = useState(220);
+  const cardRef = useRef(null);
+  const apiRef = useRef(api);
+  apiRef.current = api;
+  const step = steps[idx];
+  const last = idx === steps.length - 1;
+
+  const next = useCallback(() => { idx >= steps.length - 1 ? onClose() : setIdx(idx + 1); }, [idx, steps.length, onClose]);
+  const back = useCallback(() => { setIdx((i) => Math.max(0, i - 1)); }, []);
+
+  useEffect(() => { if (open) setIdx(0); }, [open]);
+
+  const findTarget = useCallback(() => {
+    if (!step || !step.target) return null;
+    return (
+      document.querySelector(`[data-tour="${step.target}"]`) ||
+      (step.fallback ? document.querySelector(`[data-tour="${step.fallback}"]`) : null)
+    );
+  }, [step]);
+
+  const measure = useCallback(() => {
+    setVp({ w: window.innerWidth, h: window.innerHeight });
+    const el = findTarget();
+    if (!el) { setRect(null); return; }
+    const r = el.getBoundingClientRect();
+    setRect({ top: r.top, left: r.left, width: r.width, height: r.height });
+  }, [findTarget]);
+
+  // Bring the target into view and keep the spotlight glued to it while the
+  // page scrolls / resizes. Steps with a before() hook get a short delay so the
+  // UI they switch to has rendered before we look for the target.
+  useEffect(() => {
+    if (!open) return undefined;
+    let raf, timer;
+    const run = () => {
+      const el = findTarget();
+      // The main header is sticky and always visible — no scrolling needed for it.
+      if (el && !el.closest("header")) el.scrollIntoView({ block: "center", behavior: "smooth" });
+      measure();
+      const t0 = performance.now();
+      const loop = () => {
+        measure();
+        if (performance.now() - t0 < 800) raf = requestAnimationFrame(loop);
+      };
+      raf = requestAnimationFrame(loop);
+    };
+    if (step && step.before) {
+      step.before(apiRef.current);
+      timer = setTimeout(run, 220);
+    } else {
+      run();
+    }
+    window.addEventListener("resize", measure);
+    window.addEventListener("scroll", measure, true);
+    return () => {
+      clearTimeout(timer);
+      cancelAnimationFrame(raf);
+      window.removeEventListener("resize", measure);
+      window.removeEventListener("scroll", measure, true);
+    };
+  }, [open, idx, step, findTarget, measure]);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const onKey = (e) => {
+      const handled = ["Escape", "ArrowRight", "ArrowLeft", "Enter"].includes(e.key);
+      if (!handled) return;
+      e.preventDefault();
+      e.stopPropagation(); // keep the key away from fields/modals under the tour
+      if (e.key === "Escape") onClose();
+      else if (e.key === "ArrowLeft") back();
+      else next();
+    };
+    document.addEventListener("keydown", onKey, true);
+    return () => document.removeEventListener("keydown", onKey, true);
+  }, [open, onClose, next, back]);
+
+  useEffect(() => {
+    if (open && cardRef.current && cardRef.current.offsetHeight !== cardH) setCardH(cardRef.current.offsetHeight);
+  });
+
+  if (!open || !step) return null;
+
+  const PAD = 8, GAP = 14, M = 12;
+  const cardW = Math.min(380, vp.w - M * 2);
+  let spot = null;
+  let cardTop, cardLeft;
+
+  if (rect) {
+    // Clip to the viewport so very tall targets (e.g. the device list) still
+    // produce a sensible highlight.
+    spot = {
+      top: Math.max(rect.top - PAD, 6),
+      left: Math.max(rect.left - PAD, 6),
+      bottom: Math.min(rect.top + rect.height + PAD, vp.h - 6),
+      right: Math.min(rect.left + rect.width + PAD, vp.w - 6),
+    };
+    const below = vp.h - spot.bottom;
+    const above = spot.top;
+    if (below >= cardH + GAP + M) cardTop = spot.bottom + GAP;
+    else if (above >= cardH + GAP + M) cardTop = spot.top - GAP - cardH;
+    else cardTop = vp.h - cardH - 20; // no room beside it → dock at the bottom
+    cardLeft = Math.min(Math.max(spot.left + (spot.right - spot.left) / 2 - cardW / 2, M), vp.w - cardW - M);
+  } else {
+    cardTop = Math.max(M, vp.h / 2 - cardH / 2);
+    cardLeft = Math.max(M, vp.w / 2 - cardW / 2);
+  }
+
+  return (
+    <div style={{ position: "fixed", inset: 0, zIndex: 4000 }} role="dialog" aria-modal="true" aria-label="Guided tour">
+      {/* click shield — keeps the page inert while the tour is running */}
+      <div style={{ position: "absolute", inset: 0, background: spot ? "transparent" : "rgba(5,5,12,0.78)", backdropFilter: spot ? "none" : "blur(3px)" }} />
+      {spot && (
+        <div
+          style={{
+            position: "fixed",
+            top: spot.top, left: spot.left,
+            width: spot.right - spot.left, height: spot.bottom - spot.top,
+            borderRadius: 10,
+            border: "1.5px solid var(--accent)",
+            boxShadow: "0 0 0 9999px rgba(5,5,12,0.78), 0 0 22px rgba(129,140,248,0.35)",
+            transition: "top .25s ease, left .25s ease, width .25s ease, height .25s ease",
+            pointerEvents: "none",
+          }}
+        />
+      )}
+
+      <div
+        ref={cardRef}
+        aria-live="polite"
+        style={{
+          position: "fixed", top: cardTop, left: cardLeft, width: cardW,
+          background: "var(--modal-bg)",
+          border: "1px solid var(--accent-border)",
+          borderRadius: 12,
+          padding: "18px 20px 16px",
+          boxShadow: "0 16px 48px rgba(0,0,0,0.6)",
+          transition: "top .25s ease, left .25s ease",
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+          <span style={{ color: "var(--accent)", display: "inline-flex" }}><Icon name="help" size={14} /></span>
+          <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, letterSpacing: "0.12em", textTransform: "uppercase", color: "var(--muted)" }}>
+            Step {idx + 1} of {steps.length}
+          </span>
+          <button
+            onClick={onClose}
+            title="Close tour"
+            aria-label="Close tour"
+            style={{ marginLeft: "auto", background: "none", border: "none", color: "var(--muted)", cursor: "pointer", padding: 2, display: "inline-flex" }}
+          >
+            <Icon name="close" size={13} />
+          </button>
+        </div>
+
+        <div style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 17, color: "var(--text)", letterSpacing: "-0.01em", marginBottom: 8 }}>
+          {step.title}
+        </div>
+        <div style={{ fontFamily: "var(--font-mono)", fontSize: 12.5, lineHeight: 1.65, color: "var(--text)", opacity: 0.78 }}>
+          {step.body}
+        </div>
+
+        <div style={{ display: "flex", alignItems: "center", gap: 5, margin: "16px 0 14px" }}>
+          {steps.map((_, i) => (
+            <span
+              key={i}
+              style={{
+                height: 4, borderRadius: 2,
+                width: i === idx ? 18 : 6,
+                background: i === idx ? "var(--accent)" : i < idx ? "rgba(129,140,248,0.45)" : "rgba(255,255,255,0.12)",
+                transition: "all .2s",
+              }}
+            />
+          ))}
+        </div>
+
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          {!last && <Btn variant="ghost" size="sm" onClick={onClose}>Skip tour</Btn>}
+          <div style={{ flex: 1 }} />
+          {idx > 0 && <Btn variant="subtle" size="sm" onClick={back}><Icon name="chevLeft" size={12} />Back</Btn>}
+          <Btn variant="primary" size="sm" onClick={next}>
+            {last ? <><Icon name="check" size={12} />Finish</> : <>Next<Icon name="chevRight" size={12} /></>}
+          </Btn>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -5263,6 +5665,8 @@ function LogEntryEditor({ entry, conn, index, onChange, onRemove, onDuplicate })
 
   // Local editable command strings (so the user can edit without committing on every keystroke)
   const set = (k, v) => onChange({ ...entry, [k]: v });
+  // Guided-tour anchors are attached to the first entry only.
+  const T = (name) => (index === 0 ? { "data-tour": name } : {});
 
   const execCmd = async (tab) => {
     const cmdMap = { collect: entry.log_file_cmd, activate: entry.log_activation_cmd, deactivate: entry.log_deactivation_cmd };
@@ -5395,6 +5799,7 @@ function LogEntryEditor({ entry, conn, index, onChange, onRemove, onDuplicate })
     }}>
       {/* ── Header ── */}
       <div
+        {...T("entry-header")}
         onClick={() => setExpanded(v => !v)}
         style={{
           display: "flex", alignItems: "center", gap: 10, padding: "10px 14px",
@@ -5434,9 +5839,10 @@ function LogEntryEditor({ entry, conn, index, onChange, onRemove, onDuplicate })
       </div>
 
       {expanded && (
-        <div style={{ padding: "14px 16px 16px" }}>
+        <div {...T("entry-fields")} style={{ padding: "14px 16px 16px" }}>
 
           {/* ── Row 1: Log Name / Type / Data Unit ── */}
+          <div {...T("entry-basics")}>
           <div style={{ display: "grid", gridTemplateColumns: "1fr auto auto", gap: 10, marginBottom: 14, alignItems: "end" }}>
             <div>
               <div style={FIELD_LABEL}>Log Name *</div>
@@ -5487,7 +5893,9 @@ function LogEntryEditor({ entry, conn, index, onChange, onRemove, onDuplicate })
               }}
             />
           </div>
+          </div>
 
+          <div {...T("entry-options")}>
           {/* ── Custom Shell Prompt (collapsed inline) ── */}
           <div style={{ marginBottom: 14, display: "flex", alignItems: "center", gap: 10 }}>
             <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--muted)", flexShrink: 0 }}>shell prompt</span>
@@ -5518,9 +5926,10 @@ function LogEntryEditor({ entry, conn, index, onChange, onRemove, onDuplicate })
               — folds continuation lines (e.g. stack traces) into the preceding matched entry
             </span>
           </label>}
+          </div>
 
           {/* ── Terminal Panel ── */}
-          <div style={S.terminal}>
+          <div {...T("entry-terminal")} style={S.terminal}>
             {/* Tab bar */}
             <div style={S.termBar}>
               {/* Traffic lights */}
@@ -5607,7 +6016,7 @@ function LogEntryEditor({ entry, conn, index, onChange, onRemove, onDuplicate })
 
           {/* ── Regex Builder (only shown when collect has output) ── */}
           {activeTab === "collect" && outputs.collect != null && (
-            <div style={{
+            <div {...T("entry-regex")} style={{
               marginTop: 10, background: "#0a0d12",
               border: `1px solid ${reErr ? "rgba(248,113,113,0.3)" : "rgba(129,140,248,0.18)"}`,
               borderRadius: 8, padding: "12px 14px",
@@ -5791,6 +6200,18 @@ function ConfigBuilderModal({ open, onClose, onSave, initialDevice }) {
   const [packetCapture, setPacketCapture] = useState(EMPTY_PACKET_CAPTURE);
   const setPC = (k, v) => setPacketCapture(prev => ({ ...prev, [k]: v }));
 
+  // Guided tour of the builder. The dot on the Help button stays until the
+  // tour has been opened once.
+  const [tourOpen, setTourOpen] = useState(false);
+  const [tourSeen, setTourSeen] = useState(() => {
+    try { return localStorage.getItem("lo_builder_tour_seen") === "1"; } catch { return true; }
+  });
+  const startTour = () => {
+    setTourOpen(true);
+    setTourSeen(true);
+    try { localStorage.setItem("lo_builder_tour_seen", "1"); } catch { /* storage unavailable */ }
+  };
+
   // When the modal opens for editing an existing device, pre-populate all
   // fields from the device's current config.  When it opens for a new device
   // (initialDevice is null/undefined) reset everything to blank.
@@ -5808,6 +6229,7 @@ function ConfigBuilderModal({ open, onClose, onSave, initialDevice }) {
     }
     setStep(1);
     setConnStatus(null);
+    setTourOpen(false);
   }, [open, initialDevice]);
 
   const setC = (k, v) => setConn(prev => ({ ...prev, [k]: v }));
@@ -5983,14 +6405,35 @@ function ConfigBuilderModal({ open, onClose, onSave, initialDevice }) {
               </div>
             </div>
           </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <span data-tour="bt-help" style={{ position: "relative", display: "inline-flex" }}>
+            <Btn
+              variant="subtle" size="sm" title="Guided tour of the device builder"
+              onClick={startTour}
+              style={{ justifyContent: "center", height: 30 }}
+            >
+              <Icon name="help" size={13} /> Help
+            </Btn>
+            {!tourSeen && (
+              <span
+                aria-hidden="true"
+                style={{
+                  position: "absolute", top: -3, right: -3, width: 9, height: 9, borderRadius: "50%",
+                  background: "var(--accent)", boxShadow: "0 0 8px var(--accent)",
+                  animation: "pulse 1.8s ease-in-out infinite", pointerEvents: "none",
+                }}
+              />
+            )}
+          </span>
           <button onClick={onClose} style={{ background: "rgba(255,255,255,0.06)", border: "1px solid var(--border)", borderRadius: 8, color: "var(--muted)", cursor: "pointer", fontSize: 18, lineHeight: 1, padding: "5px 9px", transition: "all 0.15s" }}
             onMouseEnter={e => e.currentTarget.style.color = "var(--text)"}
             onMouseLeave={e => e.currentTarget.style.color = "var(--muted)"}
           ><Icon name="close" size={16} /></button>
+          </div>
         </div>
 
         {/* Step tabs */}
-        <div style={{ display: "flex", borderBottom: "1px solid var(--border)", flexShrink: 0 }}>
+        <div data-tour="bt-tabs" style={{ display: "flex", borderBottom: "1px solid var(--border)", flexShrink: 0 }}>
           <button style={stepTabStyle(1)} onClick={() => setStep(1)}>
             <span style={{ width: 20, height: 20, borderRadius: "50%", background: step > 1 ? "rgba(74,222,128,0.2)" : "rgba(129,140,248,0.15)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontWeight: 800, color: step > 1 ? "#4ade80" : "var(--accent)" }}>
               {step > 1 ? <Icon name="check" size={11} stroke={2} /> : "1"}
@@ -6010,7 +6453,7 @@ function ConfigBuilderModal({ open, onClose, onSave, initialDevice }) {
           {/* ── STEP 1: Connection ── */}
           {step === 1 && (
             <div>
-              <div style={CARD}>
+              <div data-tour="bt-identity" style={CARD}>
                 <div style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 13, color: "var(--text)", marginBottom: 14 }}>Device Identity</div>
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
                   <div>
@@ -6026,7 +6469,7 @@ function ConfigBuilderModal({ open, onClose, onSave, initialDevice }) {
                 </div>
               </div>
 
-              <div style={CARD}>
+              <div data-tour="bt-ssh" style={CARD}>
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
                   <div style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 13, color: "var(--text)" }}>SSH Credentials</div>
                   {/* Auth mode toggle */}
@@ -6098,7 +6541,7 @@ function ConfigBuilderModal({ open, onClose, onSave, initialDevice }) {
                 )}
 
                 {/* Test connection */}
-                <div style={{ marginTop: 16, display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+                <div data-tour="bt-test" style={{ marginTop: 16, display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
                   <button
                     onClick={testConnection}
                     disabled={!step1Valid || connStatus === "testing"}
@@ -6133,7 +6576,7 @@ function ConfigBuilderModal({ open, onClose, onSave, initialDevice }) {
               </div>
 
               {/* ── Gateway Hops ── */}
-              <div style={CARD}>
+              <div data-tour="bt-gateways" style={CARD}>
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
                   <div>
                     <div style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 13, color: "var(--text)" }}>SSH Gateway Hops</div>
@@ -6254,7 +6697,7 @@ function ConfigBuilderModal({ open, onClose, onSave, initialDevice }) {
           {/* ── STEP 2: Log Entries ── */}
           {step === 2 && (
             <div>
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
+              <div data-tour="bt-entries-toolbar" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
                 <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--muted)" }}>
                   {entries.length} log entr{entries.length === 1 ? "y" : "ies"} · Click <Icon name="play" size={9} style={{ marginLeft: 2, marginRight: 2 }} /> Run on Device to test each command live
                 </div>
@@ -6299,7 +6742,7 @@ function ConfigBuilderModal({ open, onClose, onSave, initialDevice }) {
               )}
 
               {/* ── Network Packet Capture (optional) ── */}
-              <div style={CARD}>
+              <div data-tour="bt-packet" style={CARD}>
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: packetCapture.enabled ? 14 : 0 }}>
                   <div>
                     <div style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 13, color: "var(--text)" }}>Network Packet Capture</div>
@@ -6391,7 +6834,7 @@ function ConfigBuilderModal({ open, onClose, onSave, initialDevice }) {
         </div>
 
         {/* Footer */}
-        <div style={{ borderTop: "1px solid var(--border)", padding: "16px 28px", display: "flex", gap: 10, justifyContent: "space-between", alignItems: "center", flexShrink: 0, background: "rgba(0,0,0,0.12)" }}>
+        <div data-tour="bt-footer" style={{ borderTop: "1px solid var(--border)", padding: "16px 28px", display: "flex", gap: 10, justifyContent: "space-between", alignItems: "center", flexShrink: 0, background: "rgba(0,0,0,0.12)" }}>
           <div style={{ display: "flex", gap: 8 }}>
             {step === 2 && (
               <button
@@ -6420,6 +6863,7 @@ function ConfigBuilderModal({ open, onClose, onSave, initialDevice }) {
           </div>
         </div>
       </div>
+      <GuidedTour open={tourOpen} onClose={() => setTourOpen(false)} steps={BUILDER_TOUR_STEPS} api={{ setStep }} />
     </div>
   );
 }
@@ -6901,6 +7345,19 @@ const PULSE_KF = `
 
 export default function App() {
   const auth = useAuth();
+
+  // Guided tour: the Help button starts it; a small dot on the button stays
+  // until the tour has been opened once.
+  const [tourOpen, setTourOpen] = useState(false);
+  const [tourSeen, setTourSeen] = useState(() => {
+    try { return localStorage.getItem("lo_tour_seen") === "1"; } catch { return true; }
+  });
+  const startTour = useCallback(() => {
+    setTourOpen(true);
+    setTourSeen(true);
+    try { localStorage.setItem("lo_tour_seen", "1"); } catch { /* storage unavailable */ }
+  }, []);
+  const closeTour = useCallback(() => setTourOpen(false), []);
 
   const [devices,         setDevices]         = useState([]);
   const [devicesLoading,  setDevicesLoading]  = useState(true);
@@ -8112,19 +8569,19 @@ ${rowsHtml}
   // show a "Download Raw PCAP" button per capture in the footer.
   const networkCaptureSnaps = viewingSnaps.filter((s) => s.logName === "network capture");
 
-  // ── Inject SVG favicon matching the header logo color ──────────────────────
+  // ── Inject SVG favicon matching the header logo mark ──────────────────────
   useEffect(() => {
-    const svgFavicon = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 36 36">
-      <circle cx="18" cy="18" r="17" fill="none" stroke="#818cf8" stroke-width="1.5"/>
-      <circle cx="18" cy="18" r="6" fill="#818cf8"/>
-      ${[0, 45, 90, 135, 180, 225, 270, 315].map((a) => {
-        const rad = (a * Math.PI) / 180;
-        const x1 = (18 + 7 * Math.cos(rad)).toFixed(3);
-        const y1 = (18 + 7 * Math.sin(rad)).toFixed(3);
-        const x2 = (18 + 15 * Math.cos(rad)).toFixed(3);
-        const y2 = (18 + 15 * Math.sin(rad)).toFixed(3);
-        return `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="#818cf8" stroke-width="1.8" stroke-linecap="round"/>`;
-      }).join("")}
+    const svgFavicon = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+      <rect x="1" y="1" width="30" height="30" rx="9" fill="#12121f" stroke="#818cf8" stroke-opacity="0.55" stroke-width="1.5"/>
+      <g transform="translate(5 5) scale(0.9167)" fill="none" stroke="#818cf8" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M5.5 11V9.5C5.5 5.8 8.4 3.5 12 3.5s6.5 2.3 6.5 6V11"/>
+        <path d="M5.5 11v6.5a1.6 1.6 0 0 1-3.2 0"/>
+        <path d="M9.7 11.5V18"/>
+        <path d="M14.3 11.5V18"/>
+        <path d="M18.5 11v6.5a1.6 1.6 0 0 0 3.2 0"/>
+        <path d="M8.6 6.4 11 8.3 8.6 10.2"/>
+        <path d="M12.8 10.2h3"/>
+      </g>
     </svg>`;
     const encoded = `data:image/svg+xml,${encodeURIComponent(svgFavicon)}`;
     let link = document.querySelector("link[rel~='icon']");
@@ -8176,28 +8633,10 @@ ${rowsHtml}
             height: 64,
           }}
         >
-          <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
-            <svg width="36" height="36" viewBox="0 0 36 36">
-              <circle cx="18" cy="18" r="17" fill="none" stroke="var(--accent)" strokeWidth="1.5" />
-              <circle cx="18" cy="18" r="6" fill="var(--accent)" />
-              {[0, 45, 90, 135, 180, 225, 270, 315].map((a, i) => {
-                const rad = (a * Math.PI) / 180;
-                return (
-                  <line key={i}
-                    x1={18 + 7 * Math.cos(rad)} y1={18 + 7 * Math.sin(rad)}
-                    x2={18 + 15 * Math.cos(rad)} y2={18 + 15 * Math.sin(rad)}
-                    stroke="var(--accent)" strokeWidth="1.8" strokeLinecap="round"
-                  />
-                );
-              })}
-            </svg>
-            <div>
-              <div style={{ fontFamily: "var(--font-display)", fontWeight: 800, fontSize: 20, color: "var(--text)", letterSpacing: "-0.02em", lineHeight: 1 }}>
-                LogOctopus
-              </div>
-              <div style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--muted)", marginTop: 2, letterSpacing: "0.08em" }}>
-                Collect & Analyze Logs Efficiently
-              </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            <LogoMark size={38} />
+            <div style={{ fontFamily: "var(--font-display)", fontWeight: 800, fontSize: 21, color: "var(--text)", letterSpacing: "-0.02em", lineHeight: 1 }}>
+              Log<span style={{ color: "var(--accent)" }}>Octopus</span>
             </div>
           </div>
 
@@ -8205,6 +8644,7 @@ ${rowsHtml}
 
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <div
+              data-tour="stats"
               title={systemStats ? `Backend host — RAM: ${systemStats.ramUsedGb} / ${systemStats.ramTotalGb} GB · Disk: ${systemStats.diskUsedGb} / ${systemStats.diskTotalGb} GB` : "Loading host stats…"}
               style={{ display: "flex", alignItems: "center", gap: 10, marginRight: 12, fontFamily: "var(--font-mono)", fontSize: 15, color: "var(--muted)" }}
             >
@@ -8221,6 +8661,7 @@ ${rowsHtml}
               )}
             </div>
             {/* Auth controls */}
+            <div data-tour="admin" style={{ display: "flex", alignItems: "center" }}>
             {auth.isAdmin ? (
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                 <span
@@ -8256,8 +8697,10 @@ ${rowsHtml}
                 <IconLock size={13} /> Admin Login
               </Btn>
             )}
+            </div>
 
             {/* Header toolbar buttons — identical size so they sit as a matched pair */}
+            <div data-tour="tools" style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <Btn
               variant="subtle" size="sm" title="Open settings"
               onClick={() => setSettingsModal(true)}
@@ -8272,6 +8715,26 @@ ${rowsHtml}
             >
               <IconApi size={13} /> REST API
             </Btn>
+            </div>
+            <span data-tour="help" style={{ position: "relative", display: "inline-flex" }}>
+              <Btn
+                variant="subtle" size="sm" title="Start the guided tour"
+                onClick={startTour}
+                style={{ justifyContent: "center", height: 30, minWidth: 128 }}
+              >
+                <Icon name="help" size={13} /> Help
+              </Btn>
+              {!tourSeen && (
+                <span
+                  aria-hidden="true"
+                  style={{
+                    position: "absolute", top: -3, right: -3, width: 9, height: 9, borderRadius: "50%",
+                    background: "var(--accent)", boxShadow: "0 0 8px var(--accent)",
+                    animation: "pulse 1.8s ease-in-out infinite", pointerEvents: "none",
+                  }}
+                />
+              )}
+            </span>
           </div>
         </header>
 
@@ -8284,9 +8747,13 @@ ${rowsHtml}
 
           {/* ACTION BAR */}
           <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 24, alignItems: "center" }}>
-            <AddDeviceBtn onUpload={handleUpload} onBuildConfig={() => setBuilderModal(true)} />
-            <Btn variant="success" onClick={startCollection} disabled={!anySelected}><Icon name="play" size={12} />Start Collection</Btn>
-            <Btn variant="danger"  onClick={stopCollection}  disabled={!anySelected}><Icon name="stop" size={12} />Stop Collection</Btn>
+            <div data-tour="add-device" style={{ display: "inline-flex" }}>
+              <AddDeviceBtn onUpload={handleUpload} onBuildConfig={() => setBuilderModal(true)} />
+            </div>
+            <div data-tour="collection" style={{ display: "inline-flex", gap: 12 }}>
+              <Btn variant="success" onClick={startCollection} disabled={!anySelected}><Icon name="play" size={12} />Start Collection</Btn>
+              <Btn variant="danger"  onClick={stopCollection}  disabled={!anySelected}><Icon name="stop" size={12} />Stop Collection</Btn>
+            </div>
             <Btn variant="ghost"   onClick={() => setConfirmRemoveDevices(true)}  disabled={!anySelected}><Icon name="trash" size={13} />Remove Selected</Btn>
             <div style={{ marginLeft: "auto", fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--muted)" }}>
               {selectedDevices.length} device(s) selected
@@ -8294,7 +8761,7 @@ ${rowsHtml}
           </div>
 
           {/* DEVICES */}
-          <section style={{ marginBottom: 32 }}>
+          <section data-tour="devices" style={{ marginBottom: 32 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 14 }}>
               <div style={{ fontFamily: "var(--font-display)", fontSize: 11, fontWeight: 700, letterSpacing: "0.12em", textTransform: "uppercase", color: "var(--muted)" }}>
                 Managed Devices — {devices.length}
@@ -8370,7 +8837,7 @@ ${rowsHtml}
           <div style={{ borderTop: "1px solid var(--border)", margin: "0 0 24px" }} />
 
           {/* SNAPSHOT TOOLBAR */}
-          <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center", marginBottom: 16 }}>
+          <div data-tour="snap-toolbar" style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center", marginBottom: 16 }}>
             <Btn
               variant="primary"
               onClick={() => openLogContent(snapshots.filter((s) => selectedSnaps.includes(s.id)))}
@@ -8424,7 +8891,7 @@ ${rowsHtml}
           </div>
 
           {/* SNAPSHOTS TABLE */}
-          <div style={{ background: "var(--card-bg)", border: "1px solid var(--border)", borderRadius: 12, overflow: "hidden" }}>
+          <div data-tour="snapshots" style={{ background: "var(--card-bg)", border: "1px solid var(--border)", borderRadius: 12, overflow: "hidden" }}>
             {snapsLoading ? <Spinner /> : (
               <SnapshotsTable
                 snapshots={snapshots.filter(s => visibleDeviceNames.size === 0 || visibleDeviceNames.has(s.deviceName))}
@@ -8446,6 +8913,9 @@ ${rowsHtml}
           </div>
         </div>
       </div>
+
+      {/* GUIDED TOUR */}
+      <GuidedTour open={tourOpen} onClose={closeTour} />
 
       {/* COLLECTION STOP LOADING OVERLAY */}
       <CollectionLoadingOverlay open={stoppingCollection} saved={stopProgress.saved} expected={stopProgress.expected} />
