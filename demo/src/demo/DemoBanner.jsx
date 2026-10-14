@@ -36,7 +36,7 @@ export default function DemoBanner() {
   const reset = () => {
     getMockApi()?.reset();
     resetProgress();
-    try { ["lo_role", "lo_token", "lo_collapsed_groups", DISMISS_KEY].forEach((k) => { sessionStorage.removeItem(k); localStorage.removeItem(k); }); } catch { /* ignore */ }
+    try { ["lo_role", "lo_token", "lo_collapsed_groups", "lo_tour_seen", "lo_builder_tour_seen", DISMISS_KEY].forEach((k) => { sessionStorage.removeItem(k); localStorage.removeItem(k); }); } catch { /* ignore */ }
     window.location.assign(window.location.pathname);
   };
 
@@ -64,10 +64,10 @@ export default function DemoBanner() {
         Simulated devices and logs, running entirely in your browser — no backend, nothing leaves this page.
       </span>
       <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-        Admin sign-in <code style={chip}>admin</code> / <code style={chip}>admin</code>
+        Admin login <code style={chip}>admin</code> / <code style={chip}>admin</code>
         <button type="button" onClick={copyPassword} style={ghostBtn} aria-label="Copy password">{copied ? "Copied ✓" : "Copy"}</button>
       </span>
-      <button type="button" onClick={reset} style={ghostBtn} title="Restore the original demo data and restart the tour">Reset demo</button>
+      <button type="button" onClick={reset} style={ghostBtn} title="Restore the original demo data and show the Help hints again">Reset demo</button>
       <a href={REPO_URL} target="_blank" rel="noreferrer" style={{ ...ghostBtn, textDecoration: "none" }}>GitHub ↗</a>
       <button type="button" onClick={dismiss} aria-label="Dismiss banner" style={{ ...ghostBtn, border: "none", fontSize: 16, lineHeight: 1, padding: "2px 6px" }}>×</button>
     </div>

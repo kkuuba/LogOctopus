@@ -13,10 +13,10 @@ const link = (ids, type) => `${here()}?open_snaps=${ids.join(",")}&log_type=${ty
 const STEPS = [
   { id: "startCollection", title: "Start a collection", hint: "Tick Router-Beta and IoT-Gateway, press Start Collection and name the scenario." },
   { id: "stopCollection", title: "Stop it and open the session", hint: "Press Stop Collection, watch the snapshots get saved, then follow the session link." },
-  { id: "openCapture", title: "Explore a network capture", hint: "Opens a packet capture. Try the Visualize button for 3D flow and topology views.", action: () => ({ label: "Open sample capture", href: link([SAMPLE_LINKS.captureId], "text") }) },
-  { id: "inspectPacket", title: "Inspect a packet", hint: "Click the 🔎 icon in the gutter next to a packet line, or click a point in the 3D view." },
+  { id: "openCapture", title: "Explore a network capture", hint: "Opens a packet capture. Press Visualize, then try the search box (proto:dns, port:443, -arp), the protocol legend and the Y-axis menu.", action: () => ({ label: "Open sample capture", href: link([SAMPLE_LINKS.captureId], "text") }) },
+  { id: "inspectPacket", title: "Inspect a packet", hint: "Click the 🔎 icon in the gutter next to a packet line, or click a point in the 3D Flow view. In 3D Host Topology, clicking a host searches for it." },
   { id: "openCharts", title: "Chart some metrics", hint: "Plots temperature, humidity and Wi-Fi signal from one sensor session.", action: () => ({ label: "Open sample charts", href: link(SAMPLE_LINKS.chartIds, "chart") }) },
-  { id: "buildConfig", title: "Build a device config", hint: "Needs admin (Sign In, top right: admin / admin). Then Add Device → build a config: test the connection, run a command, mark a log line to auto-generate the regex." },
+  { id: "buildConfig", title: "Build a device config", hint: "Needs admin (Admin Login, top right: admin / admin). Then Add Device → build a config: test the connection, run a command, mark a log line to auto-generate the regex. The builder has its own Help button with a step-by-step guide." },
 ];
 
 export default function TourPanel() {
@@ -48,23 +48,27 @@ export default function TourPanel() {
 
   if (collapsed) {
     return (
-      <button type="button" onClick={() => toggle(false)} aria-label="Open guided tour"
+      <button type="button" onClick={() => toggle(false)} aria-label="Open demo checklist"
         style={{ ...shell, padding: "9px 14px", fontSize: 12, cursor: "pointer", display: "inline-flex", gap: 8, alignItems: "center" }}>
-        <span style={{ color: "var(--accent, #818cf8)" }}>◆</span> Guided tour · {completed}/{STEPS.length}
+        <span style={{ color: "var(--accent, #818cf8)" }}>◆</span> Try it · {completed}/{STEPS.length}
       </button>
     );
   }
 
   return (
-    <aside style={{ ...shell, width: 320, maxWidth: "calc(100vw - 32px)", maxHeight: "calc(100vh - 32px)", overflowY: "auto" }} aria-label="Guided tour">
+    <aside style={{ ...shell, width: 320, maxWidth: "calc(100vw - 32px)", maxHeight: "calc(100vh - 32px)", overflowY: "auto" }} aria-label="Demo checklist">
       <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "12px 14px 8px" }}>
-        <strong style={{ fontSize: 13, letterSpacing: "0.04em" }}>Guided tour</strong>
+        <strong style={{ fontSize: 13, letterSpacing: "0.04em" }}>Try it yourself</strong>
         <span style={{ fontSize: 11, color: "var(--muted, #64648a)" }}>{completed}/{STEPS.length}</span>
         <span style={{ flex: 1 }} />
         <button type="button" onClick={() => toggle(true)} aria-label="Minimise tour" style={{ background: "none", border: "none", color: "var(--muted, #64648a)", cursor: "pointer", fontSize: 16 }}>–</button>
       </div>
       <div style={{ height: 3, margin: "0 14px 6px", background: "rgba(255,255,255,0.07)", borderRadius: 2 }}>
         <div style={{ width: `${pct}%`, height: "100%", background: "var(--accent, #818cf8)", borderRadius: 2, transition: "width .3s" }} />
+      </div>
+      <div style={{ margin: "0 14px 6px", fontSize: 11, lineHeight: 1.5, color: "var(--muted, #64648a)" }}>
+        New here? The <strong style={{ color: "var(--accent, #818cf8)" }}>Help</strong> button (top right) runs the app's built-in tour of the UI.
+        The steps below tick off as you use the app.
       </div>
       <ol style={{ listStyle: "none", margin: 0, padding: "4px 8px 12px" }}>
         {STEPS.map((s, i) => {

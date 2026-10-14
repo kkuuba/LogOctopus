@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from "react";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
-const API_BASE = (import.meta.env.VITE_API_BASE) || "http://localhost:8050"
+const API_BASE = (import.meta.env.VITE_API_BASE) || ""
 ;
 
 // Plotly is expected as a global (loaded via CDN script tag in index.html):
@@ -1567,7 +1567,11 @@ function PacketFieldTree({ data, depth = 0 }) {
 //   • 3D Flow Timeline — x = time, y = conversation, z = packet size. Click a
 //                        point to open that packet's detail modal.
 //   • 3D Host Topology — force-directed graph of hosts; node size = traffic.
-//   • Traffic Timeline — stacked bytes/packets per time bucket by protocol.
+//   • Traffic Timeline — per-bucket traffic metric, broken down by protocol.
+//
+// The protocol legend is rendered by React (NvLegend) rather than by Plotly so
+// that one "hidden protocols" set drives every trace of that protocol (markers
+// AND their stems/bars/lines) and survives metric / view changes.
 
 const NV_FONT = "JetBrains Mono, monospace";
 const NV_PALETTE = ["#818cf8", "#34d399", "#f472b6", "#fb923c", "#60a5fa", "#a78bfa", "#fbbf24", "#22d3ee"];
@@ -1578,6 +1582,47 @@ const NV_MAX_POINTS_3D = 6000;  // 3D points drawn (uniformly sampled above this
 const NV_MAX_HOSTS = 40;        // nodes in the topology graph
 const NV_MAX_EDGES = 120;       // edges in the topology graph
 const NV_TIME_BUCKETS = 80;
+
+// Metrics selectable on the vertical axis -----------------------------------
+// 3D Flow Timeline: one value per packet (height of the marker + its stem).
+const NV_FLOW_METRICS = [
+  { id: "len", label: "Packet size", axis: "packet size (bytes)",
+    desc: "height = size of each packet",
+    get: (p) => p.len, fmt: (v) => `${v.toLocaleString()} B` },
+  { id: "iat", label: "Inter-arrival time", axis: "inter-arrival (ms)",
+    desc: "height = time since the previous packet in the same conversation",
+    get: (p) => p.iat, fmt: (v) => nvFormatMs(v) },
+  { id: "cum", label: "Cumulative bytes", axis: "conversation bytes (cumulative)",
+    desc: "height = bytes the conversation has carried up to that packet",
+    get: (p) => p.cum, fmt: (v) => nvFormatBytes(v) },
+  { id: "num", label: "Packet number", axis: "packet number",
+    desc: "height = frame number within the capture",
+    get: (p) => p.n, fmt: (v) => `#${v}` },
+  { id: "dport", label: "Destination port", axis: "destination port",
+    desc: "height = destination port (0 when the packet has none)",
+    get: (p) => parseInt(p.dport, 10) || 0, fmt: (v) => String(v) },
+];
+
+// Traffic Timeline: one value per (time bucket, protocol).
+// "stacked" metrics are additive across protocols → stacked bars; the others
+// are drawn as one line per protocol.
+const NV_TIME_METRICS = [
+  { id: "bytes",   label: "Bytes",              axis: "bytes per bucket",   unit: "B",     fmt: ",d",    stacked: true,
+    desc: "bytes per time bucket, stacked by top-layer protocol" },
+  { id: "packets", label: "Packets",            axis: "packets per bucket", unit: "pkts",  fmt: ",d",    stacked: true,
+    desc: "packets per time bucket, stacked by top-layer protocol" },
+  { id: "bps",     label: "Throughput",         axis: "bytes / second",     unit: "B/s",   fmt: ",.1~f", stacked: true,
+    desc: "average bytes per second within each bucket, stacked by protocol" },
+  { id: "pps",     label: "Packet rate",        axis: "packets / second",   unit: "pkt/s", fmt: ",.1~f", stacked: true,
+    desc: "average packets per second within each bucket, stacked by protocol" },
+  { id: "avg",     label: "Avg packet size",    axis: "bytes / packet",     unit: "B",     fmt: ",.1~f", stacked: false,
+    desc: "mean packet size within each bucket, one line per protocol" },
+];
+
+const nvRgba = (hex, alpha) => {
+  const n = parseInt(hex.slice(1), 16);
+  return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${alpha})`;
+};
 
 // "12 | eth:ip:tcp | 10.0.0.1:443 -> 10.0.0.2:51000 | len=1500 | info"
 // (mirrors PacketInfo.to_content_str(); the protocols part may be absent).
@@ -1603,7 +1648,82 @@ function nvFormatDuration(sec) {
   return `${(sec / 3600).toFixed(1)} h`;
 }
 
+function nvFormatMs(ms) {
+  if (ms < 1) return `${Math.round(ms * 1000)} µs`;
+  if (ms < 1000) return `${ms.toFixed(ms < 10 ? 2 : 1)} ms`;
+  return nvFormatDuration(ms / 1000);
+}
+
 const nvShort = (s, n) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
+
+// ── PACKET SEARCH ─────────────────────────────────────────────────────────────
+// Space-separated terms, ALL of which must match (case-insensitive):
+//   10.0.0.5  example.com      plain text → packet #, protocols, endpoints
+//                              (ip:port) and the info column (DNS / TLS names…)
+//   ip:10.0.   src:   dst:     substring of an address (ip = source OR destination)
+//   port:443                   source OR destination port (exact)
+//   proto:dns                  any protocol in the stack (proto:=tcp for exact)
+//   info:"client hello"        info column only
+//   ip:=10.0.0.5               "=" after a field → exact match
+//   -arp   -port:53            leading "-" excludes matching packets
+//   "quoted phrase"            keep spaces inside a term
+const NV_QUERY_FIELDS = ["ip", "src", "dst", "port", "proto", "info"];
+const NV_SEARCH_HELP =
+  "All terms must match (case-insensitive).\n" +
+  "Plain text: packet #, protocols, ip:port, info column (DNS / TLS names)\n" +
+  "Fields: ip: src: dst: port: proto: info:\n" +
+  "Exact: ip:=10.0.0.5   Exclude: -arp   Phrase: \"client hello\"";
+
+function nvParseQuery(q) {
+  const terms = [];
+  const re = /(-?)((?:\w+:)?)(?:"([^"]*)"|(\S+))/g;
+  let m;
+  while ((m = re.exec(q || "")) !== null) {
+    const neg = m[1] === "-";
+    let field = m[2] ? m[2].slice(0, -1).toLowerCase() : "";
+    let val = m[3] !== undefined ? m[3] : m[4];
+    if (field && !NV_QUERY_FIELDS.includes(field)) { val = m[2] + val; field = ""; } // e.g. IPv6 "fe80::1"
+    val = val.toLowerCase();
+    let exact = false;
+    if (field && val.startsWith("=")) { exact = true; val = val.slice(1); }
+    if (val) terms.push({ neg, field, val, exact });
+  }
+  return terms;
+}
+
+function nvLower(p) { // lowercase fields, cached on the packet
+  if (!p._l) {
+    const src = p.src.toLowerCase(), dst = p.dst.toLowerCase(), chain = p.chain.toLowerCase(), info = p.info.toLowerCase();
+    p._l = {
+      src, dst, chain, info,
+      hay: `${p.n} ${chain} ${src}:${p.sport} ${dst}:${p.dport} ${info}`,
+    };
+  }
+  return p._l;
+}
+
+function nvPacketMatches(p, terms) {
+  const l = nvLower(p);
+  for (const t of terms) {
+    const v = t.val;
+    const test = (s) => (t.exact ? s === v : s.includes(v));
+    let hit;
+    switch (t.field) {
+      case "ip":    hit = test(l.src) || test(l.dst); break;
+      case "src":   hit = test(l.src); break;
+      case "dst":   hit = test(l.dst); break;
+      case "port":  hit = p.sport === v || p.dport === v; break;
+      case "proto": hit = t.exact ? l.chain.split(":").includes(v) : l.chain.includes(v); break;
+      case "info":  hit = test(l.info); break;
+      default:      hit = l.hay.includes(v);
+    }
+    if (hit === t.neg) return false;
+  }
+  return true;
+}
+
+// Query that selects exactly one host (used when a topology node is clicked).
+const nvHostQuery = (ip) => (/\s/.test(ip) ? `ip:"=${ip}"` : `ip:=${ip}`);
 
 /**
  * Parses packet rows and builds every aggregate the charts need in one pass.
@@ -1630,7 +1750,9 @@ function analyzeCapture(rows) {
     const protoChain = (m[2] || "").split(":").filter(Boolean);
     const proto = (protoChain[protoChain.length - 1] || "unknown").toLowerCase();
     const len = parseInt(m[5], 10) || 0;
-    const p = { n: parseInt(m[1], 10), t, len, proto, src, dst, sport, dport, info: m[6] || "", row };
+    // Conversation = unordered host pair, so request and reply share a row.
+    const key = src < dst ? `${src}\u0000${dst}` : `${dst}\u0000${src}`;
+    const p = { n: parseInt(m[1], 10), t, len, proto, src, dst, sport, dport, info: m[6] || "", row, ck: key, chain: m[2] || "", iat: 0, cum: 0 };
     pkts.push(p);
     bytes += len;
     protoCount.set(proto, (protoCount.get(proto) || 0) + 1);
@@ -1643,11 +1765,22 @@ function analyzeCapture(rows) {
     hosts.get(src).peers.add(dst);
     hosts.get(dst).peers.add(src);
 
-    // Conversation = unordered host pair, so request and reply share a row.
-    const key = src < dst ? `${src}\u0000${dst}` : `${dst}\u0000${src}`;
     const c = convs.get(key) || { key, a: src < dst ? src : dst, b: src < dst ? dst : src, bytes: 0, packets: 0 };
     c.bytes += len; c.packets += 1;
     convs.set(key, c);
+  }
+
+  // Per-conversation running metrics, in chronological order:
+  //   iat = ms since the previous packet of the same conversation
+  //   cum = bytes carried by the conversation up to and including this packet
+  pkts.sort((x, y) => x.t - y.t || x.n - y.n);
+  const lastT = new Map();
+  const cumBytes = new Map();
+  for (const p of pkts) {
+    p.iat = lastT.has(p.ck) ? p.t - lastT.get(p.ck) : 0;
+    lastT.set(p.ck, p.t);
+    p.cum = (cumBytes.get(p.ck) || 0) + p.len;
+    cumBytes.set(p.ck, p.cum);
   }
 
   // Legend protocols: most frequent first, the long tail folds into "other".
@@ -1661,10 +1794,17 @@ function analyzeCapture(rows) {
   const legendProto = (p) => (colorOf[p] && p !== "other" ? p : "other");
 
   let tMin = Infinity, tMax = -Infinity;
-  for (const p of pkts) { if (p.t < tMin) tMin = p.t; if (p.t > tMax) tMax = p.t; }
+  const legendStats = {};
+  legend.forEach((p) => { legendStats[p] = { packets: 0, bytes: 0 }; });
+  for (const p of pkts) {
+    if (p.t < tMin) tMin = p.t;
+    if (p.t > tMax) tMax = p.t;
+    const s = legendStats[legendProto(p.proto)];
+    s.packets += 1; s.bytes += p.len;
+  }
 
   return {
-    pkts, bytes, hosts, convs, legend, colorOf, legendProto,
+    pkts, bytes, hosts, convs, legend, colorOf, legendProto, legendStats,
     tMin: pkts.length ? tMin : 0,
     tMax: pkts.length ? tMax : 0,
     topProto: ranked[0] || "—",
@@ -1733,39 +1873,54 @@ const nvScene = (extra) => ({
  * Thin Plotly wrapper: draws on mount/update, purges on unmount, forwards
  * point clicks and (for 3D plots) optionally spins the camera slowly until
  * the user grabs the plot.
+ *
+ * Updates go through Plotly.react with a `uirevision` key, so changing the
+ * data (e.g. hiding a protocol) keeps the user's camera / zoom, while a new
+ * `revision` (e.g. a different metric) lets the axes re-fit.
  */
-function NvPlot({ data, layout, onPointClick, autoRotate = false }) {
+function NvPlot({ data, layout, onPointClick, autoRotate = false, revision = "r" }) {
   const ref = useRef(null);
+  const boundRef = useRef(false);
   const clickRef = useRef(onPointClick);
   clickRef.current = onPointClick;
 
   useEffect(() => {
     const el = ref.current;
     const Plotly = window.Plotly;
-    if (!el) return undefined;
+    if (!el) return;
     if (!Plotly) {
       el.innerHTML = '<p style="color:#f87171;font-family:monospace;font-size:12px;padding:16px">Plotly not loaded — add the CDN script to index.html</p>';
-      return undefined;
+      return;
     }
-    Plotly.newPlot(el, data, {
+    Plotly.react(el, data, {
       paper_bgcolor: "rgba(0,0,0,0)",
       plot_bgcolor: "rgba(9,9,15,0.6)",
       font: { color: "#6b7280", family: NV_FONT, size: 11 },
       hoverlabel: NV_HOVERLABEL,
       autosize: true,
+      showlegend: false, // the protocol legend is NvLegend (React)
       ...layout,
+      uirevision: revision,
     }, {
       responsive: true,
       displaylogo: false,
       modeBarButtonsToRemove: ["select2d", "lasso2d", "toggleSpikelines"],
       toImageButtonOptions: { format: "png", filename: "network_capture", scale: 2 },
     });
-    el.on("plotly_click", (ev) => {
-      const pt = ev && ev.points && ev.points[0];
-      if (pt && clickRef.current) clickRef.current(pt);
-    });
-    return () => { Plotly.purge(el); };
-  }, [data, layout]);
+    if (!boundRef.current) {
+      el.on("plotly_click", (ev) => {
+        const pt = ev && ev.points && ev.points[0];
+        if (pt && clickRef.current) clickRef.current(pt);
+      });
+      boundRef.current = true;
+    }
+  }, [data, layout, revision]);
+
+  // Purge only when the component goes away.
+  useEffect(() => () => {
+    if (ref.current && window.Plotly) window.Plotly.purge(ref.current);
+    boundRef.current = false;
+  }, []);
 
   useEffect(() => {
     const el = ref.current;
@@ -1801,37 +1956,59 @@ function NvPlot({ data, layout, onPointClick, autoRotate = false }) {
   return <div ref={ref} style={{ width: "100%", height: "100%", minHeight: 380 }} />;
 }
 
-function Flow3DView({ a, onPacketClick, autoRotate }) {
-  const { data, layout, lookup, note } = useMemo(() => {
-    const topConvs = [...a.convs.values()].sort((x, y) => y.packets - x.packets).slice(0, NV_MAX_FLOWS_3D);
+function Flow3DView({ a, matched, hidden, metricId, onPacketClick, autoRotate }) {
+  const metric = NV_FLOW_METRICS.find((m) => m.id === metricId) || NV_FLOW_METRICS[0];
+  // Rows = busiest conversations. While searching they are ranked by MATCHING
+  // packets, so a hit inside a quiet conversation still gets a row.
+  const topConvs = useMemo(() => {
+    if (!matched) return [...a.convs.values()].sort((x, y) => y.packets - x.packets).slice(0, NV_MAX_FLOWS_3D);
+    const counts = new Map();
+    for (const p of matched) counts.set(p.ck, (counts.get(p.ck) || 0) + 1);
+    return [...counts.entries()].sort((x, y) => y[1] - x[1]).slice(0, NV_MAX_FLOWS_3D).map(([k]) => a.convs.get(k));
+  }, [a, matched]);
+
+  const { data, layout, lookup, note, empty } = useMemo(() => {
     const rowOf = new Map(topConvs.map((c, i) => [c.key, i]));
-    let pool = a.pkts.filter((p) => rowOf.has(p.src < p.dst ? `${p.src}\u0000${p.dst}` : `${p.dst}\u0000${p.src}`));
+    // Hidden protocols are removed BEFORE sampling, so every trace that
+    // belongs to them (markers and stems) disappears together.
+    let pool = (matched || a.pkts).filter((p) => rowOf.has(p.ck) && !hidden.has(a.legendProto(p.proto)));
     const eligible = pool.length;
+    if (!eligible) return { data: [], layout: {}, lookup: [], note: "", empty: true };
     if (pool.length > NV_MAX_POINTS_3D) {
       const step = pool.length / NV_MAX_POINTS_3D;
       pool = Array.from({ length: NV_MAX_POINTS_3D }, (_, i) => pool[Math.floor(i * step)]);
     }
     const maxLen = Math.max(1, ...pool.map((p) => p.len));
     const rel = (p) => (p.t - a.tMin) / 1000;
-    const yOf = (p) => rowOf.get(p.src < p.dst ? `${p.src}\u0000${p.dst}` : `${p.dst}\u0000${p.src}`);
 
-    // Faint vertical "stems" from the floor up to each packet → a 3D skyline.
-    const sx = [], sy = [], sz = [];
-    for (const p of pool) { sx.push(rel(p), rel(p), null); sy.push(yOf(p), yOf(p), null); sz.push(0, p.len, null); }
-    const traces = [{
-      type: "scatter3d", mode: "lines", x: sx, y: sy, z: sz,
-      line: { color: "rgba(129,140,248,0.22)", width: 1 },
-      hoverinfo: "skip", showlegend: false,
-    }];
-    const lookup = [null];
+    const byProto = new Map(a.legend.map((proto) => [proto, []]));
+    for (const p of pool) byProto.get(a.legendProto(p.proto)).push(p);
 
+    const traces = [];
+    const lookup = []; // lookup[curveNumber] → packets of that marker trace (null for stems)
     for (const proto of a.legend) {
-      const pts = pool.filter((p) => a.legendProto(p.proto) === proto);
+      const pts = byProto.get(proto);
       if (!pts.length) continue;
+      const val = pts.map((p) => metric.get(p));
+
+      // Faint vertical "stems" from the floor up to each packet → a 3D skyline.
+      // One trace per protocol, tinted with the protocol colour.
+      const sx = [], sy = [], sz = [];
+      pts.forEach((p, i) => {
+        const x = rel(p), y = rowOf.get(p.ck);
+        sx.push(x, x, null); sy.push(y, y, null); sz.push(0, val[i], null);
+      });
       traces.push({
-        type: "scatter3d", mode: "markers", name: proto,
-        x: pts.map(rel), y: pts.map(yOf), z: pts.map((p) => p.len),
-        text: pts.map((p) => `#${p.n} ${p.proto}<br>${p.src}${p.sport ? `:${p.sport}` : ""} → ${p.dst}${p.dport ? `:${p.dport}` : ""}<br>${p.len} B${p.info ? `<br>${nvShort(p.info, 70).replace(/</g, "&lt;")}` : ""}`),
+        type: "scatter3d", mode: "lines", name: `${proto} (stems)`, x: sx, y: sy, z: sz,
+        line: { color: nvRgba(a.colorOf[proto], 0.3), width: 1 },
+        hoverinfo: "skip", showlegend: false,
+      });
+      lookup.push(null);
+
+      traces.push({
+        type: "scatter3d", mode: "markers", name: proto, showlegend: false,
+        x: pts.map(rel), y: pts.map((p) => rowOf.get(p.ck)), z: val,
+        text: pts.map((p, i) => `#${p.n} ${p.proto}<br>${p.src}${p.sport ? `:${p.sport}` : ""} → ${p.dst}${p.dport ? `:${p.dport}` : ""}<br>${p.len} B${metric.id !== "len" ? `<br>${metric.label}: ${metric.fmt(val[i])}` : ""}${p.info ? `<br>${nvShort(p.info, 70).replace(/</g, "&lt;")}` : ""}`),
         hoverinfo: "text",
         marker: {
           size: pts.map((p) => 3 + 7 * Math.sqrt(p.len / maxLen)),
@@ -1844,10 +2021,10 @@ function Flow3DView({ a, onPacketClick, autoRotate }) {
     return {
       data: traces,
       lookup,
+      empty: false,
       note: eligible > pool.length ? `Showing ${pool.length.toLocaleString()} of ${eligible.toLocaleString()} packets (sampled)` : "",
       layout: {
         margin: { l: 0, r: 0, t: 0, b: 0 },
-        legend: { font: { color: "#e8eaf0", size: 11, family: NV_FONT }, bgcolor: "rgba(0,0,0,0.35)", x: 0.01, y: 0.99 },
         scene: nvScene({
           aspectmode: "manual", aspectratio: { x: 2.1, y: 1.3, z: 0.7 },
           xaxis: { ...NV_AXIS_3D, title: { text: "time since first packet (s)", font: { size: 10, color: "#9ca3af" } } },
@@ -1857,37 +2034,69 @@ function Flow3DView({ a, onPacketClick, autoRotate }) {
             ticktext: topConvs.map((c) => nvShort(`${c.a} ↔ ${c.b}`, 26)),
             tickfont: { color: "#6b7280", size: 8, family: NV_FONT },
           },
-          zaxis: { ...NV_AXIS_3D, title: { text: "bytes", font: { size: 10, color: "#9ca3af" } }, rangemode: "tozero" },
+          zaxis: { ...NV_AXIS_3D, title: { text: metric.axis, font: { size: 10, color: "#9ca3af" } }, rangemode: "tozero" },
         }),
       },
     };
-  }, [a]);
+  }, [a, matched, hidden, metric, topConvs]);
 
   const handleClick = useCallback((pt) => {
     const pkt = lookup[pt.curveNumber] && lookup[pt.curveNumber][pt.pointNumber];
     if (pkt && onPacketClick) onPacketClick(pkt.row);
   }, [lookup, onPacketClick]);
 
+  if (empty) {
+    return <NvEmpty icon="eyeOff" message={matched ? "None of the matching packets belong to the visible protocols." : `None of the visible protocols appear in the ${topConvs.length} busiest conversations.`} />;
+  }
   return (
     <>
-      <NvNote>Click any point to open the packet details. Drag to rotate, scroll to zoom.{note ? ` ${note}.` : ""}</NvNote>
-      <div style={{ flex: 1, minHeight: 0 }}><NvPlot data={data} layout={layout} onPointClick={handleClick} autoRotate={autoRotate} /></div>
+      <NvNote>Click a point to open its packet details · drag to rotate, scroll to zoom · {metric.desc}.{matched ? " Matching packets only." : ""}{note ? ` ${note}.` : ""}</NvNote>
+      <div style={{ flex: 1, minHeight: 0 }}>
+        <NvPlot data={data} layout={layout} onPointClick={handleClick} autoRotate={autoRotate} revision={`flow-${metric.id}`} />
+      </div>
     </>
   );
 }
 
-function Topology3DView({ a, autoRotate }) {
-  const { data, layout, note } = useMemo(() => {
-    const topHosts = [...a.hosts.values()].sort((x, y) => y.bytes - x.bytes).slice(0, NV_MAX_HOSTS);
-    const idx = new Map(topHosts.map((h, i) => [h.ip, i]));
-    const edges = [...a.convs.values()]
-      .filter((c) => idx.has(c.a) && idx.has(c.b))
-      .sort((x, y) => y.bytes - x.bytes)
-      .slice(0, NV_MAX_EDGES);
+function Topology3DView({ a, matched, isolate, onHostClick, autoRotate }) {
+  const { data, layout, note, lookup } = useMemo(() => {
+    const active = !!matched;
+    // Hosts / conversations that take part in at least one matching packet.
+    const mHosts = new Map(); // ip → matching packets
+    const mConvs = new Set();
+    if (active) {
+      for (const p of matched) {
+        mHosts.set(p.src, (mHosts.get(p.src) || 0) + 1);
+        mHosts.set(p.dst, (mHosts.get(p.dst) || 0) + 1);
+        mConvs.add(p.ck);
+      }
+    }
+
+    const byBytes = (x, y) => y.bytes - x.bytes;
+    const all = [...a.hosts.values()].sort(byBytes);
+    let nodes;
+    if (active && isolate) {
+      nodes = all.filter((h) => mHosts.has(h.ip)).slice(0, NV_MAX_HOSTS);
+    } else {
+      nodes = all.slice(0, NV_MAX_HOSTS);
+      if (active) { // make sure a searched host is shown even when it is not a top talker
+        const have = new Set(nodes.map((h) => h.ip));
+        nodes = nodes.concat(all.filter((h) => mHosts.has(h.ip) && !have.has(h.ip)).slice(0, NV_MAX_HOSTS));
+      }
+    }
+    const idx = new Map(nodes.map((h, i) => [h.ip, i]));
+
+    let edges = [...a.convs.values()].filter((c) => idx.has(c.a) && idx.has(c.b));
+    if (active && isolate) edges = edges.filter((c) => mConvs.has(c.key));
+    edges.sort((x, y) => (active ? Number(mConvs.has(y.key)) - Number(mConvs.has(x.key)) : 0) || y.bytes - x.bytes);
+    edges = edges.slice(0, NV_MAX_EDGES);
+
     const maxEdge = Math.max(1, ...edges.map((e) => e.bytes));
-    const pos = forceLayout3D(topHosts.length, edges.map((e) => [idx.get(e.a), idx.get(e.b), Math.sqrt(e.bytes / maxEdge)]));
+    const pos = forceLayout3D(nodes.length, edges.map((e) => [idx.get(e.a), idx.get(e.b), Math.sqrt(e.bytes / maxEdge)]));
 
     // Edges bucketed by volume so heavier links draw thicker and brighter.
+    // While searching, links without a matching packet fall into a faint bucket.
+    const faint = { w: 1, color: "rgba(255,255,255,0.06)", xs: [], ys: [], zs: [] };
     const buckets = [
       { w: 1.5, color: "rgba(129,140,248,0.25)", xs: [], ys: [], zs: [] },
       { w: 3.5, color: "rgba(129,140,248,0.50)", xs: [], ys: [], zs: [] },
@@ -1895,86 +2104,156 @@ function Topology3DView({ a, autoRotate }) {
     ];
     for (const e of edges) {
       const r = e.bytes / maxEdge;
-      const bkt = buckets[r > 0.5 ? 2 : r > 0.12 ? 1 : 0];
+      const bkt = active && !mConvs.has(e.key) ? faint : buckets[r > 0.5 ? 2 : r > 0.12 ? 1 : 0];
       const p1 = pos[idx.get(e.a)], p2 = pos[idx.get(e.b)];
       bkt.xs.push(p1[0], p2[0], null); bkt.ys.push(p1[1], p2[1], null); bkt.zs.push(p1[2], p2[2], null);
     }
-    const traces = buckets.filter((b) => b.xs.length).map((b) => ({
+    const traces = [faint, ...buckets].filter((b) => b.xs.length).map((b) => ({
       type: "scatter3d", mode: "lines", x: b.xs, y: b.ys, z: b.zs,
       line: { color: b.color, width: b.w }, hoverinfo: "skip", showlegend: false,
     }));
+    const lookup = traces.map(() => null); // lookup[curveNumber] → hosts of that trace
 
-    const maxBytes = Math.max(1, ...topHosts.map((h) => h.bytes));
-    traces.push({
-      type: "scatter3d", mode: "markers+text", name: "hosts", showlegend: false,
-      x: pos.map((p) => p[0]), y: pos.map((p) => p[1]), z: pos.map((p) => p[2]),
-      text: topHosts.map((h, i) => (i < 12 ? nvShort(h.ip, 22) : "")),
-      textposition: "top center",
-      textfont: { color: "#e8eaf0", size: 10, family: NV_FONT },
-      hovertext: topHosts.map((h) => `${h.ip}<br>${h.packets.toLocaleString()} packets · ${nvFormatBytes(h.bytes)}<br>${h.peers.size} peer${h.peers.size === 1 ? "" : "s"}`),
-      hoverinfo: "text",
-      marker: {
-        size: topHosts.map((h) => 6 + 24 * Math.sqrt(h.bytes / maxBytes)),
-        color: topHosts.map((h) => Math.log10(h.bytes + 1)),
-        colorscale: [[0, "#312e81"], [0.5, "#818cf8"], [1, "#f472b6"]],
-        opacity: 0.95, line: { color: "rgba(255,255,255,0.35)", width: 1 },
-      },
-    });
+    const maxBytes = Math.max(1, ...nodes.map((h) => h.bytes));
+    const cMin = Math.log10(Math.min(...nodes.map((h) => h.bytes)) + 1);
+    const cMax = Math.log10(maxBytes + 1);
+    const addHosts = (list, dimmed) => {
+      if (!list.length) return;
+      const labelled = dimmed ? 0 : active ? 25 : 12;
+      traces.push({
+        type: "scatter3d", mode: "markers+text", name: dimmed ? "others" : "hosts", showlegend: false,
+        x: list.map((h) => pos[idx.get(h.ip)][0]),
+        y: list.map((h) => pos[idx.get(h.ip)][1]),
+        z: list.map((h) => pos[idx.get(h.ip)][2]),
+        text: list.map((h, i) => (i < labelled ? nvShort(h.ip, 22) : "")),
+        textposition: "top center",
+        textfont: { color: "#e8eaf0", size: 10, family: NV_FONT },
+        hovertext: list.map((h) => `${h.ip}<br>${h.packets.toLocaleString()} packets · ${nvFormatBytes(h.bytes)}<br>${h.peers.size} peer${h.peers.size === 1 ? "" : "s"}${active ? `<br>${(mHosts.get(h.ip) || 0).toLocaleString()} matching packets` : ""}`),
+        hoverinfo: "text",
+        marker: {
+          size: list.map((h) => 6 + 24 * Math.sqrt(h.bytes / maxBytes)),
+          ...(dimmed
+            ? { color: "rgba(100,100,138,0.35)", line: { color: "rgba(255,255,255,0.08)", width: 1 } }
+            : {
+                color: list.map((h) => Math.log10(h.bytes + 1)), cmin: cMin, cmax: cMax,
+                colorscale: [[0, "#312e81"], [0.5, "#818cf8"], [1, "#f472b6"]],
+                line: active ? { color: "#ffffff", width: 2 } : { color: "rgba(255,255,255,0.35)", width: 1 },
+              }),
+          opacity: 0.95,
+        },
+      });
+      lookup.push(list);
+    };
+    if (active) {
+      addHosts(nodes.filter((h) => !mHosts.has(h.ip)), true);   // dimmed background first
+      addHosts(nodes.filter((h) => mHosts.has(h.ip)), false);   // matches drawn on top
+    } else {
+      addHosts(nodes, false);
+    }
 
-    const hidden = a.hosts.size - topHosts.length;
     const axis = { visible: false, showbackground: false, showgrid: false, zeroline: false };
+    let note = "";
+    if (active) {
+      const shown = nodes.filter((h) => mHosts.has(h.ip)).length;
+      note = `${mHosts.size.toLocaleString()} host${mHosts.size === 1 ? "" : "s"} take part in matching packets`
+        + `${shown < mHosts.size ? ` (${shown} shown)` : ""} — ${isolate ? "other hosts hidden" : "other hosts dimmed"}.`;
+    } else if (a.hosts.size > nodes.length) {
+      note = `Top ${nodes.length} of ${a.hosts.size} hosts by traffic shown.`;
+    }
     return {
-      data: traces,
-      note: hidden > 0 ? `Top ${topHosts.length} of ${a.hosts.size} hosts by traffic shown.` : "",
+      data: traces, lookup, note,
       layout: {
         margin: { l: 0, r: 0, t: 0, b: 0 },
         scene: nvScene({ xaxis: axis, yaxis: axis, zaxis: axis, aspectmode: "cube" }),
       },
     };
-  }, [a]);
+  }, [a, matched, isolate]);
+
+  const handleClick = useCallback((pt) => {
+    const host = lookup[pt.curveNumber] && lookup[pt.curveNumber][pt.pointNumber];
+    if (host && onHostClick) onHostClick(host.ip);
+  }, [lookup, onHostClick]);
 
   return (
     <>
-      <NvNote>Hosts are pulled together by how much they talk — node size and colour show traffic volume, link thickness shows volume between a pair. {note}</NvNote>
-      <div style={{ flex: 1, minHeight: 0 }}><NvPlot data={data} layout={layout} autoRotate={autoRotate} /></div>
+      <NvNote>Hosts are pulled together by how much they talk — node size and colour show traffic volume, link thickness shows volume between a pair. Click a host to search for it. {note}</NvNote>
+      <div style={{ flex: 1, minHeight: 0 }}>
+        <NvPlot data={data} layout={layout} onPointClick={handleClick} autoRotate={autoRotate} revision="topo" />
+      </div>
     </>
   );
 }
 
-function TrafficTimelineView({ a, metric }) {
+function TrafficTimelineView({ a, matched, hidden, metricId }) {
+  const metric = NV_TIME_METRICS.find((m) => m.id === metricId) || NV_TIME_METRICS[0];
   const { data, layout } = useMemo(() => {
     const span = Math.max(a.tMax - a.tMin, 1);
-    const size = span / NV_TIME_BUCKETS;
-    const sums = {};
-    a.legend.forEach((p) => { sums[p] = new Array(NV_TIME_BUCKETS).fill(0); });
-    for (const p of a.pkts) {
+    const size = span / NV_TIME_BUCKETS;      // ms per bucket
+    const sec = size / 1000;
+    const visible = a.legend.filter((p) => !hidden.has(p));
+    const bytesB = {}, countB = {};
+    visible.forEach((p) => {
+      bytesB[p] = new Array(NV_TIME_BUCKETS).fill(0);
+      countB[p] = new Array(NV_TIME_BUCKETS).fill(0);
+    });
+    for (const p of (matched || a.pkts)) {
+      const proto = a.legendProto(p.proto);
+      if (!bytesB[proto]) continue; // protocol hidden
       const b = Math.min(NV_TIME_BUCKETS - 1, Math.floor((p.t - a.tMin) / size));
-      sums[a.legendProto(p.proto)][b] += metric === "bytes" ? p.len : 1;
+      bytesB[proto][b] += p.len;
+      countB[proto][b] += 1;
     }
+    const valueAt = (proto, i) => {
+      const by = bytesB[proto][i], c = countB[proto][i];
+      switch (metric.id) {
+        case "packets": return c;
+        case "bps":     return by / sec;
+        case "pps":     return c / sec;
+        case "avg":     return c ? by / c : null; // gap where the protocol is silent
+        default:        return by;
+      }
+    };
     const x = Array.from({ length: NV_TIME_BUCKETS }, (_, i) => new Date(a.tMin + (i + 0.5) * size));
+    const hover = (proto) => `<b>${proto}</b> %{y:${metric.fmt}} ${metric.unit}<extra></extra>`;
+
+    const traces = visible.map((proto) => {
+      const y = Array.from({ length: NV_TIME_BUCKETS }, (_, i) => valueAt(proto, i));
+      return metric.stacked
+        ? {
+            type: "bar", name: proto, x, y, showlegend: false,
+            marker: { color: a.colorOf[proto], line: { width: 0 } },
+            hovertemplate: hover(proto),
+          }
+        : {
+            type: "scatter", mode: "lines+markers", name: proto, x, y, showlegend: false,
+            connectgaps: false,
+            line: { color: a.colorOf[proto], width: 2, shape: "linear" },
+            marker: { color: a.colorOf[proto], size: 5 },
+            hovertemplate: hover(proto),
+          };
+    });
+
     return {
-      data: a.legend.map((proto) => ({
-        type: "bar", name: proto, x, y: sums[proto],
-        marker: { color: a.colorOf[proto], line: { width: 0 } },
-        hovertemplate: `<b>${proto}</b> %{y:,} ${metric === "bytes" ? "B" : "pkts"}<extra></extra>`,
-      })),
+      data: traces,
       layout: {
         barmode: "stack", bargap: 0.06, hovermode: "x unified",
         margin: { l: 64, r: 20, t: 12, b: 48 },
-        legend: { font: { color: "#e8eaf0", size: 11, family: NV_FONT }, orientation: "h", y: 1.08 },
         xaxis: { gridcolor: "rgba(255,255,255,0.06)", tickfont: { color: "#6b7280", size: 10 } },
         yaxis: {
           gridcolor: "rgba(255,255,255,0.06)", tickfont: { color: "#6b7280", size: 10 },
-          title: { text: metric === "bytes" ? "bytes per bucket" : "packets per bucket", font: { color: "#6b7280", size: 11 } },
+          rangemode: "tozero",
+          title: { text: metric.axis, font: { color: "#6b7280", size: 11 } },
         },
       },
     };
-  }, [a, metric]);
+  }, [a, matched, hidden, metric]);
 
   return (
     <>
-      <NvNote>{NV_TIME_BUCKETS} equal time buckets across the capture, stacked by top-layer protocol.</NvNote>
-      <div style={{ flex: 1, minHeight: 0 }}><NvPlot data={data} layout={layout} /></div>
+      <NvNote>{NV_TIME_BUCKETS} equal time buckets across the capture · {metric.desc}.{matched ? " Matching packets only." : ""}</NvNote>
+      <div style={{ flex: 1, minHeight: 0 }}>
+        <NvPlot data={data} layout={layout} revision={`time-${metric.id}`} />
+      </div>
     </>
   );
 }
@@ -1997,6 +2276,138 @@ function NvStat({ label, value }) {
   );
 }
 
+/** Centered placeholder used when there is nothing to draw. */
+function NvEmpty({ icon = "eyeOff", message, action }) {
+  return (
+    <div style={{
+      flex: 1, minHeight: 300, display: "flex", flexDirection: "column", alignItems: "center",
+      justifyContent: "center", gap: 12, padding: 24, textAlign: "center",
+      fontFamily: NV_FONT, fontSize: 12, color: "var(--muted)",
+    }}>
+      <Icon name={icon} size={22} />
+      <div style={{ maxWidth: 360, lineHeight: 1.6 }}>{message}</div>
+      {action}
+    </div>
+  );
+}
+
+/** Compact labelled dropdown, styled like the app's other filter selects. */
+function NvSelect({ label, value, options, onChange }) {
+  return (
+    <label style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+      <span style={{ fontFamily: NV_FONT, fontSize: 9, color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.1em" }}>{label}</span>
+      <span style={{ position: "relative", display: "inline-flex", alignItems: "center" }}>
+        <select
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          style={{
+            appearance: "none", WebkitAppearance: "none", MozAppearance: "none", colorScheme: "dark",
+            background: "var(--card-bg)", border: "1px solid var(--accent-border)", borderRadius: 7,
+            color: "var(--text)", fontFamily: "var(--font-mono)", fontSize: 12,
+            padding: "6px 30px 6px 12px", cursor: "pointer", outline: "none",
+          }}
+        >
+          {options.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}
+        </select>
+        <Icon name="chevDown" size={12} style={{ position: "absolute", right: 10, pointerEvents: "none", color: "var(--accent)" }} />
+      </span>
+    </label>
+  );
+}
+
+/**
+ * Protocol legend. One pill per protocol: click toggles it, Shift/Alt-click
+ * isolates it (click again to restore all). The hidden set it edits is shared
+ * with every view, and each view drops ALL traces of a hidden protocol.
+ * `counts` (optional) replaces the per-protocol packet totals, e.g. with the
+ * number of packets matching the current search.
+ */
+function NvLegend({ a, hidden, counts, onToggle, onIsolate, onShowAll, onHideAll }) {
+  const visibleCount = a.legend.filter((p) => !hidden.has(p)).length;
+  return (
+    <div style={{
+      display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", flexShrink: 0,
+      padding: "8px 12px", background: "var(--card-bg)", border: "1px solid var(--border)", borderRadius: 10,
+    }}>
+      <span style={{ fontFamily: NV_FONT, fontSize: 9, color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.1em", marginRight: 4 }}>
+        Protocols <span style={{ color: "var(--accent)" }}>{visibleCount}/{a.legend.length}</span>
+      </span>
+      {a.legend.map((proto) => {
+        const on = !hidden.has(proto);
+        const color = a.colorOf[proto];
+        const s = a.legendStats[proto];
+        const n = counts ? counts[proto] : s.packets;
+        const noMatch = !!counts && n === 0;
+        return (
+          <button
+            key={proto}
+            type="button"
+            aria-pressed={on}
+            onClick={(e) => (e.shiftKey || e.altKey ? onIsolate(proto) : onToggle(proto))}
+            title={`${proto}: ${s.packets.toLocaleString()} packets · ${nvFormatBytes(s.bytes)}${counts ? ` · ${n.toLocaleString()} matching` : ""}\nClick to ${on ? "hide" : "show"} · Shift+click to isolate`}
+            style={{
+              display: "inline-flex", alignItems: "center", gap: 7, cursor: "pointer",
+              padding: "4px 11px", borderRadius: 20, fontFamily: "var(--font-mono)", fontSize: 11, fontWeight: 600,
+              background: on ? nvRgba(color, 0.12) : "transparent",
+              border: `1px solid ${on ? nvRgba(color, 0.45) : "var(--border)"}`,
+              color: on ? "var(--text)" : "var(--muted)",
+              textDecoration: on ? "none" : "line-through",
+              opacity: !on ? 0.7 : noMatch ? 0.45 : 1, transition: "all 0.15s",
+            }}
+          >
+            <span style={{
+              width: 8, height: 8, borderRadius: "50%", flexShrink: 0,
+              background: on ? color : "transparent", border: `1.5px solid ${color}`,
+              boxShadow: on ? `0 0 6px ${nvRgba(color, 0.55)}` : "none",
+            }} />
+            {proto}
+            <span style={{ fontSize: 10, fontWeight: 500, color: "var(--muted)", textDecoration: "none" }}>{n.toLocaleString()}</span>
+          </button>
+        );
+      })}
+      <div style={{ flex: 1 }} />
+      <Btn size="sm" variant="ghost" onClick={onShowAll} disabled={visibleCount === a.legend.length} title="Show every protocol">
+        <Icon name="eye" size={12} />All
+      </Btn>
+      <Btn size="sm" variant="ghost" onClick={onHideAll} disabled={visibleCount === 0} title="Hide every protocol">
+        <Icon name="eyeOff" size={12} />None
+      </Btn>
+    </div>
+  );
+}
+
+/** Search field for the packet views (syntax: see "PACKET SEARCH" above). */
+function NvSearch({ value, onChange, onClear }) {
+  return (
+    <div style={{ position: "relative", display: "inline-flex", alignItems: "center", marginLeft: "auto" }}>
+      <Icon name="search" size={13} style={{ position: "absolute", left: 11, color: value ? "var(--accent)" : "var(--muted)", pointerEvents: "none" }} />
+      <input
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        onKeyDown={(e) => { if (e.key === "Escape") onClear(); }}
+        placeholder="Search packets — ip, name, proto:dns, port:443, -arp"
+        title={NV_SEARCH_HELP}
+        spellCheck={false}
+        autoComplete="off"
+        style={{
+          width: 340, maxWidth: "100%", background: "var(--card-bg)",
+          border: `1px solid ${value ? "var(--accent-border)" : "var(--border)"}`, borderRadius: 7,
+          color: "var(--text)", fontFamily: "var(--font-mono)", fontSize: 12,
+          padding: "7px 30px 7px 32px", outline: "none", transition: "border-color 0.15s",
+        }}
+      />
+      {value && (
+        <button
+          type="button" onClick={onClear} title="Clear search (Esc)" aria-label="Clear search"
+          style={{ position: "absolute", right: 8, background: "none", border: "none", cursor: "pointer", color: "var(--muted)", padding: 2, display: "inline-flex" }}
+        >
+          <Icon name="close" size={11} />
+        </button>
+      )}
+    </div>
+  );
+}
+
 /**
  * Props:
  *   rows           – log rows (any rows that aren't "network capture" are ignored)
@@ -2012,14 +2423,52 @@ function NetworkCaptureVisualizer({ rows, onPacketClick }) {
     return () => clearTimeout(id);
   }, [rows]);
   const [view, setView] = useState("flow3d");
-  const [metric, setMetric] = useState("bytes");
+  const [flowMetric, setFlowMetric] = useState("len");     // vertical axis of the 3D flow view
+  const [timeMetric, setTimeMetric] = useState("bytes");   // Y axis of the traffic timeline
   const [rotate, setRotate] = useState(false);
+  const [hidden, setHidden] = useState(() => new Set());   // legend entries switched off
+  const [queryInput, setQueryInput] = useState("");        // what the user typed
+  const [query, setQuery] = useState("");                  // debounced copy that drives filtering
+  const [isolate, setIsolate] = useState(false);           // topology: hide non-matching hosts
+
+  useEffect(() => {
+    const id = setTimeout(() => setQuery(queryInput), 200);
+    return () => clearTimeout(id);
+  }, [queryInput]);
+
+  // Packets matching the search (null = no search active). Shared by every view.
+  const terms = useMemo(() => nvParseQuery(query), [query]);
+  const matched = useMemo(
+    () => (a && terms.length ? a.pkts.filter((p) => nvPacketMatches(p, terms)) : null),
+    [a, terms],
+  );
+  const legendCounts = useMemo(() => {
+    if (!a || !matched) return null;
+    const c = {};
+    a.legend.forEach((p) => { c[p] = 0; });
+    for (const p of matched) c[a.legendProto(p.proto)] += 1;
+    return c;
+  }, [a, matched]);
 
   if (!a) return <Spinner />;
 
   if (a.pkts.length === 0) {
     return <p style={{ color: "var(--muted)", padding: 16 }}>No decodable packets to visualize{rows && rows.length ? " — check the log filters." : "."}</p>;
   }
+
+  const toggleProto = (p) => setHidden((prev) => {
+    const next = new Set(prev);
+    if (next.has(p)) next.delete(p); else next.add(p);
+    return next;
+  });
+  const isolateProto = (p) => setHidden((prev) => {
+    const alreadyIsolated = a.legend.every((q) => (q === p ? !prev.has(q) : prev.has(q)));
+    return alreadyIsolated ? new Set() : new Set(a.legend.filter((q) => q !== p));
+  });
+  const showAll = () => setHidden(new Set());
+  const hideAll = () => setHidden(new Set(a.legend));
+  const clearSearch = () => { setQueryInput(""); setQuery(""); };
+  const searchHost = (ip) => { const q = nvHostQuery(ip); setQueryInput(q); setQuery(q); };
 
   const tabs = [
     { id: "flow3d", label: "3D Flow Timeline" },
@@ -2033,40 +2482,73 @@ function NetworkCaptureVisualizer({ rows, onPacketClick }) {
     color: active ? "var(--accent)" : "var(--muted)", transition: "all 0.15s",
   });
   const is3D = view !== "timeline";
+  const usesProtocols = view !== "topo3d";
+  const allHidden = a.legend.every((p) => hidden.has(p));
+  const noMatches = !!matched && matched.length === 0;
 
   return (
     <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", gap: 12 }}>
-      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", flexShrink: 0 }}>
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", flexShrink: 0 }}>
         <NvStat label="Packets" value={a.pkts.length.toLocaleString()} />
         <NvStat label="Traffic" value={nvFormatBytes(a.bytes)} />
         <NvStat label="Duration" value={nvFormatDuration((a.tMax - a.tMin) / 1000)} />
         <NvStat label="Hosts" value={a.hosts.size.toLocaleString()} />
         <NvStat label="Conversations" value={a.convs.size.toLocaleString()} />
         <NvStat label="Top protocol" value={a.topProto} />
+        {matched && <NvStat label="Matching" value={`${matched.length.toLocaleString()} / ${a.pkts.length.toLocaleString()}`} />}
+        <NvSearch value={queryInput} onChange={setQueryInput} onClear={clearSearch} />
       </div>
 
-      <div style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0, borderBottom: "1px solid var(--border)", paddingBottom: 8 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0, borderBottom: "1px solid var(--border)", paddingBottom: 8, flexWrap: "wrap" }}>
         {tabs.map((t) => (
           <button key={t.id} style={tabStyle(view === t.id)} onClick={() => setView(t.id)}>{t.label}</button>
         ))}
         <div style={{ flex: 1 }} />
+        {view === "flow3d" && (
+          <NvSelect label="Y axis" value={flowMetric} options={NV_FLOW_METRICS} onChange={setFlowMetric} />
+        )}
+        {view === "timeline" && (
+          <NvSelect label="Y axis" value={timeMetric} options={NV_TIME_METRICS} onChange={setTimeMetric} />
+        )}
+        {view === "topo3d" && matched && (
+          <Btn size="sm" variant={isolate ? "primary" : "subtle"} onClick={() => setIsolate((v) => !v)} title="Hide hosts that don't take part in any matching packet">
+            <Icon name={isolate ? "eyeOff" : "eye"} size={12} />Matches only
+          </Btn>
+        )}
         {is3D && (
-          <Btn size="sm" variant={rotate ? "primary" : "subtle"} onClick={() => setRotate((r) => !r)} title="Slowly spin the 3D camera">
+          <Btn size="sm" variant={rotate ? "primary" : "subtle"} onClick={() => setRotate((r) => !r)} title="Slowly spin the 3D camera" style={{ marginLeft: 8 }}>
             <Icon name="refresh" size={12} />Auto-rotate
           </Btn>
         )}
-        {view === "timeline" && (
-          <>
-            <Btn size="sm" variant={metric === "bytes" ? "primary" : "subtle"} onClick={() => setMetric("bytes")}>Bytes</Btn>
-            <Btn size="sm" variant={metric === "packets" ? "primary" : "subtle"} onClick={() => setMetric("packets")}>Packets</Btn>
-          </>
-        )}
       </div>
 
-      <div style={{ flex: 1, minHeight: 380, display: "flex", flexDirection: "column" }}>
-        {view === "flow3d" && <Flow3DView a={a} onPacketClick={onPacketClick} autoRotate={rotate} />}
-        {view === "topo3d" && <Topology3DView a={a} autoRotate={rotate} />}
-        {view === "timeline" && <TrafficTimelineView a={a} metric={metric} />}
+      {usesProtocols && (
+        <NvLegend a={a} hidden={hidden} counts={legendCounts} onToggle={toggleProto} onIsolate={isolateProto} onShowAll={showAll} onHideAll={hideAll} />
+      )}
+
+      <div style={{
+        flex: 1, minHeight: 380, display: "flex", flexDirection: "column",
+        background: "var(--card-bg)", border: "1px solid var(--border)", borderRadius: 10,
+        padding: "10px 12px 12px", overflow: "hidden",
+      }}>
+        {noMatches ? (
+          <NvEmpty
+            icon="search"
+            message={`No packets match “${query.trim()}”. Plain text searches IPs, ports, protocols and the info column; hover the search box for the full syntax.`}
+            action={<Btn size="sm" variant="subtle" onClick={clearSearch}><Icon name="close" size={12} />Clear search</Btn>}
+          />
+        ) : usesProtocols && allHidden ? (
+          <NvEmpty
+            message="All protocols are hidden. Pick one in the legend above to bring the traffic back."
+            action={<Btn size="sm" variant="subtle" onClick={showAll}><Icon name="eye" size={12} />Show all protocols</Btn>}
+          />
+        ) : (
+          <>
+            {view === "flow3d" && <Flow3DView a={a} matched={matched} hidden={hidden} metricId={flowMetric} onPacketClick={onPacketClick} autoRotate={rotate} />}
+            {view === "topo3d" && <Topology3DView a={a} matched={matched} isolate={isolate} onHostClick={searchHost} autoRotate={rotate} />}
+            {view === "timeline" && <TrafficTimelineView a={a} matched={matched} hidden={hidden} metricId={timeMetric} />}
+          </>
+        )}
       </div>
     </div>
   );
@@ -3298,6 +3780,7 @@ const ICONS = {
   user:      <><circle cx="8" cy="5.6" r="2.7" /><path d="M2.9 13.4c.4-2.6 2.5-4.1 5.1-4.1s4.7 1.5 5.1 4.1" /></>,
   eye:       <><path d="M1.6 8s2.4-4.6 6.4-4.6S14.4 8 14.4 8s-2.4 4.6-6.4 4.6S1.6 8 1.6 8z" /><circle cx="8" cy="8" r="1.9" /></>,
   eyeOff:    <><path d="M1.6 8s2.4-4.6 6.4-4.6c1.1 0 2.1.3 3 .8M14.4 8s-2.4 4.6-6.4 4.6c-1.1 0-2.1-.3-3-.8" /><path d="M3 2.8l10 10.4" /></>,
+  help:      <><circle cx="8" cy="8" r="5.6" /><path d="M6.3 6.5a1.75 1.75 0 1 1 2.65 1.5c-.62.4-.95.8-.95 1.5" /><circle cx="8" cy="11.5" r=".8" fill="currentColor" stroke="none" /></>,
   grid:      <><rect x="2.8" y="2.8" width="4.2" height="4.2" rx="1" /><rect x="9" y="2.8" width="4.2" height="4.2" rx="1" /><rect x="2.8" y="9" width="4.2" height="4.2" rx="1" /><rect x="9" y="9" width="4.2" height="4.2" rx="1" /></>,
 };
 
@@ -3311,6 +3794,407 @@ function Icon({ name, size = 14, stroke = 1.4, style }) {
     >
       {ICONS[name]}
     </svg>
+  );
+}
+
+// ── LOGO MARK ─────────────────────────────────────────────────────────────────
+// Octopus glyph with a terminal prompt (>_) for eyes, drawn in the same idiom as the Icon set (round caps/joins,
+// currentColor) and set on a soft accent tile, so the brand mark reads as part
+// of the UI rather than a separate illustration.
+function LogoMark({ size = 38 }) {
+  return (
+    <div
+      aria-hidden="true"
+      style={{
+        width: size, height: size, borderRadius: 11, flexShrink: 0,
+        display: "flex", alignItems: "center", justifyContent: "center",
+        color: "var(--accent)",
+        background: "linear-gradient(145deg, rgba(129,140,248,0.22), rgba(129,140,248,0.06))",
+        border: "1px solid var(--accent-border)",
+        boxShadow: "0 0 18px rgba(129,140,248,0.14), inset 0 1px 0 rgba(255,255,255,0.06)",
+      }}
+    >
+      <svg width={size * 0.64} height={size * 0.64} viewBox="0 0 24 24" fill="none"
+        stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M5.5 11V9.5C5.5 5.8 8.4 3.5 12 3.5s6.5 2.3 6.5 6V11" />
+        <path d="M5.5 11v6.5a1.6 1.6 0 0 1-3.2 0" />
+        <path d="M9.7 11.5V18" />
+        <path d="M14.3 11.5V18" />
+        <path d="M18.5 11v6.5a1.6 1.6 0 0 0 3.2 0" />
+        <path d="M8.6 6.4 11 8.3 8.6 10.2" />
+        <path d="M12.8 10.2h3" />
+      </svg>
+    </div>
+  );
+}
+
+// ── GUIDED TOUR ───────────────────────────────────────────────────────────────
+// Spotlight-style walkthrough. Each step points at an element tagged with
+// data-tour="<target>" (steps without a target are shown centred). The target
+// is highlighted by a cut-out in a dimmed overlay and a card explains it.
+// Keyboard: → / Enter next, ← back, Esc close.
+const TOUR_STEPS = [
+  {
+    target: null,
+    title: "Welcome to LogOctopus",
+    body: "LogOctopus collects logs from your devices, stores them as snapshots, and lets you browse, chart and export them. This short tour walks through the main areas of the app.",
+  },
+  {
+    target: "stats",
+    title: "Host health",
+    body: "Live CPU, RAM and disk usage of the backend host that stores your logs. Hover it for exact GB figures.",
+  },
+  {
+    target: "add-device",
+    title: "Add devices",
+    body: "Register a device by uploading a JSON config, or build one step by step with the config builder (connection details and the log entries to collect).",
+  },
+  {
+    target: "collection",
+    title: "Start & stop collection",
+    body: "Select one or more devices below, then press Start Collection and give the session a scenario name. Stop Collection saves what was captured as snapshots.",
+  },
+  {
+    target: "devices",
+    title: "Managed devices",
+    body: "Tick cards to select devices and open a card's details to see its settings, including auto-collection. Use New Group to organise devices and drag cards between groups.",
+  },
+  {
+    target: "snap-toolbar",
+    title: "Work with snapshots",
+    body: "Select snapshots in the table, then view, download or remove them. Switch Text / Chart to flip between raw log text and charts, and filter by device, log name, session, scenario or time.",
+  },
+  {
+    target: "snapshots",
+    title: "Snapshots table",
+    body: "Every collection session lands here. Open a snapshot to read it in the log viewer with filters, colour mode and share links. Network captures also offer packet details and 3D visualizations.",
+  },
+  {
+    target: "admin",
+    title: "Admin access",
+    body: "Sign in as admin to unlock protected actions such as editing device settings and managing security options.",
+  },
+  {
+    target: "tools",
+    title: "Settings & REST API",
+    body: "Settings holds preferences like page size and scheduled collection. REST API documents the endpoints for automating collection from your own scripts.",
+  },
+  {
+    target: "help",
+    title: "You're all set",
+    body: "Click Help at any time to replay this tour.",
+  },
+];
+
+// Optional per-step fields:  fallback — second data-tour name tried when the
+// target isn't on screen;  before(api) — runs when the step is entered (e.g. to
+// switch the builder to the right wizard step);  api — passed to before().
+// ── DEVICE BUILDER TOUR ──────────────────────────────────────────────────────
+// Walks through every option of the Device Config Builder. before() hooks
+// switch the wizard to the right step (api.setStep) so each target is on screen.
+const openEntryFields = () => {
+  // Make sure the first log entry is expanded so its fields can be pointed at.
+  setTimeout(() => {
+    if (!document.querySelector('[data-tour="entry-fields"]')) {
+      const h = document.querySelector('[data-tour="entry-header"]');
+      if (h) h.click();
+    }
+  }, 80);
+};
+const toConnection = (api) => api.setStep(1);
+const toEntries = (api) => api.setStep(2);
+const toEntry = (api) => { api.setStep(2); openEntryFields(); };
+
+const BUILDER_TOUR_STEPS = [
+  {
+    target: null,
+    before: toConnection,
+    title: "Building a device config",
+    body: "A device config tells LogOctopus how to reach a device over SSH and which commands produce its logs. The builder has two steps: Connection, then Log Entries. You can test everything live before saving.",
+  },
+  {
+    target: "bt-tabs",
+    before: toConnection,
+    title: "Two wizard steps",
+    body: "Use these tabs to move between Connection and Log Entries. Log Entries unlocks once the IP address, port and username are filled in. The counter shows how many log entries the device has.",
+  },
+  {
+    target: "bt-identity",
+    before: toConnection,
+    title: "Device identity",
+    body: "Device Name is how the device appears in the app (if left empty it becomes device-<ip>). Collection Interval is how often, in seconds, logs are collected while collection runs; the minimum is 5.",
+  },
+  {
+    target: "bt-ssh",
+    before: toConnection,
+    title: "SSH credentials",
+    body: "Enter the device IP address (required), SSH port (22 by default) and username (required). Use the Password / Key switch to log in with a password or paste a private key (PEM) instead.",
+  },
+  {
+    target: "bt-test",
+    before: toConnection,
+    title: "Test the connection",
+    body: "Test Connection tries a real SSH login using the details above, including any gateway hops. A green result means you're good to go; a red one shows the reason so you can fix it before moving on.",
+  },
+  {
+    target: "bt-gateways",
+    before: toConnection,
+    title: "Gateway hops (optional)",
+    body: "If the device is only reachable through jump hosts, add hops here. They are chained in order (hop 1 → hop 2 → … → device), and each has its own address and password or key. Reorder with the arrows or remove a hop with ×. Leave it empty for a direct connection.",
+  },
+  {
+    target: "bt-footer",
+    before: toConnection,
+    title: "Continue to log entries",
+    body: "When the connection details are complete, Next: Log Entries becomes available. Cancel closes the builder without saving anything.",
+  },
+  {
+    target: "bt-entries-toolbar",
+    before: toEntries,
+    title: "Log entries",
+    body: "Each log entry is one source of data to collect, such as a log file or a metric. + Add Entry creates a blank one. + Add Templates inserts two ready-made examples (syslog via journalctl and a CPU usage chart) that you can adapt.",
+  },
+  {
+    target: "entry-header",
+    before: toEntry,
+    title: "Entry card header",
+    body: "Click the header to expand or collapse an entry. It shows the entry number, name and type, plus badges once you've tested commands and a regex match count. The copy icon duplicates the entry; × removes it.",
+  },
+  {
+    target: "entry-basics",
+    before: toEntry,
+    title: "Name, type, unit, description",
+    body: "Log Name (required) identifies the log in the snapshots table. Type is text for readable log lines, or chart for numeric values plotted over time. Charts also get a Unit (%, °C, ms…). Description (required) says what the log captures.",
+  },
+  {
+    target: "entry-options",
+    before: toEntry,
+    title: "Shell prompt & unmatched lines",
+    body: "Shell prompt is optional: leave it empty for standard command execution, or set it (for example router# or $) for devices with an interactive CLI. For text logs, \"Append unmatched lines to last entry\" folds continuation lines, such as stack traces, into the preceding matched entry.",
+  },
+  {
+    target: "entry-terminal",
+    before: toEntry,
+    title: "Commands: collect, activate, deactivate",
+    body: "Pick a tab, type a command after the $ and press Enter or run to execute it on the device. collect (required) fetches the log data. activate runs before collection and must exit 0 to enable the log (use true to always enable). deactivate runs when collection stops and is optional. Tabs turn green when a command worked and red when it failed.",
+  },
+  {
+    target: "entry-regex",
+    fallback: "entry-terminal",
+    before: toEntry,
+    title: "Extraction regex",
+    body: "After you run the collect command, an extraction regex panel appears under the terminal. Click mark TIME or mark ENTRY and select that part of a line in the output to build the regex automatically, or write it by hand using named groups (?P<TIME>…) for the timestamp and (?P<ENTRY>…) for the content. The badge shows how many output lines match. For chart logs, ENTRY should capture a number.",
+  },
+  {
+    target: "bt-packet",
+    before: toEntries,
+    title: "Network packet capture (optional)",
+    body: "Enable this to capture raw traffic over SSH next to your logs. Set the start command (writes pcap data to stdout; don't add output redirection) and the stop command that ends it cleanly. You can also set a description, a Max PCAP Size in MB (blank means unlimited) and a custom decoder command (tshark by default).",
+  },
+  {
+    target: "bt-footer",
+    before: toEntries,
+    title: "Save your device",
+    body: "Save Device is enabled once every entry has a name and a collect command (and the packet capture commands, if enabled). Download JSON exports the config as a file you can later upload through Add Device. Back returns to Connection.",
+  },
+  {
+    target: "bt-help",
+    before: toEntries,
+    title: "That's the builder",
+    body: "To change a device later, open its details and choose Edit, which reopens this builder with its current config. Click Help here any time to replay this guide.",
+  },
+];
+
+function GuidedTour({ open, onClose, steps = TOUR_STEPS, api }) {
+  const [idx, setIdx] = useState(0);
+  const [rect, setRect] = useState(null);
+  const [vp, setVp] = useState({ w: window.innerWidth, h: window.innerHeight });
+  const [cardH, setCardH] = useState(220);
+  const cardRef = useRef(null);
+  const apiRef = useRef(api);
+  apiRef.current = api;
+  const step = steps[idx];
+  const last = idx === steps.length - 1;
+
+  const next = useCallback(() => { idx >= steps.length - 1 ? onClose() : setIdx(idx + 1); }, [idx, steps.length, onClose]);
+  const back = useCallback(() => { setIdx((i) => Math.max(0, i - 1)); }, []);
+
+  useEffect(() => { if (open) setIdx(0); }, [open]);
+
+  const findTarget = useCallback(() => {
+    if (!step || !step.target) return null;
+    return (
+      document.querySelector(`[data-tour="${step.target}"]`) ||
+      (step.fallback ? document.querySelector(`[data-tour="${step.fallback}"]`) : null)
+    );
+  }, [step]);
+
+  const measure = useCallback(() => {
+    setVp({ w: window.innerWidth, h: window.innerHeight });
+    const el = findTarget();
+    if (!el) { setRect(null); return; }
+    const r = el.getBoundingClientRect();
+    setRect({ top: r.top, left: r.left, width: r.width, height: r.height });
+  }, [findTarget]);
+
+  // Bring the target into view and keep the spotlight glued to it while the
+  // page scrolls / resizes. Steps with a before() hook get a short delay so the
+  // UI they switch to has rendered before we look for the target.
+  useEffect(() => {
+    if (!open) return undefined;
+    let raf, timer;
+    const run = () => {
+      const el = findTarget();
+      // The main header is sticky and always visible — no scrolling needed for it.
+      if (el && !el.closest("header")) el.scrollIntoView({ block: "center", behavior: "smooth" });
+      measure();
+      const t0 = performance.now();
+      const loop = () => {
+        measure();
+        if (performance.now() - t0 < 800) raf = requestAnimationFrame(loop);
+      };
+      raf = requestAnimationFrame(loop);
+    };
+    if (step && step.before) {
+      step.before(apiRef.current);
+      timer = setTimeout(run, 220);
+    } else {
+      run();
+    }
+    window.addEventListener("resize", measure);
+    window.addEventListener("scroll", measure, true);
+    return () => {
+      clearTimeout(timer);
+      cancelAnimationFrame(raf);
+      window.removeEventListener("resize", measure);
+      window.removeEventListener("scroll", measure, true);
+    };
+  }, [open, idx, step, findTarget, measure]);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const onKey = (e) => {
+      const handled = ["Escape", "ArrowRight", "ArrowLeft", "Enter"].includes(e.key);
+      if (!handled) return;
+      e.preventDefault();
+      e.stopPropagation(); // keep the key away from fields/modals under the tour
+      if (e.key === "Escape") onClose();
+      else if (e.key === "ArrowLeft") back();
+      else next();
+    };
+    document.addEventListener("keydown", onKey, true);
+    return () => document.removeEventListener("keydown", onKey, true);
+  }, [open, onClose, next, back]);
+
+  useEffect(() => {
+    if (open && cardRef.current && cardRef.current.offsetHeight !== cardH) setCardH(cardRef.current.offsetHeight);
+  });
+
+  if (!open || !step) return null;
+
+  const PAD = 8, GAP = 14, M = 12;
+  const cardW = Math.min(380, vp.w - M * 2);
+  let spot = null;
+  let cardTop, cardLeft;
+
+  if (rect) {
+    // Clip to the viewport so very tall targets (e.g. the device list) still
+    // produce a sensible highlight.
+    spot = {
+      top: Math.max(rect.top - PAD, 6),
+      left: Math.max(rect.left - PAD, 6),
+      bottom: Math.min(rect.top + rect.height + PAD, vp.h - 6),
+      right: Math.min(rect.left + rect.width + PAD, vp.w - 6),
+    };
+    const below = vp.h - spot.bottom;
+    const above = spot.top;
+    if (below >= cardH + GAP + M) cardTop = spot.bottom + GAP;
+    else if (above >= cardH + GAP + M) cardTop = spot.top - GAP - cardH;
+    else cardTop = vp.h - cardH - 20; // no room beside it → dock at the bottom
+    cardLeft = Math.min(Math.max(spot.left + (spot.right - spot.left) / 2 - cardW / 2, M), vp.w - cardW - M);
+  } else {
+    cardTop = Math.max(M, vp.h / 2 - cardH / 2);
+    cardLeft = Math.max(M, vp.w / 2 - cardW / 2);
+  }
+
+  return (
+    <div style={{ position: "fixed", inset: 0, zIndex: 4000 }} role="dialog" aria-modal="true" aria-label="Guided tour">
+      {/* click shield — keeps the page inert while the tour is running */}
+      <div style={{ position: "absolute", inset: 0, background: spot ? "transparent" : "rgba(5,5,12,0.78)", backdropFilter: spot ? "none" : "blur(3px)" }} />
+      {spot && (
+        <div
+          style={{
+            position: "fixed",
+            top: spot.top, left: spot.left,
+            width: spot.right - spot.left, height: spot.bottom - spot.top,
+            borderRadius: 10,
+            border: "1.5px solid var(--accent)",
+            boxShadow: "0 0 0 9999px rgba(5,5,12,0.78), 0 0 22px rgba(129,140,248,0.35)",
+            transition: "top .25s ease, left .25s ease, width .25s ease, height .25s ease",
+            pointerEvents: "none",
+          }}
+        />
+      )}
+
+      <div
+        ref={cardRef}
+        aria-live="polite"
+        style={{
+          position: "fixed", top: cardTop, left: cardLeft, width: cardW,
+          background: "var(--modal-bg)",
+          border: "1px solid var(--accent-border)",
+          borderRadius: 12,
+          padding: "18px 20px 16px",
+          boxShadow: "0 16px 48px rgba(0,0,0,0.6)",
+          transition: "top .25s ease, left .25s ease",
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+          <span style={{ color: "var(--accent)", display: "inline-flex" }}><Icon name="help" size={14} /></span>
+          <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, letterSpacing: "0.12em", textTransform: "uppercase", color: "var(--muted)" }}>
+            Step {idx + 1} of {steps.length}
+          </span>
+          <button
+            onClick={onClose}
+            title="Close tour"
+            aria-label="Close tour"
+            style={{ marginLeft: "auto", background: "none", border: "none", color: "var(--muted)", cursor: "pointer", padding: 2, display: "inline-flex" }}
+          >
+            <Icon name="close" size={13} />
+          </button>
+        </div>
+
+        <div style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 17, color: "var(--text)", letterSpacing: "-0.01em", marginBottom: 8 }}>
+          {step.title}
+        </div>
+        <div style={{ fontFamily: "var(--font-mono)", fontSize: 12.5, lineHeight: 1.65, color: "var(--text)", opacity: 0.78 }}>
+          {step.body}
+        </div>
+
+        <div style={{ display: "flex", alignItems: "center", gap: 5, margin: "16px 0 14px" }}>
+          {steps.map((_, i) => (
+            <span
+              key={i}
+              style={{
+                height: 4, borderRadius: 2,
+                width: i === idx ? 18 : 6,
+                background: i === idx ? "var(--accent)" : i < idx ? "rgba(129,140,248,0.45)" : "rgba(255,255,255,0.12)",
+                transition: "all .2s",
+              }}
+            />
+          ))}
+        </div>
+
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          {!last && <Btn variant="ghost" size="sm" onClick={onClose}>Skip tour</Btn>}
+          <div style={{ flex: 1 }} />
+          {idx > 0 && <Btn variant="subtle" size="sm" onClick={back}><Icon name="chevLeft" size={12} />Back</Btn>}
+          <Btn variant="primary" size="sm" onClick={next}>
+            {last ? <><Icon name="check" size={12} />Finish</> : <>Next<Icon name="chevRight" size={12} /></>}
+          </Btn>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -4781,6 +5665,8 @@ function LogEntryEditor({ entry, conn, index, onChange, onRemove, onDuplicate })
 
   // Local editable command strings (so the user can edit without committing on every keystroke)
   const set = (k, v) => onChange({ ...entry, [k]: v });
+  // Guided-tour anchors are attached to the first entry only.
+  const T = (name) => (index === 0 ? { "data-tour": name } : {});
 
   const execCmd = async (tab) => {
     const cmdMap = { collect: entry.log_file_cmd, activate: entry.log_activation_cmd, deactivate: entry.log_deactivation_cmd };
@@ -4913,6 +5799,7 @@ function LogEntryEditor({ entry, conn, index, onChange, onRemove, onDuplicate })
     }}>
       {/* ── Header ── */}
       <div
+        {...T("entry-header")}
         onClick={() => setExpanded(v => !v)}
         style={{
           display: "flex", alignItems: "center", gap: 10, padding: "10px 14px",
@@ -4952,9 +5839,10 @@ function LogEntryEditor({ entry, conn, index, onChange, onRemove, onDuplicate })
       </div>
 
       {expanded && (
-        <div style={{ padding: "14px 16px 16px" }}>
+        <div {...T("entry-fields")} style={{ padding: "14px 16px 16px" }}>
 
           {/* ── Row 1: Log Name / Type / Data Unit ── */}
+          <div {...T("entry-basics")}>
           <div style={{ display: "grid", gridTemplateColumns: "1fr auto auto", gap: 10, marginBottom: 14, alignItems: "end" }}>
             <div>
               <div style={FIELD_LABEL}>Log Name *</div>
@@ -5005,7 +5893,9 @@ function LogEntryEditor({ entry, conn, index, onChange, onRemove, onDuplicate })
               }}
             />
           </div>
+          </div>
 
+          <div {...T("entry-options")}>
           {/* ── Custom Shell Prompt (collapsed inline) ── */}
           <div style={{ marginBottom: 14, display: "flex", alignItems: "center", gap: 10 }}>
             <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--muted)", flexShrink: 0 }}>shell prompt</span>
@@ -5036,9 +5926,10 @@ function LogEntryEditor({ entry, conn, index, onChange, onRemove, onDuplicate })
               — folds continuation lines (e.g. stack traces) into the preceding matched entry
             </span>
           </label>}
+          </div>
 
           {/* ── Terminal Panel ── */}
-          <div style={S.terminal}>
+          <div {...T("entry-terminal")} style={S.terminal}>
             {/* Tab bar */}
             <div style={S.termBar}>
               {/* Traffic lights */}
@@ -5125,7 +6016,7 @@ function LogEntryEditor({ entry, conn, index, onChange, onRemove, onDuplicate })
 
           {/* ── Regex Builder (only shown when collect has output) ── */}
           {activeTab === "collect" && outputs.collect != null && (
-            <div style={{
+            <div {...T("entry-regex")} style={{
               marginTop: 10, background: "#0a0d12",
               border: `1px solid ${reErr ? "rgba(248,113,113,0.3)" : "rgba(129,140,248,0.18)"}`,
               borderRadius: 8, padding: "12px 14px",
@@ -5309,6 +6200,18 @@ function ConfigBuilderModal({ open, onClose, onSave, initialDevice }) {
   const [packetCapture, setPacketCapture] = useState(EMPTY_PACKET_CAPTURE);
   const setPC = (k, v) => setPacketCapture(prev => ({ ...prev, [k]: v }));
 
+  // Guided tour of the builder. The dot on the Help button stays until the
+  // tour has been opened once.
+  const [tourOpen, setTourOpen] = useState(false);
+  const [tourSeen, setTourSeen] = useState(() => {
+    try { return localStorage.getItem("lo_builder_tour_seen") === "1"; } catch { return true; }
+  });
+  const startTour = () => {
+    setTourOpen(true);
+    setTourSeen(true);
+    try { localStorage.setItem("lo_builder_tour_seen", "1"); } catch { /* storage unavailable */ }
+  };
+
   // When the modal opens for editing an existing device, pre-populate all
   // fields from the device's current config.  When it opens for a new device
   // (initialDevice is null/undefined) reset everything to blank.
@@ -5326,6 +6229,7 @@ function ConfigBuilderModal({ open, onClose, onSave, initialDevice }) {
     }
     setStep(1);
     setConnStatus(null);
+    setTourOpen(false);
   }, [open, initialDevice]);
 
   const setC = (k, v) => setConn(prev => ({ ...prev, [k]: v }));
@@ -5501,14 +6405,35 @@ function ConfigBuilderModal({ open, onClose, onSave, initialDevice }) {
               </div>
             </div>
           </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <span data-tour="bt-help" style={{ position: "relative", display: "inline-flex" }}>
+            <Btn
+              variant="subtle" size="sm" title="Guided tour of the device builder"
+              onClick={startTour}
+              style={{ justifyContent: "center", height: 30 }}
+            >
+              <Icon name="help" size={13} /> Help
+            </Btn>
+            {!tourSeen && (
+              <span
+                aria-hidden="true"
+                style={{
+                  position: "absolute", top: -3, right: -3, width: 9, height: 9, borderRadius: "50%",
+                  background: "var(--accent)", boxShadow: "0 0 8px var(--accent)",
+                  animation: "pulse 1.8s ease-in-out infinite", pointerEvents: "none",
+                }}
+              />
+            )}
+          </span>
           <button onClick={onClose} style={{ background: "rgba(255,255,255,0.06)", border: "1px solid var(--border)", borderRadius: 8, color: "var(--muted)", cursor: "pointer", fontSize: 18, lineHeight: 1, padding: "5px 9px", transition: "all 0.15s" }}
             onMouseEnter={e => e.currentTarget.style.color = "var(--text)"}
             onMouseLeave={e => e.currentTarget.style.color = "var(--muted)"}
           ><Icon name="close" size={16} /></button>
+          </div>
         </div>
 
         {/* Step tabs */}
-        <div style={{ display: "flex", borderBottom: "1px solid var(--border)", flexShrink: 0 }}>
+        <div data-tour="bt-tabs" style={{ display: "flex", borderBottom: "1px solid var(--border)", flexShrink: 0 }}>
           <button style={stepTabStyle(1)} onClick={() => setStep(1)}>
             <span style={{ width: 20, height: 20, borderRadius: "50%", background: step > 1 ? "rgba(74,222,128,0.2)" : "rgba(129,140,248,0.15)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontWeight: 800, color: step > 1 ? "#4ade80" : "var(--accent)" }}>
               {step > 1 ? <Icon name="check" size={11} stroke={2} /> : "1"}
@@ -5528,7 +6453,7 @@ function ConfigBuilderModal({ open, onClose, onSave, initialDevice }) {
           {/* ── STEP 1: Connection ── */}
           {step === 1 && (
             <div>
-              <div style={CARD}>
+              <div data-tour="bt-identity" style={CARD}>
                 <div style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 13, color: "var(--text)", marginBottom: 14 }}>Device Identity</div>
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
                   <div>
@@ -5544,7 +6469,7 @@ function ConfigBuilderModal({ open, onClose, onSave, initialDevice }) {
                 </div>
               </div>
 
-              <div style={CARD}>
+              <div data-tour="bt-ssh" style={CARD}>
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
                   <div style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 13, color: "var(--text)" }}>SSH Credentials</div>
                   {/* Auth mode toggle */}
@@ -5616,7 +6541,7 @@ function ConfigBuilderModal({ open, onClose, onSave, initialDevice }) {
                 )}
 
                 {/* Test connection */}
-                <div style={{ marginTop: 16, display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+                <div data-tour="bt-test" style={{ marginTop: 16, display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
                   <button
                     onClick={testConnection}
                     disabled={!step1Valid || connStatus === "testing"}
@@ -5651,7 +6576,7 @@ function ConfigBuilderModal({ open, onClose, onSave, initialDevice }) {
               </div>
 
               {/* ── Gateway Hops ── */}
-              <div style={CARD}>
+              <div data-tour="bt-gateways" style={CARD}>
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
                   <div>
                     <div style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 13, color: "var(--text)" }}>SSH Gateway Hops</div>
@@ -5772,7 +6697,7 @@ function ConfigBuilderModal({ open, onClose, onSave, initialDevice }) {
           {/* ── STEP 2: Log Entries ── */}
           {step === 2 && (
             <div>
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
+              <div data-tour="bt-entries-toolbar" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
                 <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--muted)" }}>
                   {entries.length} log entr{entries.length === 1 ? "y" : "ies"} · Click <Icon name="play" size={9} style={{ marginLeft: 2, marginRight: 2 }} /> Run on Device to test each command live
                 </div>
@@ -5817,7 +6742,7 @@ function ConfigBuilderModal({ open, onClose, onSave, initialDevice }) {
               )}
 
               {/* ── Network Packet Capture (optional) ── */}
-              <div style={CARD}>
+              <div data-tour="bt-packet" style={CARD}>
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: packetCapture.enabled ? 14 : 0 }}>
                   <div>
                     <div style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 13, color: "var(--text)" }}>Network Packet Capture</div>
@@ -5909,7 +6834,7 @@ function ConfigBuilderModal({ open, onClose, onSave, initialDevice }) {
         </div>
 
         {/* Footer */}
-        <div style={{ borderTop: "1px solid var(--border)", padding: "16px 28px", display: "flex", gap: 10, justifyContent: "space-between", alignItems: "center", flexShrink: 0, background: "rgba(0,0,0,0.12)" }}>
+        <div data-tour="bt-footer" style={{ borderTop: "1px solid var(--border)", padding: "16px 28px", display: "flex", gap: 10, justifyContent: "space-between", alignItems: "center", flexShrink: 0, background: "rgba(0,0,0,0.12)" }}>
           <div style={{ display: "flex", gap: 8 }}>
             {step === 2 && (
               <button
@@ -5938,6 +6863,7 @@ function ConfigBuilderModal({ open, onClose, onSave, initialDevice }) {
           </div>
         </div>
       </div>
+      <GuidedTour open={tourOpen} onClose={() => setTourOpen(false)} steps={BUILDER_TOUR_STEPS} api={{ setStep }} />
     </div>
   );
 }
@@ -6419,6 +7345,19 @@ const PULSE_KF = `
 
 export default function App() {
   const auth = useAuth();
+
+  // Guided tour: the Help button starts it; a small dot on the button stays
+  // until the tour has been opened once.
+  const [tourOpen, setTourOpen] = useState(false);
+  const [tourSeen, setTourSeen] = useState(() => {
+    try { return localStorage.getItem("lo_tour_seen") === "1"; } catch { return true; }
+  });
+  const startTour = useCallback(() => {
+    setTourOpen(true);
+    setTourSeen(true);
+    try { localStorage.setItem("lo_tour_seen", "1"); } catch { /* storage unavailable */ }
+  }, []);
+  const closeTour = useCallback(() => setTourOpen(false), []);
 
   const [devices,         setDevices]         = useState([]);
   const [devicesLoading,  setDevicesLoading]  = useState(true);
@@ -7630,19 +8569,19 @@ ${rowsHtml}
   // show a "Download Raw PCAP" button per capture in the footer.
   const networkCaptureSnaps = viewingSnaps.filter((s) => s.logName === "network capture");
 
-  // ── Inject SVG favicon matching the header logo color ──────────────────────
+  // ── Inject SVG favicon matching the header logo mark ──────────────────────
   useEffect(() => {
-    const svgFavicon = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 36 36">
-      <circle cx="18" cy="18" r="17" fill="none" stroke="#818cf8" stroke-width="1.5"/>
-      <circle cx="18" cy="18" r="6" fill="#818cf8"/>
-      ${[0, 45, 90, 135, 180, 225, 270, 315].map((a) => {
-        const rad = (a * Math.PI) / 180;
-        const x1 = (18 + 7 * Math.cos(rad)).toFixed(3);
-        const y1 = (18 + 7 * Math.sin(rad)).toFixed(3);
-        const x2 = (18 + 15 * Math.cos(rad)).toFixed(3);
-        const y2 = (18 + 15 * Math.sin(rad)).toFixed(3);
-        return `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="#818cf8" stroke-width="1.8" stroke-linecap="round"/>`;
-      }).join("")}
+    const svgFavicon = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+      <rect x="1" y="1" width="30" height="30" rx="9" fill="#12121f" stroke="#818cf8" stroke-opacity="0.55" stroke-width="1.5"/>
+      <g transform="translate(5 5) scale(0.9167)" fill="none" stroke="#818cf8" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M5.5 11V9.5C5.5 5.8 8.4 3.5 12 3.5s6.5 2.3 6.5 6V11"/>
+        <path d="M5.5 11v6.5a1.6 1.6 0 0 1-3.2 0"/>
+        <path d="M9.7 11.5V18"/>
+        <path d="M14.3 11.5V18"/>
+        <path d="M18.5 11v6.5a1.6 1.6 0 0 0 3.2 0"/>
+        <path d="M8.6 6.4 11 8.3 8.6 10.2"/>
+        <path d="M12.8 10.2h3"/>
+      </g>
     </svg>`;
     const encoded = `data:image/svg+xml,${encodeURIComponent(svgFavicon)}`;
     let link = document.querySelector("link[rel~='icon']");
@@ -7694,28 +8633,10 @@ ${rowsHtml}
             height: 64,
           }}
         >
-          <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
-            <svg width="36" height="36" viewBox="0 0 36 36">
-              <circle cx="18" cy="18" r="17" fill="none" stroke="var(--accent)" strokeWidth="1.5" />
-              <circle cx="18" cy="18" r="6" fill="var(--accent)" />
-              {[0, 45, 90, 135, 180, 225, 270, 315].map((a, i) => {
-                const rad = (a * Math.PI) / 180;
-                return (
-                  <line key={i}
-                    x1={18 + 7 * Math.cos(rad)} y1={18 + 7 * Math.sin(rad)}
-                    x2={18 + 15 * Math.cos(rad)} y2={18 + 15 * Math.sin(rad)}
-                    stroke="var(--accent)" strokeWidth="1.8" strokeLinecap="round"
-                  />
-                );
-              })}
-            </svg>
-            <div>
-              <div style={{ fontFamily: "var(--font-display)", fontWeight: 800, fontSize: 20, color: "var(--text)", letterSpacing: "-0.02em", lineHeight: 1 }}>
-                LogOctopus
-              </div>
-              <div style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--muted)", marginTop: 2, letterSpacing: "0.08em" }}>
-                Collect & Analyze Logs Efficiently
-              </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            <LogoMark size={38} />
+            <div style={{ fontFamily: "var(--font-display)", fontWeight: 800, fontSize: 21, color: "var(--text)", letterSpacing: "-0.02em", lineHeight: 1 }}>
+              Log<span style={{ color: "var(--accent)" }}>Octopus</span>
             </div>
           </div>
 
@@ -7723,6 +8644,7 @@ ${rowsHtml}
 
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <div
+              data-tour="stats"
               title={systemStats ? `Backend host — RAM: ${systemStats.ramUsedGb} / ${systemStats.ramTotalGb} GB · Disk: ${systemStats.diskUsedGb} / ${systemStats.diskTotalGb} GB` : "Loading host stats…"}
               style={{ display: "flex", alignItems: "center", gap: 10, marginRight: 12, fontFamily: "var(--font-mono)", fontSize: 15, color: "var(--muted)" }}
             >
@@ -7739,6 +8661,7 @@ ${rowsHtml}
               )}
             </div>
             {/* Auth controls */}
+            <div data-tour="admin" style={{ display: "flex", alignItems: "center" }}>
             {auth.isAdmin ? (
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                 <span
@@ -7774,8 +8697,10 @@ ${rowsHtml}
                 <IconLock size={13} /> Admin Login
               </Btn>
             )}
+            </div>
 
             {/* Header toolbar buttons — identical size so they sit as a matched pair */}
+            <div data-tour="tools" style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <Btn
               variant="subtle" size="sm" title="Open settings"
               onClick={() => setSettingsModal(true)}
@@ -7790,6 +8715,26 @@ ${rowsHtml}
             >
               <IconApi size={13} /> REST API
             </Btn>
+            </div>
+            <span data-tour="help" style={{ position: "relative", display: "inline-flex" }}>
+              <Btn
+                variant="subtle" size="sm" title="Start the guided tour"
+                onClick={startTour}
+                style={{ justifyContent: "center", height: 30, minWidth: 128 }}
+              >
+                <Icon name="help" size={13} /> Help
+              </Btn>
+              {!tourSeen && (
+                <span
+                  aria-hidden="true"
+                  style={{
+                    position: "absolute", top: -3, right: -3, width: 9, height: 9, borderRadius: "50%",
+                    background: "var(--accent)", boxShadow: "0 0 8px var(--accent)",
+                    animation: "pulse 1.8s ease-in-out infinite", pointerEvents: "none",
+                  }}
+                />
+              )}
+            </span>
           </div>
         </header>
 
@@ -7802,9 +8747,13 @@ ${rowsHtml}
 
           {/* ACTION BAR */}
           <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 24, alignItems: "center" }}>
-            <AddDeviceBtn onUpload={handleUpload} onBuildConfig={() => setBuilderModal(true)} />
-            <Btn variant="success" onClick={startCollection} disabled={!anySelected}><Icon name="play" size={12} />Start Collection</Btn>
-            <Btn variant="danger"  onClick={stopCollection}  disabled={!anySelected}><Icon name="stop" size={12} />Stop Collection</Btn>
+            <div data-tour="add-device" style={{ display: "inline-flex" }}>
+              <AddDeviceBtn onUpload={handleUpload} onBuildConfig={() => setBuilderModal(true)} />
+            </div>
+            <div data-tour="collection" style={{ display: "inline-flex", gap: 12 }}>
+              <Btn variant="success" onClick={startCollection} disabled={!anySelected}><Icon name="play" size={12} />Start Collection</Btn>
+              <Btn variant="danger"  onClick={stopCollection}  disabled={!anySelected}><Icon name="stop" size={12} />Stop Collection</Btn>
+            </div>
             <Btn variant="ghost"   onClick={() => setConfirmRemoveDevices(true)}  disabled={!anySelected}><Icon name="trash" size={13} />Remove Selected</Btn>
             <div style={{ marginLeft: "auto", fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--muted)" }}>
               {selectedDevices.length} device(s) selected
@@ -7812,7 +8761,7 @@ ${rowsHtml}
           </div>
 
           {/* DEVICES */}
-          <section style={{ marginBottom: 32 }}>
+          <section data-tour="devices" style={{ marginBottom: 32 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 14 }}>
               <div style={{ fontFamily: "var(--font-display)", fontSize: 11, fontWeight: 700, letterSpacing: "0.12em", textTransform: "uppercase", color: "var(--muted)" }}>
                 Managed Devices — {devices.length}
@@ -7888,7 +8837,7 @@ ${rowsHtml}
           <div style={{ borderTop: "1px solid var(--border)", margin: "0 0 24px" }} />
 
           {/* SNAPSHOT TOOLBAR */}
-          <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center", marginBottom: 16 }}>
+          <div data-tour="snap-toolbar" style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center", marginBottom: 16 }}>
             <Btn
               variant="primary"
               onClick={() => openLogContent(snapshots.filter((s) => selectedSnaps.includes(s.id)))}
@@ -7942,7 +8891,7 @@ ${rowsHtml}
           </div>
 
           {/* SNAPSHOTS TABLE */}
-          <div style={{ background: "var(--card-bg)", border: "1px solid var(--border)", borderRadius: 12, overflow: "hidden" }}>
+          <div data-tour="snapshots" style={{ background: "var(--card-bg)", border: "1px solid var(--border)", borderRadius: 12, overflow: "hidden" }}>
             {snapsLoading ? <Spinner /> : (
               <SnapshotsTable
                 snapshots={snapshots.filter(s => visibleDeviceNames.size === 0 || visibleDeviceNames.has(s.deviceName))}
@@ -7964,6 +8913,9 @@ ${rowsHtml}
           </div>
         </div>
       </div>
+
+      {/* GUIDED TOUR */}
+      <GuidedTour open={tourOpen} onClose={closeTour} />
 
       {/* COLLECTION STOP LOADING OVERLAY */}
       <CollectionLoadingOverlay open={stoppingCollection} saved={stopProgress.saved} expected={stopProgress.expected} />
