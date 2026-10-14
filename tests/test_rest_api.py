@@ -233,58 +233,67 @@ class TestRemoveDevice:
 
 # ── GET /api/snapshots ────────────────────────────────────────────────────────
 
+def _make_index_row(
+    snap_id="snap-001",
+    device_name="Router-A",
+    log_name="syslog",
+    start_time="2024-01-01 10:00:00",
+    finish_time="2024-01-01 10:05:00",
+    duration=300.0,
+    size_bytes=42_000,
+    session_id="abc123def456",
+    session_scenario="test_1",
+    log_type=False,
+    data_unit="",
+):
+    """Return a dict shaped like a snapshot_index row (index_row_to_dict reads by key)."""
+    return {
+        "id":                       snap_id,
+        "device_name":              device_name,
+        "log_name":                 log_name,
+        "start_time":               start_time,
+        "finish_time":              finish_time,
+        "logs_collection_duration": duration,
+        "size_in_bytes":            size_bytes,
+        "session_id":               session_id,
+        "session_scenario":         session_scenario,
+        "log_type":                 log_type,
+        "data_unit":                data_unit,
+    }
+
+
 class TestListSnapshots:
     def test_returns_all_snapshots_by_default(self, client):
-        snap = _make_snapshot()
-        with (
-            patch("backend.app.get_current_devices", return_value=[]),
-            patch(
-                "backend.app.LogSnapshotsHelper.get_log_snapshots_list",
-                return_value=[snap],
-            ),
-        ):
+        row = _make_index_row()
+        with patch("backend.app.snapshot_index.query", return_value=([row], 1)) as mock_query:
             resp = client.get("/api/snapshots")
 
         assert resp.status_code == 200
         data = resp.get_json()
         assert data["total"] == 1
         assert len(data["items"]) == 1
-        assert data["items"][0]["id"]        == "snap-001"
+        assert data["items"][0]["id"]         == "snap-001"
         assert data["items"][0]["deviceName"] == "Router-A"
-        assert data["items"][0]["sizeKb"]    == 42
-        assert data["items"][0]["isChart"]   is False
+        assert data["items"][0]["sizeKb"]     == 42
+        assert data["items"][0]["isChart"]    is False
+        mock_query.assert_called_once_with(False, None, None, page=1, page_size=25)
 
     def test_uses_filtered_list_when_search_params_provided(self, client):
-        snap = _make_snapshot()
-        with (
-            patch("backend.app.get_current_devices", return_value=[]),
-            patch(
-                "backend.app.LogSnapshotsHelper.get_filtered_log_snapshots_list",
-                return_value=[snap],
-            ) as mock_filtered,
-        ):
+        row = _make_index_row()
+        with patch("backend.app.snapshot_index.query", return_value=([row], 1)) as mock_query:
             resp = client.get("/api/snapshots?search_param=Device&search_value=Router-A")
 
         assert resp.status_code == 200
-        mock_filtered.assert_called_once()
+        mock_query.assert_called_once_with(False, "Device", "Router-A", page=1, page_size=25)
 
     def test_chart_log_type_sets_is_chart_true(self, client):
-        with (
-            patch("backend.app.get_current_devices", return_value=[]),
-            patch(
-                "backend.app.LogSnapshotsHelper.get_log_snapshots_list",
-                return_value=[],
-            ) as mock_list,
-        ):
+        with patch("backend.app.snapshot_index.query", return_value=([], 0)) as mock_query:
             client.get("/api/snapshots?log_type=chart")
 
-        mock_list.assert_called_once_with([], True)
+        mock_query.assert_called_once_with(True, None, None, page=1, page_size=25)
 
     def test_returns_empty_list_when_no_snapshots(self, client):
-        with (
-            patch("backend.app.get_current_devices", return_value=[]),
-            patch("backend.app.LogSnapshotsHelper.get_log_snapshots_list", return_value=[]),
-        ):
+        with patch("backend.app.snapshot_index.query", return_value=([], 0)):
             resp = client.get("/api/snapshots")
         data = resp.get_json()
         assert data["items"] == []
@@ -295,13 +304,14 @@ class TestListSnapshots:
 
 class TestGetSnapshotContent:
     def test_returns_content_rows_for_valid_snapshot(self, client):
-        snap = _make_snapshot()
+        snap = _make_snapshot(log_type="text")
         mock_df = MagicMock()
-        mock_df.to_dict.return_value = [{"timestamp": "t", "log_name": "syslog", "content": "msg"}]
+        mock_df.to_json.return_value = (
+            '[{"timestamp": "t", "log_name": "syslog", "content": "msg"}]'
+        )
 
         with (
-            patch("backend.app.get_current_devices", return_value=[]),
-            patch("backend.app.LogSnapshotsHelper.get_log_snapshots_list", return_value=[snap]),
+            patch("backend.app.find_snapshot_by_id", return_value=snap),
             patch(
                 "backend.app.LogSnapshotsHelper.get_log_content_for_selected_snapshots",
                 return_value=mock_df,
@@ -315,10 +325,7 @@ class TestGetSnapshotContent:
         assert data["rows"][0]["log_name"] == "syslog"
 
     def test_returns_404_for_unknown_snapshot(self, client):
-        with (
-            patch("backend.app.get_current_devices", return_value=[]),
-            patch("backend.app.LogSnapshotsHelper.get_log_snapshots_list", return_value=[]),
-        ):
+        with patch("backend.app.find_snapshot_by_id", return_value=None):
             resp = client.get("/api/snapshots/does-not-exist/content")
         assert resp.status_code == 404
         assert resp.get_json()["error"] == "not_found"

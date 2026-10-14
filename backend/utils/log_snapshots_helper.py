@@ -10,18 +10,32 @@ class LogSnapshotsHelper:
         """
         Extracts log content from selected log snapshots and generate time aligned data frame.
 
+        Callers must pass fully-loaded LogSnapshot objects (with
+        collected_data populated) - not LogSnapshotMeta. If you obtained
+        snapshots via get_log_snapshots_list/get_filtered_log_snapshots_list
+        backed by metadata-only objects, call `.load_full()` on the ones
+        you actually need content for before passing them here.
+
         Returns:
             (pd.DataFrame): Data frame with full log content for all selected log snapshots.
         """
-        final_data_frame = pd.DataFrame(columns=["time", "content", "device"])
+        frames = []
         for log_snapshot in selected_log_snapshots:
-            selected_log_content = pd.DataFrame(log_snapshot.collected_data)
-            selected_log_content.insert(1, "device", log_snapshot.device_name)
-            selected_log_content.insert(2, "log_name", log_snapshot.log_name)
-            if final_data_frame.empty:
-                final_data_frame = selected_log_content
-            elif not selected_log_content.empty:
-                final_data_frame = pd.concat([final_data_frame, selected_log_content], ignore_index=True)
+            if log_snapshot.collected_data.empty:
+                continue
+            # assign() returns a new frame with the extra columns appended
+            # rather than mutating/copying via insert() twice, and - unlike
+            # concatenating inside the loop below - keeps this an O(n) pass
+            # over the selected snapshots instead of O(n^2).
+            frames.append(log_snapshot.collected_data.assign(
+                device=log_snapshot.device_name,
+                log_name=log_snapshot.log_name,
+            ))
+
+        if not frames:
+            return pd.DataFrame(columns=["time", "content", "device", "log_name"])
+
+        final_data_frame = frames[0] if len(frames) == 1 else pd.concat(frames, ignore_index=True)
         final_data_frame = final_data_frame.sort_values(by="time", ascending=True)
         final_data_frame["time"] = final_data_frame["time"].dt.strftime("%Y-%m-%d %H:%M:%S")
 
@@ -31,6 +45,10 @@ class LogSnapshotsHelper:
     def get_log_snapshots_list(device_list, log_type_chart):
         """
         Extract list of all logs snapshots from provided devices.
+
+        Works against either full LogSnapshot objects or lightweight
+        LogSnapshotMeta objects - both expose log_type/device_name/etc.,
+        so this doesn't care which one device.log_snapshots holds.
 
         Args:
             device_list (list): Current list of active devices.
