@@ -153,17 +153,163 @@ Devices are configured in JSON:
 
 ```json
 {
-  "device_name": "Linux Server",
-  "ip_address": "192.168.1.10",
+  "device_name": "Raspberry-PI-Zero",
+  "ip_address": "192.168.12.2",
   "port": 22,
-  "user": "test-user",
+  "user": "pi_user",
+  "password": "pi_password",
+  "collection_interval": 30,
   "log_file_configs": [
     {
-      "log_name": "system_log",
-      "log_file_cmd": "journalctl",
-      "log_type": "text"
+      "log_name": "syslog",
+      "log_file_cmd": "sudo journalctl -n 200 --no-pager",
+      "data_extraction_regex": "^(?P<TIME>\\w+\\s+\\d+\\s+\\d+\\:\\d+\\:\\d+)\\s+(?P<ENTRY>.*)",
+      "log_type": "text",
+      "data_unit": "",
+      "description": ""
+    },
+    {
+      "log_name": "kernel",
+      "log_file_cmd": "dmesg -T",
+      "data_extraction_regex": "^\\[(?P<TIME>\\w+\\s+\\w+\\s+\\d+\\s\\d+\\:\\d+\\:\\d+\\s+\\d+)\\]\\s+(?P<ENTRY>.*)",
+      "log_type": "text",
+      "data_unit": "",
+      "description": ""
+    },
+    {
+      "log_name": "ssh_logs",
+      "log_file_cmd": "journalctl -u ssh -n 200 --no-pager",
+      "data_extraction_regex": "^(?P<TIME>\\w+\\s+\\d+\\s+\\d+\\:\\d+\\:\\d+)\\s+(?P<ENTRY>.*)",
+      "log_type": "text",
+      "data_unit": "",
+      "description": ""
+    },
+    {
+      "log_name": "cron_logs",
+      "log_file_cmd": "journalctl -u cron -n 200 --no-pager",
+      "data_extraction_regex": "^(?P<TIME>\\w+\\s+\\d+\\s+\\d+\\:\\d+\\:\\d+)\\s+(?P<ENTRY>.*)",
+      "log_type": "text",
+      "data_unit": "",
+      "description": ""
+    },
+    {
+      "log_name": "system_errors",
+      "log_file_cmd": "journalctl -p err -n 200 --no-pager",
+      "data_extraction_regex": "^(?P<TIME>\\w+\\s+\\d+\\s+\\d+\\:\\d+\\:\\d+)\\s+(?P<ENTRY>.*)",
+      "log_type": "text",
+      "data_unit": "",
+      "description": ""
+    },
+    {
+      "log_name": "system_warnings",
+      "log_file_cmd": "journalctl -p warning -n 200 --no-pager",
+      "data_extraction_regex": "^(?P<TIME>\\w+\\s+\\d+\\s+\\d+\\:\\d+\\:\\d+)\\s+(?P<ENTRY>.*)",
+      "log_type": "text",
+      "data_unit": "",
+      "description": ""
+    },
+    {
+      "log_name": "boot_logs",
+      "log_file_cmd": "journalctl -b -n 200 --no-pager",
+      "data_extraction_regex": "^(?P<TIME>\\w+\\s+\\d+\\s+\\d+\\:\\d+\\:\\d+)\\s+(?P<ENTRY>.*)",
+      "log_type": "text",
+      "data_unit": "",
+      "description": ""
+    },
+    {
+      "log_name": "cpu_usage_percent",
+      "log_file_cmd": "echo $(date '+%Y-%m-%d %H:%M:%S'),$(top -bn1 | grep 'Cpu(s)' | awk '{print 100-$8}')",
+      "data_extraction_regex": "^(?P<TIME>\\d+\\-\\d+\\-\\d+\\s\\d+\\:\\d+\\:\\d+)\\,(?P<ENTRY>.*)",
+      "log_type": "chart",
+      "data_unit": "%",
+      "description": ""
+    },
+    {
+      "log_name": "free_memory_mb",
+      "log_file_cmd": "echo $(date '+%Y-%m-%d %H:%M:%S'),$(free -m | awk '/Mem:/ {print $4}')",
+      "data_extraction_regex": "^(?P<TIME>\\d+\\-\\d+\\-\\d+\\s\\d+\\:\\d+\\:\\d+)\\,(?P<ENTRY>.*)",
+      "log_type": "chart",
+      "data_unit": "MB",
+      "description": ""
+    },
+    {
+      "log_name": "used_memory_mb",
+      "log_file_cmd": "echo $(date '+%Y-%m-%d %H:%M:%S'),$(free -m | awk '/Mem:/ {print $3}')",
+      "data_extraction_regex": "^(?P<TIME>\\d+\\-\\d+\\-\\d+\\s\\d+\\:\\d+\\:\\d+)\\,(?P<ENTRY>.*)",
+      "log_type": "chart",
+      "data_unit": "MB",
+      "description": ""
+    },
+    {
+      "log_name": "disk_usage_percent",
+      "log_file_cmd": "echo $(date '+%Y-%m-%d %H:%M:%S'),$(df / | awk 'NR==2 {print $5}' | tr -d '%')",
+      "data_extraction_regex": "^(?P<TIME>\\d+\\-\\d+\\-\\d+\\s\\d+\\:\\d+\\:\\d+)\\,(?P<ENTRY>.*)",
+      "log_type": "chart",
+      "data_unit": "%",
+      "description": ""
+    },
+    {
+      "log_name": "cpu_temp_c",
+      "log_file_cmd": "echo $(date '+%Y-%m-%d %H:%M:%S'),$(vcgencmd measure_temp | grep -o '[0-9.]*')",
+      "data_extraction_regex": "^(?P<TIME>\\d+\\-\\d+\\-\\d+\\s\\d+\\:\\d+\\:\\d+)\\,(?P<ENTRY>.*)",
+      "log_type": "chart",
+      "data_unit": "° C",
+      "description": ""
+    },
+    {
+      "log_name": "load_avg_1min",
+      "log_file_cmd": "echo $(date '+%Y-%m-%d %H:%M:%S'),$(cat /proc/loadavg | awk '{print $1}')",
+      "data_extraction_regex": "^(?P<TIME>\\d+\\-\\d+\\-\\d+\\s\\d+\\:\\d+\\:\\d+)\\,(?P<ENTRY>.*)",
+      "log_type": "chart",
+      "data_unit": "",
+      "description": ""
+    },
+    {
+      "log_name": "load_avg_5min",
+      "log_file_cmd": "echo $(date '+%Y-%m-%d %H:%M:%S'),$(cat /proc/loadavg | awk '{print $2}')",
+      "data_extraction_regex": "^(?P<TIME>\\d+\\-\\d+\\-\\d+\\s\\d+\\:\\d+\\:\\d+)\\,(?P<ENTRY>.*)",
+      "log_type": "chart",
+      "data_unit": "",
+      "description": ""
+    },
+    {
+      "log_name": "process_count",
+      "log_file_cmd": "echo $(date '+%Y-%m-%d %H:%M:%S'),$(ps -e | wc -l)",
+      "data_extraction_regex": "^(?P<TIME>\\d+\\-\\d+\\-\\d+\\s\\d+\\:\\d+\\:\\d+)\\,(?P<ENTRY>.*)",
+      "log_type": "chart",
+      "data_unit": "",
+      "description": ""
+    },
+    {
+      "log_name": "active_devices_count",
+      "log_file_cmd": "echo $(date '+%Y-%m-%d %H:%M:%S'),$(nmap -sn 192.168.0.0/24 2>/dev/null | grep -c 'Host is up')",
+      "data_extraction_regex": "^(?P<TIME>\\d+\\-\\d+\\-\\d+\\s\\d+\\:\\d+\\:\\d+)\\,(?P<ENTRY>.*)",
+      "log_type": "chart",
+      "data_unit": "",
+      "description": ""
+    },
+    {
+      "log_name": "network_rx_bytes",
+      "log_file_cmd": "F=/tmp/rx_prev; RX=$(< /sys/class/net/wlan0/statistics/rx_bytes); NOW=$(date +%s); read T R < $F 2>/dev/null; [ \"$T\" ] && echo \"$(date '+%F %T'),$(( (RX - R) * 30 / (NOW - T) ))\"; echo $NOW $RX > $F",
+      "data_extraction_regex": "^(?P<TIME>\\d+\\-\\d+\\-\\d+\\s\\d+\\:\\d+\\:\\d+)\\,(?P<ENTRY>.*)",
+      "log_type": "chart",
+      "data_unit": "bytes",
+      "description": ""
+    },
+    {
+      "log_name": "network_tx_bytes",
+      "log_file_cmd": "F=/tmp/tx_prev; TX=$(< /sys/class/net/wlan0/statistics/tx_bytes); NOW=$(date +%s); read T R < $F 2>/dev/null; [ \"$T\" ] && echo \"$(date '+%F %T'),$(( (TX - R) * 30 / (NOW - T) ))\"; echo \"$NOW $TX\" > $F",
+      "data_extraction_regex": "^(?P<TIME>\\d+\\-\\d+\\-\\d+\\s\\d+\\:\\d+\\:\\d+)\\,(?P<ENTRY>.*)",
+      "log_type": "chart",
+      "data_unit": "bytes",
+      "description": ""
     }
-  ]
+  ],
+  "packets_capture_config": {
+    "capture_start_cmd": "sudo tcpdump",
+    "capture_stop_cmd": "sudo pkill -INT -f 'tcpdump -i'",
+    "capture_description": "Network capture for 'wlan0' interface"
+  }
 }
 ```
 
