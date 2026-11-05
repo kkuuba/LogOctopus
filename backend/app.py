@@ -11,7 +11,7 @@ import uuid
 from pathlib import Path
 
 import psutil
-from flask import Flask, jsonify, request, send_file, Response
+from flask import Flask, jsonify, request, send_file, Response, stream_with_context
 from flask_cors import CORS
 from paramiko_expect import SSHClientInteraction
 
@@ -24,12 +24,15 @@ from backend.utils.device_config_loader import DeviceConfigLoader
 from backend.utils.pcap_decoder import DissectorRegistry, PcapDecoder
 from backend.utils.fabric_connection import build_nested_connection as _build_nested_connection
 from backend.utils import snapshot_index
+from backend.utils import retention
+from backend.utils.retention import RetentionPolicy
 
 
 SETTINGS_FILE   = Path("settings.json")
 FRONTEND_BASE   = os.getenv("FRONTEND_BASE", "http://localhost:8100")
 PROJECT_ROOT    = Path(__file__).resolve().parent.parent
-DISSECTORS_DIR  = PROJECT_ROOT / "data" / "dissectors"
+DATA_DIR        = PROJECT_ROOT / "data"
+DISSECTORS_DIR  = DATA_DIR / "dissectors"
 
 app = Flask(__name__)
 CORS(app)  
@@ -207,6 +210,9 @@ def index_row_to_dict(row) -> dict:
         "sessionScenario": row["session_scenario"],
         "isChart":         row["log_type"],
         "dataUnit":        row["data_unit"],
+        # True when the snapshot (or its pcap) is zipped by the retention
+        # policy and must be decompressed before it can be viewed.
+        "archived":        _archive_flag(row),
     }
 
 
@@ -245,6 +251,44 @@ def _save_settings(settings: dict) -> None:
     """
     SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
     SETTINGS_FILE.write_text(json.dumps(settings, indent=2))
+
+
+# ── retention helpers ─────────────────────────────────────────────────────────
+
+def _retention_policy() -> RetentionPolicy:
+    """Current retention policy from 'settings.json' (disabled by default)."""
+    return RetentionPolicy.from_dict(_load_settings().get("retention"))
+
+
+def _pcap_path(device_id: str, session_id: str) -> str:
+    """Location of the raw '<session_id>.pcap' for a device's capture session."""
+    return str(DATA_DIR / device_id / f"{session_id}.pcap")
+
+
+def _forget_snapshot_file(parquet_path: str) -> None:
+    """Drop the snapshot-index row that belongs to a parquet file the sweeper deleted.
+
+    Files are named '{id}_{timestamp}.parquet' and we don't know whether the
+    id itself may contain underscores, so try every '_' split and accept the
+    candidate the index confirms points at this very file.
+    """
+    name = os.path.basename(parquet_path)
+    stem = name[: -len(".parquet")] if name.endswith(".parquet") else name
+    pos = -1
+    while (pos := stem.find("_", pos + 1)) != -1:
+        row = snapshot_index.find_by_id(stem[:pos])
+        if row is not None and os.path.basename(row["data_file_name"]) == name:
+            snapshot_index.remove(stem[:pos])
+            return
+
+
+def _archive_flag(row) -> bool:
+    """True when opening this snapshot needs files decompressed first."""
+    if retention.is_archived(row["data_file_name"]):
+        return True
+    if row["log_name"] == "network capture":
+        return retention.is_archived(_pcap_path(row["device_id"], row["session_id"]))
+    return False
 
 
 # ── system ────────────────────────────────────────────────────────────────────
@@ -734,6 +778,14 @@ def get_snapshot_content(snapshot_id: str):
     if not target or target.log_type != target_log_type:
         return _bad("not_found", 404)
 
+    # Safety net: the UI normally restores archived snapshots first (with a
+    # progress bar, see POST /api/snapshots/restore), but API clients and
+    # shared links may hit this directly - decompress transparently.
+    try:
+        retention.ensure_available(target.data_file_name)
+    except FileNotFoundError:
+        return _bad("not_found", 404)
+
     full_snapshot = target.load_full()
     rows_df = LogSnapshotsHelper.get_log_content_for_selected_snapshots([full_snapshot])
     # pandas' to_json is implemented in C and is significantly faster than
@@ -791,6 +843,11 @@ def get_packet_details(snapshot_id: str, packet_number: int):
         else None
     )
 
+    try:
+        retention.ensure_available(_pcap_path(target.device_id, target.session_id))
+    except FileNotFoundError:
+        pass  # let the decoder report a missing pcap exactly as before
+
     device_data_dir = os.path.join("data", target.device_id)
     try:
         details = PcapDecoder.get_session_packet_details(
@@ -836,14 +893,22 @@ def download_snapshot_pcap(snapshot_id: str):
     if not target or target.log_type != "text" or getattr(target, "log_name", "") != "network capture":
         return _bad("not_found", 404)
 
-    pcap_path = os.path.join(PROJECT_ROOT, "data", target.device_id, f"{target.session_id}.pcap")
-    print(pcap_path)
-    if not os.path.exists(pcap_path):
-        return _bad("not_found", 404)
+    pcap_path = _pcap_path(target.device_id, target.session_id)
 
     device_name = getattr(target, "device_name", "device")
     safe_name = "_".join(device_name.split())
     download_name = f"{safe_name}_{target.session_id}.pcap"
+
+    if not os.path.exists(pcap_path):
+        if not retention.is_archived(pcap_path):
+            return _bad("not_found", 404)
+        # Zipped by the retention policy: stream it straight out of the zip -
+        # no need to wait for (or spend disk on) a full decompression.
+        size, chunks = retention.iter_archived(pcap_path)
+        resp = Response(stream_with_context(chunks), mimetype="application/vnd.tcpdump.pcap")
+        resp.headers.set("Content-Disposition", "attachment", filename=download_name)
+        resp.headers["Content-Length"] = str(size)
+        return resp
 
     return send_file(
         pcap_path,
@@ -904,12 +969,62 @@ def remove_snapshots():
         # snapshot doesn't linger as a phantom row in GET /api/snapshots.
         # Removed unconditionally (even if the file was already missing)
         # so a stale index row can't survive a delete either.
-        if os.path.exists(target.data_file_name):
-            os.remove(target.data_file_name)
+        # remove_with_archive also drops the '.zip' of an archived snapshot.
+        retention.remove_with_archive(target.data_file_name)
         snapshot_index.remove(snapshot_id)
         removed.append(snapshot_id)
 
     return jsonify({"removed": removed, "not_found": not_found})
+
+
+@app.post("/api/snapshots/restore")
+def restore_snapshots():
+    """Decompress archived snapshots (and the pcap of network captures) in the background.
+
+    POST '/api/snapshots/restore'
+
+    Request body (JSON):
+        - snapshot_ids (list[str]) - Snapshots about to be opened. Required.
+
+    Returns:
+        200 OK:
+            - job (dict) - '{ id, status, total_bytes, done_bytes, files_total,
+              files_done, current, error }'. 'status' is '"running"', '"done"'
+              or '"error"'; a job with nothing to decompress is already
+              '"done"'. Poll GET '/api/restore-jobs/<id>' for progress.
+            - not_found (list[str]) - IDs that matched no snapshot.
+    """
+    body = request.get_json(force=True)
+    ids  = body.get("snapshot_ids", [])
+    if not isinstance(ids, list) or not ids:
+        return _bad("snapshot_ids must be a non-empty list")
+
+    items, not_found = [], []
+    for sid in ids:
+        target = find_snapshot_by_id(sid)
+        if not target:
+            not_found.append(sid)
+            continue
+        label = f"{target.device_name} · {target.log_name}"
+        items.append((label, target.data_file_name))
+        if getattr(target, "log_name", "") == "network capture":
+            items.append((f"{target.device_name} · pcap", _pcap_path(target.device_id, target.session_id)))
+
+    return jsonify({"job": retention.start_restore_job(items), "not_found": not_found})
+
+
+@app.get("/api/restore-jobs/<job_id>")
+def get_restore_job(job_id: str):
+    """Progress of a decompression job started by POST '/api/snapshots/restore'.
+
+    Returns:
+        200 OK: the job dict (see above).
+        404 Not Found: unknown or expired job.
+    """
+    job = retention.get_restore_job(job_id)
+    if job is None:
+        return _bad("not_found", 404)
+    return jsonify(job)
 
 
 # ── log collection ────────────────────────────────────────────────────────────
@@ -1300,6 +1415,114 @@ def change_password():
 
 
 
+# ── retention ─────────────────────────────────────────────────────────────────
+
+retention_scheduler = retention.RetentionScheduler(
+    DATA_DIR,
+    get_policy=_retention_policy,
+    forget_snapshot=_forget_snapshot_file,
+    interval_s=int(os.getenv("RETENTION_SWEEP_INTERVAL_S", "3600")),
+)
+
+
+@app.get("/api/settings/retention")
+def get_retention():
+    """Return the retention policy plus the sweeper's live status.
+
+    GET '/api/settings/retention'
+
+    Returns:
+        200 OK:
+            - policy (dict) - '{ enabled, compress_after_days, delete_after_days, include_pcap }'.
+              A value of '0' for either '*_days' field means "never".
+            - running (bool) - A sweep is in progress.
+            - progress (dict | null) - Live counters of the running sweep.
+            - last_run (dict | null) - Report of the last finished sweep.
+            - sweep_interval_minutes (int), restored_copy_minutes (int).
+    """
+    return jsonify({"policy": _retention_policy().to_dict(), **retention_scheduler.status()})
+
+
+@app.put("/api/settings/retention")
+def set_retention():
+    """Validate and persist the retention policy.
+
+    PUT '/api/settings/retention'
+
+    Request body (JSON): '{ enabled, compress_after_days, delete_after_days, include_pcap }'.
+
+    Returns:
+        200 OK: '{ "policy": {...} }'
+        400 Bad Request: '{ "error": "…" }' when the values are invalid
+            (e.g. delete_after_days <= compress_after_days).
+    """
+    policy = RetentionPolicy.from_dict(request.get_json(force=True))
+    err = policy.validate()
+    if err:
+        return _bad(err)
+    settings = _load_settings()
+    settings["retention"] = policy.to_dict()
+    _save_settings(settings)
+    return jsonify({"policy": policy.to_dict()})
+
+
+@app.get("/api/settings/retention/stats")
+def get_retention_stats():
+    """Storage overview plus a dry-run of what a sweep would do right now.
+
+    GET '/api/settings/retention/stats'
+
+    Query parameters (all optional; default to the saved policy so the UI can
+    preview unsaved edits): compress_after_days, delete_after_days, include_pcap.
+
+    Returns:
+        200 OK:
+            - stats (dict) - Active vs archived counts/bytes for 'snapshots' and 'pcap'.
+            - preview (dict) - '{ compress, delete, release }' counts/bytes that the
+              next sweep would process (nothing is changed).
+    """
+    saved = _retention_policy().to_dict()
+    merged = {**saved, "enabled": True}   # preview "as if enabled"
+    for key in ("compress_after_days", "delete_after_days", "include_pcap"):
+        if key in request.args:
+            merged[key] = request.args[key] in ("1", "true", "True") if key == "include_pcap" else request.args[key]
+    policy = RetentionPolicy.from_dict(merged)
+    err = policy.validate()
+    if err:
+        return _bad(err)
+    preview = retention.run_sweep(str(DATA_DIR), policy, dry_run=True)
+    return jsonify({
+        "stats":   retention.storage_stats(str(DATA_DIR)),
+        "preview": {k: preview[k] for k in ("compress", "delete", "release")},
+    })
+
+
+@app.post("/api/settings/retention/run")
+def run_retention_now():
+    """Start a retention sweep immediately (runs in the background).
+
+    POST '/api/settings/retention/run'
+
+    Returns:
+        202 Accepted: '{ "status": "started" }' - poll GET '/api/settings/retention'.
+        400 Bad Request: retention is disabled.
+        409 Conflict: a sweep is already running.
+    """
+    policy = _retention_policy()
+    if not policy.enabled:
+        return _bad("retention is disabled")
+    if not retention_scheduler.trigger(policy):
+        return _bad("a sweep is already running", 409)
+    return jsonify({"status": "started"}), 202
+
+
+def _should_start_background_threads() -> bool:
+    """Skip the Werkzeug reloader's parent process (it only watches files)."""
+    if os.environ.get("WERKZEUG_RUN_MAIN") == "true":
+        return True
+    return os.environ.get("FLASK_DEBUG", "0").lower() not in ("1", "true", "yes", "on")
+
+
 # ── dissectors ────────────────────────────────────────────────────────────────
 
 @app.get("/api/settings/dissectors")
@@ -1529,3 +1752,8 @@ def logout():
         _save_settings(settings)
 
     return jsonify({"status": "ok"})
+
+
+# ── background jobs ───────────────────────────────────────────────────────────
+if _should_start_background_threads():
+    retention_scheduler.start()

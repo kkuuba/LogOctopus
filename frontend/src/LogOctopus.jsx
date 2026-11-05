@@ -21,6 +21,31 @@ async function apiFetch(path, options = {}) {
   return res.json();
 }
 
+/**
+ * Decompresses archived (zipped by the retention policy) snapshots and waits
+ * for it, reporting byte-level progress.  Resolves once every file is back on
+ * disk; rejects if the server could not restore something.
+ *
+ * @param {string[]} ids         Snapshot IDs about to be opened.
+ * @param {(job:object)=>void} [onProgress]  Called with { done_bytes, total_bytes,
+ *                               files_done, files_total, current, status } on every poll.
+ */
+async function restoreArchivedSnapshots(ids, onProgress) {
+  const { job } = await apiFetch("/api/snapshots/restore", {
+    method: "POST",
+    body: JSON.stringify({ snapshot_ids: ids }),
+  });
+  let cur = job;
+  onProgress?.(cur);
+  while (cur.status === "running") {
+    await new Promise((r) => setTimeout(r, 300));
+    cur = await apiFetch(`/api/restore-jobs/${cur.id}`);
+    onProgress?.(cur);
+  }
+  if (cur.status === "error") throw new Error(cur.error || "Decompression failed");
+  return cur;
+}
+
 // ── AUTH CONTEXT ──────────────────────────────────────────────────────────────
 // Server-side auth: credentials are validated by POST /api/auth/login which
 // compares a SHA-256 hash against the one stored in settings.json.  The server
@@ -2799,6 +2824,436 @@ function DownloadSelectedBtn({ onDownload, disabled = false, loading = false, is
   );
 }
 
+// ── RETENTION (Settings → Storage tab) ────────────────────────────────────────
+// Lets the user choose when old snapshots / pcaps get zipped and when zipped
+// ones are deleted.  Shows a live preview of what the policy would do to the
+// data that is on disk *right now* (dry-run on the server) before anything
+// is saved, so the destructive part is never a surprise.
+
+const RETENTION_DEFAULTS = { enabled: false, compress_after_days: 7, delete_after_days: 90, include_pcap: true };
+
+const retentionDaysLabel = (d) => (d === 0 ? "Never" : d === 1 ? "1 day" : `${d} days`);
+
+function retentionAgo(tsSec) {
+  const s = Math.max(0, Date.now() / 1000 - tsSec);
+  if (s < 60) return "just now";
+  if (s < 3600) return `${Math.floor(s / 60)} min ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)} h ago`;
+  return `${Math.floor(s / 86400)} d ago`;
+}
+
+// Mirrors RetentionPolicy.validate() on the server so errors show instantly.
+function retentionValidate(p) {
+  if (p.compress_after_days && p.delete_after_days && p.delete_after_days <= p.compress_after_days) {
+    return "“Delete after” must be later than “Zip after”.";
+  }
+  return "";
+}
+
+const RT_COLORS = {
+  active: { fg: "#4ade80", bg: "rgba(74,222,128,0.14)",  border: "rgba(74,222,128,0.35)" },
+  zip:    { fg: "#a78bfa", bg: "rgba(167,139,250,0.16)", border: "rgba(167,139,250,0.38)" },
+  del:    { fg: "#f87171", bg: "rgba(248,113,113,0.14)", border: "rgba(248,113,113,0.35)" },
+};
+
+/** Horizontal "life of a log" bar: ready to view → zipped → deleted, scaled to the chosen days. */
+function RetentionTimeline({ compressDays, deleteDays, dimmed }) {
+  const hasC = compressDays > 0;
+  const hasD = deleteDays > 0;
+  const span = hasD ? deleteDays : hasC ? compressDays * 2.4 : 1;
+  const activeEnd = hasC ? compressDays : span;
+  const segs = [{ key: "active", label: "Ready to view", minW: 118, flex: activeEnd, end: hasC ? compressDays : hasD ? deleteDays : null, c: RT_COLORS.active }];
+  if (hasC) segs.push({ key: "zip", label: hasD ? "Zipped" : "Zipped · kept forever", minW: hasD ? 92 : 170, flex: Math.max(span - compressDays, span * 0.12), end: hasD ? deleteDays : null, c: RT_COLORS.zip });
+  if (hasD) segs.push({ key: "del", label: "Deleted", minW: 82, flex: span * 0.2, end: null, c: RT_COLORS.del });
+
+  return (
+    <div style={{ opacity: dimmed ? 0.5 : 1, transition: "opacity 0.2s" }}>
+      <div style={{ display: "flex", gap: 3, height: 34 }}>
+        {segs.map((s, i) => (
+          <div key={s.key} style={{
+            flex: `${s.flex} 1 0`, minWidth: s.minW,
+            display: "flex", alignItems: "center", justifyContent: "center",
+            background: s.c.bg, border: `1px solid ${s.c.border}`, color: s.c.fg,
+            borderRadius: i === 0 ? "8px 4px 4px 8px" : i === segs.length - 1 ? "4px 8px 8px 4px" : 4,
+            fontFamily: "var(--font-mono)", fontSize: 11, fontWeight: 700, letterSpacing: "0.03em",
+            whiteSpace: "nowrap", overflow: "hidden", transition: "flex-grow 0.35s cubic-bezier(0.4,0,0.2,1)",
+          }}>
+            {s.key === "zip" && <Icon name="archive" size={12} style={{ marginRight: 6 }} />}
+            {s.key === "del" && <Icon name="trash" size={12} style={{ marginRight: 6 }} />}
+            {s.label}
+          </div>
+        ))}
+      </div>
+      <div style={{ display: "flex", gap: 3, marginTop: 6 }}>
+        {segs.map((s) => (
+          <div key={s.key} style={{
+            flex: `${s.flex} 1 0`, minWidth: s.minW, textAlign: "right",
+            fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--muted)", paddingRight: 2,
+          }}>
+            {s.end != null ? `day ${s.end}` : s.key === "del" ? "" : "∞"}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** Preset chips + custom number + "Never" for one of the two thresholds. */
+function RetentionDaysPicker({ label, hint, value, presets, color, onChange, disabled, minValue = 1 }) {
+  const [custom, setCustom] = useState(value ? String(value) : "");
+  useEffect(() => { setCustom(value ? String(value) : ""); }, [value]);
+
+  const commit = () => {
+    const v = parseInt(custom, 10);
+    if (v >= minValue) onChange(Math.min(3650, v));
+    else setCustom(value ? String(value) : "");
+  };
+  const chip = (active) => ({
+    padding: "6px 13px", borderRadius: 7, fontFamily: "var(--font-mono)", fontSize: 12,
+    fontWeight: active ? 700 : 400, cursor: disabled ? "not-allowed" : "pointer",
+    border: `1px solid ${active ? "rgba(129,140,248,0.5)" : "var(--border)"}`,
+    background: active ? "rgba(129,140,248,0.15)" : "transparent",
+    color: active ? "var(--accent)" : "var(--text)", transition: "all 0.12s",
+  });
+
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 9 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 13, color: "var(--text)" }}>
+          <span style={{ width: 8, height: 8, borderRadius: "50%", background: color, boxShadow: `0 0 8px ${color}` }} />
+          {label}
+        </div>
+        <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color, fontWeight: 700 }}>{retentionDaysLabel(value)}</span>
+      </div>
+      <div style={{ display: "flex", alignItems: "center", gap: 7, flexWrap: "wrap" }}>
+        {presets.map((n) => (
+          <button key={n} disabled={disabled} onClick={() => onChange(n)} style={chip(n === value)}>{n}d</button>
+        ))}
+        <button disabled={disabled} onClick={() => onChange(0)} style={chip(value === 0)}>Never</button>
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 7, whiteSpace: "nowrap" }}>
+        <span style={{ color: "var(--muted)", fontFamily: "var(--font-mono)", fontSize: 11, marginLeft: 4 }}>custom:</span>
+        <input
+          type="number" min={minValue} max={3650} value={custom} disabled={disabled} placeholder="days"
+          onChange={(e) => setCustom(e.target.value)}
+          onBlur={commit}
+          onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); }}
+          style={{
+            background: "var(--card-bg)", border: "1px solid var(--border)", borderRadius: 7,
+            color: "var(--text)", fontFamily: "var(--font-mono)", fontSize: 12,
+            padding: "6px 9px", width: 70, outline: "none",
+          }}
+        />
+        </span>
+      </div>
+      <div style={{ marginTop: 8, fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--muted)", lineHeight: 1.6 }}>{hint}</div>
+    </div>
+  );
+}
+
+function RetentionTab({ isAdmin, onRequestLogin, addToast }) {
+  const [loaded,       setLoaded]       = useState(false);
+  const [saved,        setSaved]        = useState(RETENTION_DEFAULTS);
+  const [draft,        setDraft]        = useState(RETENTION_DEFAULTS);
+  const [status,       setStatus]       = useState({ running: false, progress: null, last_run: null, restored_copy_minutes: 60 });
+  const [overview,     setOverview]     = useState(null);   // { stats, preview }
+  const [overviewBusy, setOverviewBusy] = useState(false);
+  const [saving,       setSaving]       = useState(false);
+  const [confirmRun,   setConfirmRun]   = useState(false);
+  const [error,        setError]        = useState("");
+  const reqId = useRef(0);
+  const wasRunning = useRef(false);
+
+  const rangeError = retentionValidate(draft);
+  const dirty = ["enabled", "compress_after_days", "delete_after_days", "include_pcap"].some((k) => draft[k] !== saved[k]);
+  const locked = !isAdmin;
+
+  const card = { background: "var(--card-bg)", border: "1px solid var(--border)", borderRadius: 10, padding: "18px 20px", marginBottom: 16 };
+  const sectionLabel = { fontSize: 10, color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.1em", fontFamily: "var(--font-mono)", marginBottom: 8 };
+  const mono = { fontFamily: "var(--font-mono)" };
+
+  // initial load
+  useEffect(() => {
+    let alive = true;
+    apiFetch("/api/settings/retention")
+      .then((d) => {
+        if (!alive) return;
+        const p = { ...RETENTION_DEFAULTS, ...d.policy };
+        setSaved(p); setDraft(p); setStatus(d); setLoaded(true);
+      })
+      .catch((e) => { if (alive) { setError(`Failed to load retention settings: ${e.message}`); setLoaded(true); } });
+    return () => { alive = false; };
+  }, []);
+
+  // live preview of the *draft* against what is on disk (debounced, stale replies ignored)
+  const fetchOverview = useCallback(async (p) => {
+    const id = ++reqId.current;
+    setOverviewBusy(true);
+    try {
+      const q = `compress_after_days=${p.compress_after_days}&delete_after_days=${p.delete_after_days}&include_pcap=${p.include_pcap ? 1 : 0}`;
+      const d = await apiFetch(`/api/settings/retention/stats?${q}`);
+      if (id === reqId.current) setOverview(d);
+    } catch { /* non-critical */ } finally {
+      if (id === reqId.current) setOverviewBusy(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!loaded || rangeError) return undefined;
+    const t = setTimeout(() => fetchOverview(draft), 350);
+    return () => clearTimeout(t);
+  }, [loaded, draft.compress_after_days, draft.delete_after_days, draft.include_pcap, rangeError, fetchOverview]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // poll while a sweep is running; announce + refresh when it ends
+  useEffect(() => {
+    if (!status.running) {
+      if (wasRunning.current) {
+        wasRunning.current = false;
+        const r = status.last_run;
+        if (r) addToast(`Retention run finished: zipped ${r.compress.count}, deleted ${r.delete.count}.`, r.errors?.length ? "info" : "success");
+        fetchOverview(draft);
+      }
+      return undefined;
+    }
+    wasRunning.current = true;
+    const id = setInterval(() => { apiFetch("/api/settings/retention").then((d) => setStatus(d)).catch(() => {}); }, 1200);
+    return () => clearInterval(id);
+  }, [status.running]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (!confirmRun) return undefined;
+    const t = setTimeout(() => setConfirmRun(false), 6000);
+    return () => clearTimeout(t);
+  }, [confirmRun]);
+
+  const set = (patch) => { setDraft((d) => ({ ...d, ...patch })); setError(""); setConfirmRun(false); };
+
+  const save = async () => {
+    if (rangeError) return;
+    setSaving(true); setError("");
+    try {
+      const res = await apiFetch("/api/settings/retention", { method: "PUT", body: JSON.stringify(draft) });
+      setSaved({ ...RETENTION_DEFAULTS, ...res.policy });
+      addToast("Retention settings saved.", "success");
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const runNow = async () => {
+    if (!confirmRun) { setConfirmRun(true); return; }
+    setConfirmRun(false);
+    try {
+      await apiFetch("/api/settings/retention/run", { method: "POST" });
+      setStatus((s) => ({ ...s, running: true, progress: null }));
+    } catch (e) {
+      addToast(`Could not start the run: ${e.message}`);
+    }
+  };
+
+  if (!loaded) return <Spinner />;
+
+  const pv = overview?.preview;
+  const st = overview?.stats;
+  const zipCount = pv?.compress.count || 0, delCount = pv?.delete.count || 0;
+  const savedBytes = st
+    ? ["snapshots", "pcap"].reduce((n, k) => n + Math.max(0, st[k].archived.original_bytes - st[k].archived.bytes), 0)
+    : 0;
+  const cell = (b) => (b.count ? `${b.count} · ${nvFormatBytes(b.bytes)}` : "—");
+  const live = status.running ? status.progress : null;
+  const policyOff = !draft.enabled;
+
+  return (
+    <div>
+      {locked && (
+        <div style={{
+          ...card, background: "rgba(129,140,248,0.07)", borderColor: "rgba(129,140,248,0.2)",
+          display: "flex", alignItems: "center", gap: 14, padding: "14px 18px",
+        }}>
+          <span style={{ color: "#a78bfa", display: "inline-flex" }}><IconLock size={20} /></span>
+          <div style={{ flex: 1, ...mono, fontSize: 12, color: "var(--muted)", lineHeight: 1.6 }}>
+            <span style={{ color: "#a78bfa", fontWeight: 600 }}>Admin login required</span> to change retention. You can still see the current policy.
+          </div>
+          <Btn variant="admin" size="sm" onClick={onRequestLogin}><IconLock size={11} /> Sign In</Btn>
+        </div>
+      )}
+
+      {/* ── master switch ── */}
+      <div style={card}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <span style={{ display: "inline-flex", color: "var(--accent)" }}><Icon name="archive" size={22} /></span>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 14, color: "var(--text)" }}>Automatic retention</div>
+            <div style={{ ...mono, fontSize: 11, color: "var(--muted)", marginTop: 3 }}>
+              {draft.enabled ? "Active — old logs are cleaned up in the background." : "Off — nothing is zipped or deleted."}
+            </div>
+          </div>
+          <div style={{ pointerEvents: locked ? "none" : "auto", opacity: locked ? 0.55 : 1 }}>
+            <Toggle checked={draft.enabled} onChange={(v) => set({ enabled: v })} />
+          </div>
+        </div>
+        <div style={{ ...mono, fontSize: 12, color: "var(--muted)", lineHeight: 1.7, marginTop: 14 }}>
+          Keep recent logs instantly available, <span style={{ color: RT_COLORS.zip.fg }}>zip</span> older ones to save disk space
+          and <span style={{ color: RT_COLORS.del.fg }}>delete</span> them after a while. Zipped logs open as usual — they are
+          decompressed automatically (with a progress bar) and stay ready for {status.restored_copy_minutes} min.
+        </div>
+      </div>
+
+      <div style={{ pointerEvents: locked ? "none" : "auto", opacity: locked ? 0.6 : 1 }}>
+        {/* ── lifecycle ── */}
+        <div style={{ ...card, opacity: policyOff ? 0.75 : 1, transition: "opacity 0.2s" }}>
+          <div style={sectionLabel}>Lifecycle of a log</div>
+          <RetentionTimeline compressDays={draft.compress_after_days} deleteDays={draft.delete_after_days} dimmed={policyOff} />
+
+          <div style={{ height: 1, background: "var(--border)", margin: "20px 0" }} />
+
+          <div style={{ display: "flex", flexDirection: "column", gap: 22 }}>
+            <RetentionDaysPicker
+              label="Zip after" color={RT_COLORS.zip.fg} value={draft.compress_after_days}
+              presets={[1, 3, 7, 14, 30]} onChange={(v) => set({ compress_after_days: v })}
+              hint="Older snapshots (and pcaps) are compressed to .zip. Nothing is lost."
+            />
+            <RetentionDaysPicker
+              label="Delete after" color={RT_COLORS.del.fg} value={draft.delete_after_days}
+              presets={[14, 30, 60, 90, 180]} onChange={(v) => set({ delete_after_days: v })}
+              hint="Counted from when the log was collected — not from when it was zipped. Deleting is permanent."
+            />
+            <label style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer", ...mono, fontSize: 12, color: "var(--text)" }}>
+              <input
+                type="checkbox" checked={draft.include_pcap}
+                onChange={(e) => set({ include_pcap: e.target.checked })}
+                style={{ accentColor: "var(--accent)", width: 15, height: 15 }}
+              />
+              Also apply to raw PCAP files
+              <span style={{ color: "var(--muted)", fontSize: 11 }}>(usually the biggest savings)</span>
+            </label>
+          </div>
+
+          {rangeError && (
+            <div style={{ marginTop: 16, ...mono, fontSize: 11, color: "#f87171", background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.2)", borderRadius: 6, padding: "7px 12px" }}>
+              <Icon name="warn" size={12} style={{ marginRight: 6 }} />{rangeError}
+            </div>
+          )}
+        </div>
+
+        {/* ── what is on disk + what would happen ── */}
+        <div style={card}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+            <div style={{ ...sectionLabel, marginBottom: 0 }}>Storage right now</div>
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              {savedBytes > 0 && (
+                <span style={{ ...mono, fontSize: 10, color: RT_COLORS.active.fg, fontWeight: 700 }}>
+                  {nvFormatBytes(savedBytes)} saved by zipping
+                </span>
+              )}
+              <button
+                onClick={() => fetchOverview(draft)} disabled={overviewBusy || !!rangeError} title="Refresh"
+                style={{ background: "none", border: "none", cursor: "pointer", color: "var(--muted)", padding: "2px 4px", opacity: overviewBusy ? 0.4 : 1, display: "inline-flex" }}
+              >
+                <Icon name="refresh" size={13} style={overviewBusy ? { animation: "spin 1s linear infinite" } : undefined} />
+              </button>
+            </div>
+          </div>
+
+          {!st ? (
+            <div style={{ ...mono, fontSize: 12, color: "var(--muted)", padding: "8px 0" }}>Scanning…</div>
+          ) : (
+            <div style={{ display: "grid", gridTemplateColumns: "auto 1fr 1fr", gap: "8px 18px", alignItems: "center", ...mono, fontSize: 12 }}>
+              <span />
+              <span style={{ color: RT_COLORS.active.fg, fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em" }}>Ready to view</span>
+              <span style={{ color: RT_COLORS.zip.fg, fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em" }}>Zipped</span>
+              <span style={{ color: "var(--muted)" }}>Snapshots</span>
+              <span style={{ color: "var(--text)" }}>{cell(st.snapshots.active)}</span>
+              <span style={{ color: "var(--text)" }}>{cell(st.snapshots.archived)}</span>
+              <span style={{ color: "var(--muted)" }}>PCAP files</span>
+              <span style={{ color: "var(--text)" }}>{cell(st.pcap.active)}</span>
+              <span style={{ color: "var(--text)" }}>{cell(st.pcap.archived)}</span>
+            </div>
+          )}
+
+          <div style={{ height: 1, background: "var(--border)", margin: "16px 0 14px" }} />
+
+          <div style={{ ...sectionLabel }}>{dirty ? "With these (unsaved) settings, the next run would" : "On the next run"}</div>
+          {rangeError ? (
+            <div style={{ ...mono, fontSize: 12, color: "var(--muted)" }}>Fix the settings above to see the impact.</div>
+          ) : !pv ? (
+            <div style={{ ...mono, fontSize: 12, color: "var(--muted)" }}>Calculating…</div>
+          ) : zipCount === 0 && delCount === 0 ? (
+            <div style={{ ...mono, fontSize: 12, color: "var(--muted)" }}>
+              <Icon name="check" size={12} style={{ marginRight: 6, color: RT_COLORS.active.fg }} />Nothing to do — everything is within the limits.
+            </div>
+          ) : (
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              {zipCount > 0 && (
+                <span style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "5px 12px", borderRadius: 20, ...mono, fontSize: 11, fontWeight: 600, background: RT_COLORS.zip.bg, color: RT_COLORS.zip.fg, border: `1px solid ${RT_COLORS.zip.border}` }}>
+                  <Icon name="archive" size={12} />Zip {zipCount} file{zipCount !== 1 ? "s" : ""} · {nvFormatBytes(pv.compress.bytes)}
+                </span>
+              )}
+              {delCount > 0 && (
+                <span style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "5px 12px", borderRadius: 20, ...mono, fontSize: 11, fontWeight: 600, background: RT_COLORS.del.bg, color: RT_COLORS.del.fg, border: `1px solid ${RT_COLORS.del.border}` }}>
+                  <Icon name="trash" size={12} />Delete {delCount} file{delCount !== 1 ? "s" : ""} · {nvFormatBytes(pv.delete.bytes)}
+                </span>
+              )}
+            </div>
+          )}
+          {delCount > 0 && !rangeError && (
+            <div style={{ marginTop: 12, ...mono, fontSize: 11, color: "#fbbf24", background: "rgba(251,191,36,0.08)", border: "1px solid rgba(251,191,36,0.22)", borderRadius: 6, padding: "7px 12px", lineHeight: 1.6 }}>
+              <Icon name="warn" size={12} style={{ marginRight: 6 }} />
+              {delCount} file{delCount !== 1 ? "s are" : " is"} already past the delete limit and will be permanently removed{draft.enabled ? " on the next run" : " once retention is enabled"}.
+            </div>
+          )}
+        </div>
+      </div>
+
+      {error && (
+        <div style={{ marginBottom: 14, ...mono, fontSize: 11, color: "#f87171", background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.2)", borderRadius: 6, padding: "7px 12px" }}>
+          <Icon name="warn" size={12} style={{ marginRight: 6 }} />{error}
+        </div>
+      )}
+
+      {/* ── actions ── */}
+      <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+        <Btn variant="primary" onClick={save} disabled={locked || !dirty || !!rangeError || saving} style={{ minWidth: 130, justifyContent: "center" }}>
+          {saving ? "Saving…" : dirty ? "Save settings" : <><Icon name="check" size={13} />Saved</>}
+        </Btn>
+        <Btn
+          variant={confirmRun && delCount > 0 ? "danger" : "subtle"}
+          onClick={runNow}
+          disabled={locked || dirty || !saved.enabled || status.running}
+          title={dirty ? "Save your changes first" : !saved.enabled ? "Enable retention first" : "Apply the saved policy right now"}
+        >
+          <Icon name="play" size={12} />
+          {status.running ? "Running…" : confirmRun ? `Confirm: zip ${zipCount}${delCount ? ` · delete ${delCount}` : ""}` : "Run now"}
+        </Btn>
+      </div>
+
+      {/* ── status line ── */}
+      <div style={{ marginTop: 14, ...mono, fontSize: 11, color: "var(--muted)", lineHeight: 1.7 }}>
+        {status.running ? (
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 8, color: "var(--accent)" }}>
+            <svg width="12" height="12" viewBox="0 0 12 12" style={{ animation: "spin 1s linear infinite" }}>
+              <circle cx="6" cy="6" r="4.5" fill="none" stroke="var(--accent)" strokeWidth="1.8" strokeDasharray="14" strokeDashoffset="7" />
+            </svg>
+            Working… zipped {live?.compress.count ?? 0}, deleted {live?.delete.count ?? 0} so far
+          </span>
+        ) : status.last_run ? (
+          <>
+            Last run {retentionAgo(status.last_run.finished_at)} — zipped {status.last_run.compress.count}
+            {status.last_run.compress.saved > 0 && ` (saved ${nvFormatBytes(status.last_run.compress.saved)})`}, deleted {status.last_run.delete.count}
+            {status.last_run.release.count > 0 && `, released ${status.last_run.release.count} temporary cop${status.last_run.release.count === 1 ? "y" : "ies"}`}.
+            {status.last_run.errors?.length > 0 && (
+              <span style={{ color: "#fbbf24" }} title={status.last_run.errors.join("\n")}> {status.last_run.errors.length} error(s) — hover for details.</span>
+            )}
+          </>
+        ) : (
+          <>Runs automatically every {status.sweep_interval_minutes >= 60 ? `${Math.round(status.sweep_interval_minutes / 60)} h` : `${status.sweep_interval_minutes} min`} while the server is running.</>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ── SETTINGS MODAL ────────────────────────────────────────────────────────────
 /**
  * Settings panel with two tabs:
@@ -2809,6 +3264,7 @@ function DownloadSelectedBtn({ onDownload, disabled = false, loading = false, is
  *     when the browser is closed) the backend exposes POST /api/settings/auto-collection
  *     which persists the schedule and uses APScheduler to execute collections.
  *  2. Security — admin password change (stored in localStorage).
+ *  3. Storage — snapshot / pcap retention (zip old, delete older), see RetentionTab.
  */
 function SettingsModal({ open, onClose, isAdmin, onRequestLogin, auth, addToast, pageSize, onPageSizeChange }) {
   const [tab, setTab] = useState("security");
@@ -2945,6 +3401,7 @@ function SettingsModal({ open, onClose, isAdmin, onRequestLogin, auth, addToast,
             Security
           </button>
           <button style={tabStyle(tab === "dissectors")} onClick={() => setTab("dissectors")}><Icon name="globe" size={13} style={{ marginRight: 6 }} />Network Capture</button>
+          <button style={tabStyle(tab === "retention")} onClick={() => setTab("retention")}><Icon name="archive" size={13} style={{ marginRight: 6 }} />Storage</button>
         </div>
 
         {/* Body */}
@@ -3053,6 +3510,11 @@ function SettingsModal({ open, onClose, isAdmin, onRequestLogin, auth, addToast,
                 </div>
               )}
             </div>
+          )}
+
+          {/* ── STORAGE / RETENTION TAB ── */}
+          {tab === "retention" && (
+            <RetentionTab isAdmin={isAdmin} onRequestLogin={onRequestLogin} addToast={addToast} />
           )}
 
           {/* ── NETWORK CAPTURE / DISSECTORS TAB ── */}
@@ -3781,6 +4243,7 @@ const ICONS = {
   eye:       <><path d="M1.6 8s2.4-4.6 6.4-4.6S14.4 8 14.4 8s-2.4 4.6-6.4 4.6S1.6 8 1.6 8z" /><circle cx="8" cy="8" r="1.9" /></>,
   eyeOff:    <><path d="M1.6 8s2.4-4.6 6.4-4.6c1.1 0 2.1.3 3 .8M14.4 8s-2.4 4.6-6.4 4.6c-1.1 0-2.1-.3-3-.8" /><path d="M3 2.8l10 10.4" /></>,
   help:      <><circle cx="8" cy="8" r="5.6" /><path d="M6.3 6.5a1.75 1.75 0 1 1 2.65 1.5c-.62.4-.95.8-.95 1.5" /><circle cx="8" cy="11.5" r=".8" fill="currentColor" stroke="none" /></>,
+  archive:   <><rect x="2.2" y="2.8" width="11.6" height="3.4" rx="1" /><path d="M3.2 6.2v6.2a1 1 0 0 0 1 1h7.6a1 1 0 0 0 1-1V6.2M6.4 9h3.2" /></>,
   grid:      <><rect x="2.8" y="2.8" width="4.2" height="4.2" rx="1" /><rect x="9" y="2.8" width="4.2" height="4.2" rx="1" /><rect x="2.8" y="9" width="4.2" height="4.2" rx="1" /><rect x="9" y="9" width="4.2" height="4.2" rx="1" /></>,
 };
 
@@ -4738,7 +5201,19 @@ function SnapshotsTable({ snapshots, selected, onSelect, onView, onDownloadPcap 
               <td style={{ padding: "10px 14px", color: "var(--muted)" }}>{trimFractionalSeconds(s.startTime)}</td>
               <td style={{ padding: "10px 14px", color: "var(--muted)" }}>{trimFractionalSeconds(s.finishTime)}</td>
               <td style={{ padding: "10px 14px", color: "var(--text)" }}>{Math.round(Number(s.duration) || 0)}s</td>
-              <td style={{ padding: "10px 14px", color: "var(--text)" }}>{s.sizeKb} kB</td>
+              <td style={{ padding: "10px 14px", color: "var(--text)", whiteSpace: "nowrap" }}>
+                {s.sizeKb} kB
+                {s.archived && (
+                  <span
+                    title="Zipped by the retention policy. It is decompressed automatically when you open it."
+                    style={{
+                      display: "inline-flex", alignItems: "center", gap: 4, marginLeft: 8, padding: "1px 7px",
+                      borderRadius: 4, fontSize: 9, fontWeight: 700, letterSpacing: "0.05em",
+                      background: "rgba(167,139,250,0.14)", color: "#a78bfa", border: "1px solid rgba(167,139,250,0.3)",
+                    }}
+                  ><Icon name="archive" size={10} />ZIP</span>
+                )}
+              </td>
               <td style={{ padding: "10px 14px" }}>
                 <code style={{ fontSize: 10, color: "var(--muted)", background: "rgba(255,255,255,0.05)", padding: "2px 6px", borderRadius: 4 }}>
                   {s.sessionId}
@@ -4756,7 +5231,9 @@ function SnapshotsTable({ snapshots, selected, onSelect, onView, onDownloadPcap 
                   {onDownloadPcap && s.logName === "network capture" && (
                     <PcapDownloadButton snap={s} onDownloadPcap={onDownloadPcap} />
                   )}
-                  <Btn size="sm" variant="subtle" onClick={() => onView([s])}>View</Btn>
+                  <Btn size="sm" variant="subtle" onClick={() => onView([s])} style={{ whiteSpace: "nowrap" }} title={s.archived ? "Zipped — will be decompressed first" : undefined}>
+                    {s.archived ? "Unzip & view" : "View"}
+                  </Btn>
                 </div>
               </td>
             </tr>
@@ -4840,6 +5317,36 @@ requests.post(f"{BASE}/api/stop-logs-collection",
       desc: "Remove one or more snapshots and delete their underlying log files.",
       req: `{\n  "snapshot_ids": ["snap-001", "snap-002"],\n  "log_type": "text"\n}`,
       res: `{\n  "removed": ["snap-001", "snap-002"],\n  "not_found": []\n}`,
+    },
+    {
+      method: "POST", path: "/api/snapshots/restore",
+      desc: "Decompress snapshots (and the pcap of network captures) that the retention policy has zipped. Runs in the background; poll the returned job for progress.",
+      req: `{\n  "snapshot_ids": ["snap-001"]\n}`,
+      res: `{\n  "job": { "id": "9f2c…", "status": "running", "total_bytes": 52428800, "done_bytes": 0, "files_total": 2, "files_done": 0 },\n  "not_found": []\n}`,
+    },
+    {
+      method: "GET", path: "/api/restore-jobs/:id",
+      desc: "Progress of a decompression job. status is running, done or error.",
+      req: null,
+      res: `{\n  "id": "9f2c…",\n  "status": "running",\n  "total_bytes": 52428800,\n  "done_bytes": 18874368,\n  "files_done": 1,\n  "files_total": 2,\n  "current": "Router-A · network capture",\n  "error": ""\n}`,
+    },
+    {
+      method: "GET", path: "/api/settings/retention",
+      desc: "Retention policy (zip old snapshots/pcaps, delete older ones) plus the background sweeper's status. A *_days value of 0 means never.",
+      req: null,
+      res: `{\n  "policy": {\n    "enabled": true,\n    "compress_after_days": 7,\n    "delete_after_days": 90,\n    "include_pcap": true\n  },\n  "running": false,\n  "last_run": null\n}`,
+    },
+    {
+      method: "PUT", path: "/api/settings/retention",
+      desc: "Save the retention policy. delete_after_days must be greater than compress_after_days unless one of them is 0.",
+      req: `{\n  "enabled": true,\n  "compress_after_days": 7,\n  "delete_after_days": 90,\n  "include_pcap": true\n}`,
+      res: `{\n  "policy": { "enabled": true, "compress_after_days": 7, "delete_after_days": 90, "include_pcap": true }\n}`,
+    },
+    {
+      method: "POST", path: "/api/settings/retention/run",
+      desc: "Apply the saved retention policy now (background job, 202). Poll GET /api/settings/retention for the result.",
+      req: null,
+      res: `{ "status": "started" }`,
     },
     {
       method: "POST", path: "/api/start-logs-collection",
@@ -7209,6 +7716,14 @@ function SessionInfo({ sessionId, textUrl, chartUrl, partial = false }) {
 }
 
 // ── LOG LOAD PROGRESS BAR ─────────────────────────────────────────────────────
+const RESTORE_MESSAGES = [
+  "Unzipping archived logs…",
+  "Restoring files to disk…",
+  "Older logs take a moment to unpack…",
+  "They stay ready for a while after this.",
+  "Almost ready…",
+];
+
 const LOG_LOAD_MESSAGES = [
   "Fetching log snapshots…",
   "Reading log files…",
@@ -7222,15 +7737,21 @@ const LOG_LOAD_MESSAGES = [
  * Mirrors the CollectionLoadingOverlay style exactly: concentric spinning rings,
  * determinate/indeterminate progress bar, cycling status messages, bouncing dots.
  */
-function LogLoadProgressBar({ done, total }) {
+function LogLoadProgressBar({ done, total, phase = "load", bytesDone = 0, bytesTotal = 0, filesDone = 0, filesTotal = 0, detail = "" }) {
   const [msgIdx, setMsgIdx] = useState(0);
+  const isRestore = phase === "restore";
+  const messages = isRestore ? RESTORE_MESSAGES : LOG_LOAD_MESSAGES;
 
   useEffect(() => {
-    const id = setInterval(() => setMsgIdx((i) => (i + 1) % LOG_LOAD_MESSAGES.length), 2200);
+    const id = setInterval(() => setMsgIdx((i) => i + 1), 2200);
     return () => clearInterval(id);
   }, []);
+  useEffect(() => { setMsgIdx(0); }, [phase]);
 
-  const pct = total > 0 ? Math.min(100, Math.round((done / total) * 100)) : null;
+  // Decompression is measured in bytes (exact), loading in snapshots fetched.
+  const pct = isRestore
+    ? (bytesTotal > 0 ? Math.min(100, Math.round((bytesDone / bytesTotal) * 100)) : null)
+    : (total > 0 ? Math.min(100, Math.round((done / total) * 100)) : null);
 
   return (
     <div style={{
@@ -7276,7 +7797,7 @@ function LogLoadProgressBar({ done, total }) {
 
       {/* Title */}
       <div style={{ fontFamily: "var(--font-display)", fontWeight: 800, fontSize: 17, color: "var(--text)", letterSpacing: "-0.01em" }}>
-        Loading Logs
+        {isRestore ? "Decompressing Archived Logs" : "Loading Logs"}
       </div>
 
       {/* Progress bar */}
@@ -7307,7 +7828,14 @@ function LogLoadProgressBar({ done, total }) {
         {/* Counts row */}
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--muted)" }}>
-            {done > 0 ? (
+            {isRestore ? (
+              bytesTotal > 0 ? (
+                <><span style={{ color: pct === 100 ? "#4ade80" : "var(--accent)", fontWeight: 600 }}>{nvFormatBytes(bytesDone)}</span>
+                {` / ${nvFormatBytes(bytesTotal)}`}{filesTotal > 1 ? ` · file ${Math.min(filesDone + 1, filesTotal)} of ${filesTotal}` : ""}</>
+              ) : (
+                "Preparing…"
+              )
+            ) : done > 0 ? (
               <><span style={{ color: pct === 100 ? "#4ade80" : "var(--accent)", fontWeight: 600 }}>{done}</span>
               {total > 0 ? ` / ${total} snapshot${total !== 1 ? "s" : ""} loaded` : ` snapshot${done !== 1 ? "s" : ""} loaded`}</>
             ) : (
@@ -7324,8 +7852,14 @@ function LogLoadProgressBar({ done, total }) {
 
       {/* Cycling status message */}
       <div key={msgIdx} style={{ fontFamily: "var(--font-mono)", fontSize: 12, color: "var(--accent)", animation: "lo-fadein 0.35s ease", minHeight: 18, textAlign: "center" }}>
-        {LOG_LOAD_MESSAGES[msgIdx]}
+        {messages[msgIdx % messages.length]}
       </div>
+
+      {isRestore && detail && (
+        <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--muted)", marginTop: -14, maxWidth: 320, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          {detail}
+        </div>
+      )}
 
       {/* Bouncing dots */}
       <div style={{ display: "flex", gap: 7 }}>
@@ -7969,6 +8503,24 @@ export default function App() {
     setDeviceRegexFilters(initialFilters || {});
 
     try {
+      // Snapshots zipped by the retention policy must be decompressed first.
+      // That phase has its own byte-accurate progress; afterwards we switch
+      // back to the normal "loading rows" phase.
+      const archivedIds = snapsToView.filter((s) => s.archived).map((s) => s.id);
+      if (archivedIds.length) {
+        setLogLoadProgress({ phase: "restore", done: 0, total: snapsToView.length, bytesDone: 0, bytesTotal: 0, filesDone: 0, filesTotal: 0, detail: "" });
+        await restoreArchivedSnapshots(archivedIds, (j) =>
+          setLogLoadProgress({
+            phase: "restore", done: 0, total: snapsToView.length,
+            bytesDone: j.done_bytes, bytesTotal: j.total_bytes,
+            filesDone: j.files_done, filesTotal: j.files_total, detail: j.current,
+          })
+        );
+        const restored = new Set(archivedIds);
+        setSnapshots((prev) => prev.map((x) => (restored.has(x.id) ? { ...x, archived: false } : x)));
+        setLogLoadProgress({ phase: "load", done: 0, total: snapsToView.length });
+      }
+
       let done = 0;
       const results = await Promise.all(
         snapsToView.map((s) =>
@@ -8330,6 +8882,13 @@ ${rows}
     setDownloadingSnaps(true);
     try {
       const snapsToDownload = snapshots.filter((s) => selectedSnaps.includes(s.id));
+      const archivedIds = snapsToDownload.filter((s) => s.archived).map((s) => s.id);
+      if (archivedIds.length) {
+        addToast(`Decompressing ${archivedIds.length} archived snapshot(s)…`, "info");
+        await restoreArchivedSnapshots(archivedIds);
+        const restored = new Set(archivedIds);
+        setSnapshots((prev) => prev.map((x) => (restored.has(x.id) ? { ...x, archived: false } : x)));
+      }
       const results = await Promise.all(
         snapsToDownload.map((s) =>
           apiFetch(`/api/snapshots/${s.id}/content?log_type=${isChart ? "chart" : "text"}`).then((r) => ({
@@ -9062,7 +9621,7 @@ ${rowsHtml}
         }
       >
         {logRowsLoading ? (
-          <LogLoadProgressBar done={logLoadProgress.done} total={logLoadProgress.total} />
+          <LogLoadProgressBar {...logLoadProgress} />
         ) : (
           <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
             {!isChart && logRows.length > 0 && (
