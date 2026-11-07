@@ -1903,7 +1903,7 @@ const nvScene = (extra) => ({
  * data (e.g. hiding a protocol) keeps the user's camera / zoom, while a new
  * `revision` (e.g. a different metric) lets the axes re-fit.
  */
-function NvPlot({ data, layout, onPointClick, autoRotate = false, revision = "r" }) {
+function NvPlot({ data, layout, onPointClick, autoRotate = false, revision = "r", filename = "network_capture", minHeight = 380 }) {
   const ref = useRef(null);
   const boundRef = useRef(false);
   const clickRef = useRef(onPointClick);
@@ -1930,7 +1930,7 @@ function NvPlot({ data, layout, onPointClick, autoRotate = false, revision = "r"
       responsive: true,
       displaylogo: false,
       modeBarButtonsToRemove: ["select2d", "lasso2d", "toggleSpikelines"],
-      toImageButtonOptions: { format: "png", filename: "network_capture", scale: 2 },
+      toImageButtonOptions: { format: "png", filename, scale: 2 },
     });
     if (!boundRef.current) {
       el.on("plotly_click", (ev) => {
@@ -1939,7 +1939,7 @@ function NvPlot({ data, layout, onPointClick, autoRotate = false, revision = "r"
       });
       boundRef.current = true;
     }
-  }, [data, layout, revision]);
+  }, [data, layout, revision, filename]);
 
   // Purge only when the component goes away.
   useEffect(() => () => {
@@ -1978,7 +1978,7 @@ function NvPlot({ data, layout, onPointClick, autoRotate = false, revision = "r"
     };
   }, [autoRotate, data, layout]);
 
-  return <div ref={ref} style={{ width: "100%", height: "100%", minHeight: 380 }} />;
+  return <div ref={ref} style={{ width: "100%", height: "100%", minHeight }} />;
 }
 
 function Flow3DView({ a, matched, hidden, metricId, onPacketClick, autoRotate }) {
@@ -2402,7 +2402,7 @@ function NvLegend({ a, hidden, counts, onToggle, onIsolate, onShowAll, onHideAll
 }
 
 /** Search field for the packet views (syntax: see "PACKET SEARCH" above). */
-function NvSearch({ value, onChange, onClear }) {
+function NvSearch({ value, onChange, onClear, placeholder = "Search packets — ip, name, proto:dns, port:443, -arp", title = NV_SEARCH_HELP }) {
   return (
     <div style={{ position: "relative", display: "inline-flex", alignItems: "center", marginLeft: "auto" }}>
       <Icon name="search" size={13} style={{ position: "absolute", left: 11, color: value ? "var(--accent)" : "var(--muted)", pointerEvents: "none" }} />
@@ -2410,8 +2410,8 @@ function NvSearch({ value, onChange, onClear }) {
         value={value}
         onChange={(e) => onChange(e.target.value)}
         onKeyDown={(e) => { if (e.key === "Escape") onClear(); }}
-        placeholder="Search packets — ip, name, proto:dns, port:443, -arp"
-        title={NV_SEARCH_HELP}
+        placeholder={placeholder}
+        title={title}
         spellCheck={false}
         autoComplete="off"
         style={{
@@ -2572,6 +2572,724 @@ function NetworkCaptureVisualizer({ rows, onPacketClick }) {
             {view === "flow3d" && <Flow3DView a={a} matched={matched} hidden={hidden} metricId={flowMetric} onPacketClick={onPacketClick} autoRotate={rotate} />}
             {view === "topo3d" && <Topology3DView a={a} matched={matched} isolate={isolate} onHostClick={searchHost} autoRotate={rotate} />}
             {view === "timeline" && <TrafficTimelineView a={a} matched={matched} hidden={hidden} metricId={timeMetric} />}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── TEXT LOG VISUALIZER ───────────────────────────────────────────────────────
+// Event density + correlation analysis for text logs.
+//   • Events are grouped by "event pattern" (the message with numbers, IPs, ids,
+//     hex and quoted values masked out), by source (device · log) or by level.
+//   • Density      – stacked bars / lines / share-% of events per time bucket.
+//   • Heatmap      – one row per event group, one column per time bucket.
+//   • Correlation  – Pearson matrix of per-bucket counts plus a ranked list of
+//                    lead/lag pairs ("A is followed by B after ~30 s").
+// Parsing runs in time slices so a big log never freezes the tab.
+
+const TV_MAX_GROUPS = 12;
+const TV_PALETTE = [
+  "#818cf8", "#34d399", "#f472b6", "#fb923c", "#60a5fa", "#a78bfa",
+  "#fbbf24", "#22d3ee", "#f87171", "#c084fc", "#a3e635", "#2dd4bf",
+];
+const TV_LEVEL_COLORS = {
+  CRITICAL: "#f43f5e", ERROR: "#f87171", WARN: "#fbbf24",
+  INFO: "#60a5fa", DEBUG: "#94a3b8", UNLEVELED: "#6b7280",
+};
+const TV_DIMS = [
+  { id: "template", label: "Event pattern" },
+  { id: "source",   label: "Source" },
+  { id: "level",    label: "Level" },
+];
+const TV_STEPS = [
+  1, 5, 10, 50, 100, 500, 1000, 2000, 5000, 10000, 15000, 30000,
+  60000, 120000, 300000, 600000, 900000, 1800000, 3600000, 7200000,
+  10800000, 21600000, 43200000, 86400000, 172800000, 604800000,
+];
+const TV_MAX_BUCKETS = 4000;
+
+// Masking rules, applied in order, that turn a message into its "pattern".
+const TV_TEMPLATE_RULES = [
+  [/\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?(?:Z|[+-]\d{2}:?\d{2})?/g, "<ts>"],
+  [/\b\d{1,2}:\d{2}:\d{2}(?:[.,]\d+)?\b/g, "<time>"],
+  [/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, "<uuid>"],
+  [/\b\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?\b/g, "<ip>"],
+  [/\b(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2}\b/gi, "<mac>"],
+  [/\b0x[0-9a-f]+\b/gi, "<hex>"],
+  [/\b[0-9a-f]{12,}\b/gi, "<hex>"],
+  [/(["'])(?:(?!\1).){1,80}\1/g, "<str>"],
+  [/\d+(?:\.\d+)?/g, "<n>"],
+];
+const TV_LEVEL_RE = /\b(FATAL|CRITICAL|CRIT|ERROR|ERR|WARNING|WARN|NOTICE|INFO|DEBUG|TRACE)\b/i;
+
+function tvTemplate(content) {
+  let s = content.length > 400 ? content.slice(0, 400) : content;
+  for (const [re, rep] of TV_TEMPLATE_RULES) s = s.replace(re, rep);
+  s = s.replace(/\s+/g, " ").trim();
+  if (s.length > 120) s = `${s.slice(0, 119)}…`;
+  return s || "(empty)";
+}
+
+function tvLevel(content) {
+  const m = TV_LEVEL_RE.exec(content.length > 240 ? content.slice(0, 240) : content);
+  if (!m) return "UNLEVELED";
+  const w = m[1].toUpperCase();
+  if (w === "FATAL" || w === "CRITICAL" || w === "CRIT") return "CRITICAL";
+  if (w === "ERROR" || w === "ERR") return "ERROR";
+  if (w === "WARN" || w === "WARNING") return "WARN";
+  if (w === "NOTICE" || w === "INFO") return "INFO";
+  return "DEBUG";
+}
+
+function tvParseTime(v) {
+  if (v === null || v === undefined || v === "") return NaN;
+  if (typeof v === "number") return v;
+  const s = String(v).trim();
+  const m = /^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})(?:[.,](\d+))?\s*(Z|[+-]\d{2}:?\d{2})?$/.exec(s);
+  if (m) {
+    const ms = (m[3] || "0").slice(0, 3).padEnd(3, "0");
+    return Date.parse(`${m[1]}T${m[2]}.${ms}${m[4] || ""}`);
+  }
+  return Date.parse(s);
+}
+
+function tvFormatStep(ms) {
+  const f = (x) => String(+x.toFixed(2));
+  if (ms < 1000) return `${ms} ms`;
+  if (ms < 60000) return `${f(ms / 1000)} s`;
+  if (ms < 3600000) return `${f(ms / 60000)} min`;
+  if (ms < 86400000) return `${f(ms / 3600000)} h`;
+  return `${f(ms / 86400000)} d`;
+}
+
+function tvFmtTime(ms, step) {
+  const d = new Date(ms);
+  const p = (x, n = 2) => String(x).padStart(n, "0");
+  const date = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+  if (step >= 86400000) return date;
+  const hm = `${p(d.getHours())}:${p(d.getMinutes())}`;
+  if (step >= 60000) return `${date} ${hm}`;
+  const hms = `${hm}:${p(d.getSeconds())}`;
+  return step < 1000 ? `${date} ${hms}.${p(d.getMilliseconds(), 3)}` : `${date} ${hms}`;
+}
+
+function tvAutoStep(range) {
+  if (!(range > 0)) return 1000;
+  for (const s of TV_STEPS) if (range / s <= 120) return s;
+  return TV_STEPS[TV_STEPS.length - 1];
+}
+
+/** Space-separated terms, all must match (case-insensitive); "-term" excludes. */
+function tvParseQuery(q) {
+  const out = [];
+  const re = /(-?)(?:"([^"]+)"|(\S+))/g;
+  let m;
+  while ((m = re.exec(q || "")) !== null) {
+    const text = (m[2] ?? m[3] ?? "").toLowerCase();
+    if (text) out.push({ neg: m[1] === "-", text });
+  }
+  return out;
+}
+
+/**
+ * Parses every row once (time, event pattern, source, level) in ~12 ms slices.
+ * Calls onDone(prep) at the end; `cancelled()` aborts a stale run.
+ */
+function tvPrepareAsync(rows, onDone, cancelled) {
+  const n = rows.length;
+  const t = new Float64Array(n);
+  const ids = { template: new Int32Array(n), source: new Int32Array(n), level: new Int32Array(n) };
+  const mk = () => ({ map: new Map(), labels: [], samples: [] });
+  const dict = { template: mk(), source: mk(), level: mk() };
+  const intern = (d, key, sample) => {
+    let id = d.map.get(key);
+    if (id === undefined) { id = d.labels.length; d.map.set(key, id); d.labels.push(key); d.samples.push(sample || ""); }
+    return id;
+  };
+  const cache = new Map(); // content → [templateId, levelId]
+  let i = 0, tMin = Infinity, tMax = -Infinity, undated = 0;
+
+  const slice = () => {
+    if (cancelled()) return;
+    const stop = performance.now() + 12;
+    while (i < n) {
+      const r = rows[i];
+      const content = String(r.content ?? "");
+      const tt = tvParseTime(r.time ?? r.timestamp);
+      t[i] = tt;
+      if (Number.isNaN(tt)) undated += 1; else { if (tt < tMin) tMin = tt; if (tt > tMax) tMax = tt; }
+      let c = cache.get(content);
+      if (!c) {
+        c = [intern(dict.template, tvTemplate(content), content.slice(0, 200)), intern(dict.level, tvLevel(content))];
+        if (cache.size < 150000) cache.set(content, c);
+      }
+      ids.template[i] = c[0];
+      ids.level[i] = c[1];
+      ids.source[i] = intern(dict.source, `${r.device_name ?? "?"} · ${r.log_name ?? "?"}`);
+      i += 1;
+      if ((i & 255) === 0 && performance.now() > stop) break;
+    }
+    if (i < n) setTimeout(slice, 0);
+    else onDone({ n, t, ids, dict, tMin, tMax, undated, valid: n - undated });
+  };
+  slice();
+}
+
+/** Counts events per (group, time bucket). Top groups by volume + "other". */
+function tvBuildSeries(prep, dim, mask, stepIn) {
+  const { n, t, tMin, tMax } = prep;
+  const ids = prep.ids[dim];
+  const labels = prep.dict[dim].labels;
+  const samples = prep.dict[dim].samples;
+  let step = stepIn;
+  if ((tMax - tMin) / step > 20000) step = Math.ceil((tMax - tMin) / 20000);
+  const nb = Math.floor((tMax - tMin) / step) + 1;
+
+  const counts = new Int32Array(labels.length);
+  let total = 0;
+  for (let i = 0; i < n; i++) {
+    if (mask && !mask[i]) continue;
+    if (Number.isNaN(t[i])) continue;
+    counts[ids[i]] += 1; total += 1;
+  }
+  const order = [];
+  for (let id = 0; id < counts.length; id++) if (counts[id] > 0) order.push(id);
+  order.sort((a, b) => counts[b] - counts[a]);
+  const top = order.slice(0, TV_MAX_GROUPS);
+  const slot = new Int32Array(labels.length).fill(-1);
+  top.forEach((id, k) => { slot[id] = k; });
+  const hasOther = order.length > top.length;
+  const ng = top.length + (hasOther ? 1 : 0);
+
+  const series = Array.from({ length: ng }, () => new Int32Array(nb));
+  const first = new Float64Array(ng).fill(Infinity);
+  const last = new Float64Array(ng).fill(-Infinity);
+  const totals = new Int32Array(nb);
+  for (let i = 0; i < n; i++) {
+    if (mask && !mask[i]) continue;
+    const tt = t[i];
+    if (Number.isNaN(tt)) continue;
+    const id = ids[i];
+    const k = slot[id] >= 0 ? slot[id] : ng - 1;
+    const b = Math.floor((tt - tMin) / step);
+    series[k][b] += 1; totals[b] += 1;
+    if (tt < first[k]) first[k] = tt;
+    if (tt > last[k]) last[k] = tt;
+  }
+  const groups = top.map((id, k) => ({
+    key: k, label: labels[id], sample: samples[id], total: counts[id], other: false,
+    color: dim === "level" ? (TV_LEVEL_COLORS[labels[id]] || NV_OTHER) : TV_PALETTE[k % TV_PALETTE.length],
+    first: first[k], last: last[k], series: series[k],
+  }));
+  if (hasOther) {
+    const k = ng - 1;
+    const sum = groups.reduce((a, g) => a + g.total, 0);
+    groups.push({
+      key: k, label: `other (${order.length - top.length} more)`, sample: "", total: total - sum, other: true,
+      color: NV_OTHER, first: first[k], last: last[k], series: series[k],
+    });
+  }
+  let peak = 0, peakAt = 0;
+  for (let b = 0; b < nb; b++) if (totals[b] > peak) { peak = totals[b]; peakAt = b; }
+  return { dim, step, nb, t0: tMin, groups, total, distinct: order.length, peak, peakAt };
+}
+
+function tvPearson(a, b, k) {
+  const n = a.length;
+  const i0 = k >= 0 ? 0 : -k;
+  const i1 = k >= 0 ? n - k : n;
+  const m = i1 - i0;
+  if (m < 3) return NaN;
+  let sa = 0, sb = 0, saa = 0, sbb = 0, sab = 0;
+  for (let i = i0; i < i1; i++) {
+    const x = a[i], y = b[i + k];
+    sa += x; sb += y; saa += x * x; sbb += y * y; sab += x * y;
+  }
+  const va = saa - (sa * sa) / m, vb = sbb - (sb * sb) / m;
+  if (va <= 1e-9 || vb <= 1e-9) return NaN;
+  return (sab - (sa * sb) / m) / Math.sqrt(va * vb);
+}
+
+const TV_AXIS = {
+  gridcolor: "rgba(255,255,255,0.06)",
+  zerolinecolor: "rgba(255,255,255,0.1)",
+  linecolor: "rgba(255,255,255,0.1)",
+  tickfont: { color: "#6b7280", size: 10, family: NV_FONT },
+};
+const TV_CARD = {
+  background: "var(--card-bg)", border: "1px solid var(--border)", borderRadius: 10, overflow: "hidden",
+};
+const TV_GRID = { display: "grid", gap: 12, gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 340px), 1fr))" };
+
+const tvBucketTimes = (s) => Array.from({ length: s.nb }, (_, i) => new Date(s.t0 + i * s.step + s.step / 2));
+const tvBucketLabels = (s) => Array.from({ length: s.nb }, (_, i) => tvFmtTime(s.t0 + i * s.step, s.step));
+const tvIdx = (i) => String(i + 1);
+
+/** Pill legend: click = toggle, Shift/Alt-click = isolate. */
+function TvLegend({ s, hidden, onToggle, onIsolate, onShowAll, onHideAll }) {
+  const real = s.groups;
+  const visible = real.filter((g) => !hidden.has(g.key)).length;
+  return (
+    <div style={{
+      display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", flexShrink: 0,
+      padding: "8px 12px", ...TV_CARD,
+    }}>
+      <span style={{ fontFamily: NV_FONT, fontSize: 9, color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.1em", marginRight: 4 }}>
+        Events <span style={{ color: "var(--accent)" }}>{visible}/{real.length}</span>
+      </span>
+      {real.map((g, idx) => {
+        const on = !hidden.has(g.key);
+        const span = Number.isFinite(g.first) ? `${tvFmtTime(g.first, 1000)} → ${tvFmtTime(g.last, 1000)}` : "";
+        return (
+          <button
+            key={g.key} type="button" aria-pressed={on}
+            onClick={(e) => (e.shiftKey || e.altKey ? onIsolate(g.key) : onToggle(g.key))}
+            title={`${g.label}\n${g.total.toLocaleString()} events${span ? `\n${span}` : ""}${g.sample ? `\nExample: ${g.sample}` : ""}\nClick to ${on ? "hide" : "show"} · Shift+click to isolate`}
+            style={{
+              display: "inline-flex", alignItems: "center", gap: 7, cursor: "pointer", maxWidth: "100%", minWidth: 0,
+              padding: "4px 11px", borderRadius: 20, fontFamily: "var(--font-mono)", fontSize: 11, fontWeight: 600,
+              background: on ? nvRgba(g.color, 0.12) : "transparent",
+              border: `1px solid ${on ? nvRgba(g.color, 0.45) : "var(--border)"}`,
+              color: on ? "var(--text)" : "var(--muted)", opacity: on ? 1 : 0.7, transition: "all 0.15s",
+            }}
+          >
+            <span style={{
+              width: 8, height: 8, borderRadius: "50%", flexShrink: 0,
+              background: on ? g.color : "transparent", border: `1.5px solid ${g.color}`,
+              boxShadow: on ? `0 0 6px ${nvRgba(g.color, 0.55)}` : "none",
+            }} />
+            {!g.other && <span style={{ color: "var(--muted)", fontWeight: 500 }}>{idx + 1}</span>}
+            <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 320, textDecoration: on ? "none" : "line-through" }}>
+              {g.label}
+            </span>
+            <span style={{ fontSize: 10, fontWeight: 500, color: "var(--muted)" }}>{g.total.toLocaleString()}</span>
+          </button>
+        );
+      })}
+      <div style={{ flex: 1 }} />
+      <Btn size="sm" variant="ghost" onClick={onShowAll} disabled={visible === real.length} title="Show every group"><Icon name="eye" size={12} />All</Btn>
+      <Btn size="sm" variant="ghost" onClick={onHideAll} disabled={visible === 0} title="Hide every group"><Icon name="eyeOff" size={12} />None</Btn>
+    </div>
+  );
+}
+
+function TvDensity({ s, hidden, mode }) {
+  const { data, layout } = useMemo(() => {
+    const x = tvBucketTimes(s);
+    const labels = tvBucketLabels(s);
+    const vis = s.groups.filter((g) => !hidden.has(g.key));
+    const bars = mode !== "lines";
+    const data = vis.map((g) => ({
+      type: bars ? "bar" : "scatter",
+      mode: bars ? undefined : "lines",
+      name: g.label, x,
+      y: Array.from(g.series),
+      customdata: labels.map((l, i) => [l, g.series[i]]),
+      ...(bars
+        ? { width: s.step * 0.94, marker: { color: g.color, line: { width: 0 } } }
+        : { line: { color: g.color, width: 1.6 }, fill: "none" }),
+      hovertemplate: `<b>${nvShort(g.label, 60).replace(/</g, "&lt;")}</b><br>%{customdata[0]}<br>%{customdata[1]:,} events<extra></extra>`,
+    }));
+    const layout = {
+      margin: { l: 56, r: 16, t: 10, b: 44 },
+      barmode: "stack", barnorm: mode === "share" ? "percent" : undefined, bargap: 0,
+      hovermode: "closest",
+      xaxis: { type: "date", ...TV_AXIS },
+      yaxis: { ...TV_AXIS, title: { text: mode === "share" ? "share of events (%)" : `events per ${tvFormatStep(s.step)}`, font: { size: 10, color: "#6b7280" } }, rangemode: "tozero" },
+    };
+    return { data, layout };
+  }, [s, hidden, mode]);
+  return <NvPlot data={data} layout={layout} revision={`d|${s.dim}|${s.step}|${mode}`} filename="event_density" />;
+}
+
+function TvHeatmap({ s, hidden }) {
+  const vis = useMemo(() => s.groups.filter((g) => !g.other && !hidden.has(g.key)), [s, hidden]);
+  const { data, layout } = useMemo(() => {
+    const x = tvBucketTimes(s);
+    const labels = tvBucketLabels(s);
+    let max = 1;
+    vis.forEach((g) => { for (let i = 0; i < g.series.length; i++) if (g.series[i] > max) max = g.series[i]; });
+    const z = vis.map((g) => Array.from(g.series, (c) => Math.log1p(c)));
+    const text = vis.map((g) => Array.from(g.series, (c, i) => `${g.label.replace(/</g, "&lt;")}<br>${labels[i]}<br><b>${c.toLocaleString()}</b> events`));
+    const tickvals = [0], ticktext = ["0"];
+    for (let v = 1; v <= max; v *= 10) { tickvals.push(Math.log1p(v)); ticktext.push(v.toLocaleString()); }
+    const data = [{
+      type: "heatmap", x, y: vis.map((g, i) => `${i + 1}  ${nvShort(g.label, 30)}`), z, text,
+      hovertemplate: "%{text}<extra></extra>", hoverongaps: false,
+      colorscale: [[0, "#0d0d18"], [0.12, "#2a2a6e"], [0.45, "#6366f1"], [0.75, "#a78bfa"], [1, "#f0abfc"]],
+      xgap: 0, ygap: 2, zmin: 0, zmax: Math.log1p(max),
+      colorbar: { thickness: 10, len: 0.9, tickvals, ticktext, tickfont: { color: "#6b7280", size: 9, family: NV_FONT }, outlinewidth: 0, title: { text: "events", font: { size: 9, color: "#6b7280" } } },
+    }];
+    const layout = {
+      margin: { l: 10, r: 10, t: 10, b: 44 },
+      xaxis: { type: "date", ...TV_AXIS },
+      yaxis: { ...TV_AXIS, autorange: "reversed", automargin: true, tickfont: { color: "#9ca3af", size: 10, family: NV_FONT } },
+    };
+    return { data, layout };
+  }, [s, vis]);
+  if (!vis.length) return <NvEmpty message="Every group is hidden. Pick one in the legend above." />;
+  return <NvPlot data={data} layout={layout} revision={`h|${s.dim}|${s.step}`} filename="event_heatmap" />;
+}
+
+function TvCorrelation({ s, hidden }) {
+  const [filter, setFilter] = useState("all");
+  const [selKey, setSelKey] = useState(null);
+  const [align, setAlign] = useState(true);
+
+  const vg = useMemo(() => s.groups.filter((g) => !g.other && !hidden.has(g.key)), [s, hidden]);
+  const maxLag = Math.max(0, Math.min(12, Math.floor(s.nb / 4)));
+  const threshold = Math.max(0.2, 2 / Math.sqrt(Math.max(s.nb, 1)));
+
+  const corr = useMemo(() => {
+    const n = vg.length;
+    const M = Array.from({ length: n }, (_, i) => Array.from({ length: n }, (_, j) => (i === j ? 1 : null)));
+    const pairs = [];
+    for (let i = 0; i < n; i++) {
+      for (let j = i + 1; j < n; j++) {
+        const a = vg[i].series, b = vg[j].series;
+        const r0 = tvPearson(a, b, 0);
+        let bestR = r0, bestK = 0;
+        for (let d = 1; d <= maxLag; d++) {
+          for (const k of [d, -d]) {
+            const r = tvPearson(a, b, k);
+            if (!Number.isNaN(r) && (Number.isNaN(bestR) || Math.abs(r) > Math.abs(bestR) + 1e-9)) { bestR = r; bestK = k; }
+          }
+        }
+        M[i][j] = M[j][i] = Number.isNaN(r0) ? null : r0;
+        if (Number.isNaN(bestR)) continue;
+        const aLeads = bestK >= 0;
+        pairs.push({
+          key: `${vg[i].key}|${vg[j].key}`, i, j, r0, r: bestR, k: bestK,
+          lead: aLeads ? vg[i] : vg[j], follow: aLeads ? vg[j] : vg[i], lag: Math.abs(bestK),
+        });
+      }
+    }
+    pairs.sort((p, q) => Math.abs(q.r) - Math.abs(p.r));
+    return { M, pairs };
+  }, [vg, maxLag]);
+
+  const list = useMemo(() => corr.pairs
+    .filter((p) => Math.abs(p.r) >= threshold)
+    .filter((p) => filter === "all" || (filter === "pos" && p.r > 0) || (filter === "neg" && p.r < 0) || (filter === "lead" && p.lag > 0))
+    .slice(0, 40), [corr, threshold, filter]);
+  const active = list.find((p) => p.key === selKey) || list[0] || null;
+
+  const matrix = useMemo(() => {
+    const n = vg.length;
+    const names = vg.map((g, i) => `${i + 1}  ${nvShort(g.label, 24)}`);
+    const nums = vg.map((_, i) => tvIdx(i));
+    const text = vg.map((gi, i) => vg.map((gj, j) => `${gi.label.replace(/</g, "&lt;")}<br>× ${gj.label.replace(/</g, "&lt;")}<br>r = <b>${corr.M[i][j] === null ? "n/a" : corr.M[i][j].toFixed(2)}</b>`));
+    return {
+      data: [{
+        type: "heatmap", x: nums, y: names, z: corr.M, text, hovertemplate: "%{text}<extra></extra>",
+        zmin: -1, zmax: 1, xgap: 2, ygap: 2, hoverongaps: false,
+        colorscale: [[0, "#60a5fa"], [0.5, "#16162a"], [1, "#fb923c"]],
+        ...(n <= 9 ? { texttemplate: "%{z:.2f}", textfont: { color: "#e8eaf0", size: 10, family: NV_FONT } } : {}),
+        colorbar: { thickness: 10, len: 0.9, tickvals: [-1, -0.5, 0, 0.5, 1], tickfont: { color: "#6b7280", size: 9, family: NV_FONT }, outlinewidth: 0 },
+      }],
+      layout: {
+        margin: { l: 10, r: 10, t: 30, b: 10 },
+        xaxis: { ...TV_AXIS, side: "top", type: "category" },
+        yaxis: { ...TV_AXIS, type: "category", autorange: "reversed", automargin: true, tickfont: { color: "#9ca3af", size: 10, family: NV_FONT } },
+      },
+    };
+  }, [vg, corr]);
+
+  const detail = useMemo(() => {
+    if (!active) return null;
+    const x = tvBucketTimes(s);
+    const lead = active.lead, follow = active.follow;
+    const fy = Array.from(follow.series, (_, i) => {
+      const src = align ? i + active.lag : i;
+      return src >= 0 && src < s.nb ? follow.series[src] : null;
+    });
+    const overlay = {
+      data: [
+        { type: "scatter", mode: "lines", name: lead.label, x, y: Array.from(lead.series), line: { color: lead.color, width: 1.6 }, hovertemplate: "%{y:,} events<extra>lead</extra>" },
+        { type: "scatter", mode: "lines", name: follow.label, x, y: fy, yaxis: "y2", line: { color: follow.color, width: 1.6, dash: "dot" }, connectgaps: false, hovertemplate: "%{y:,} events<extra>follower</extra>" },
+      ],
+      layout: {
+        margin: { l: 48, r: 48, t: 10, b: 40 }, hovermode: "x unified",
+        xaxis: { type: "date", ...TV_AXIS },
+        yaxis: { ...TV_AXIS, rangemode: "tozero", tickfont: { color: lead.color, size: 10, family: NV_FONT } },
+        yaxis2: { ...TV_AXIS, overlaying: "y", side: "right", rangemode: "tozero", showgrid: false, tickfont: { color: follow.color, size: 10, family: NV_FONT } },
+      },
+    };
+    const lags = [], rs = [], tips = [];
+    for (let m = -maxLag; m <= maxLag; m++) {
+      const r = tvPearson(lead.series, follow.series, m);
+      lags.push(m); rs.push(Number.isNaN(r) ? null : r);
+      tips.push(m === 0 ? "same bucket" : `follower ${m > 0 ? "after" : "before"} lead by ${tvFormatStep(Math.abs(m) * s.step)}`);
+    }
+    const xc = {
+      data: [{
+        type: "bar", x: lags, y: rs, customdata: tips,
+        marker: { color: lags.map((m) => (m === active.lag ? "#818cf8" : "rgba(148,163,184,0.45)")) },
+        hovertemplate: "lag %{x} · r = %{y:.2f}<br>%{customdata}<extra></extra>",
+      }],
+      layout: {
+        margin: { l: 44, r: 12, t: 10, b: 44 }, bargap: 0.2,
+        xaxis: { ...TV_AXIS, title: { text: `follower lags lead by (× ${tvFormatStep(s.step)})`, font: { size: 10, color: "#6b7280" } }, dtick: maxLag > 8 ? 2 : 1 },
+        yaxis: { ...TV_AXIS, range: [-1, 1], title: { text: "Pearson r", font: { size: 10, color: "#6b7280" } } },
+      },
+    };
+    let both = 0, either = 0;
+    for (let i = 0; i < s.nb; i++) {
+      const a = lead.series[i] > 0, b = follow.series[i] > 0;
+      if (a && b) both += 1;
+      if (a || b) either += 1;
+    }
+    return { overlay, xc, jaccard: either ? both / either : 0 };
+  }, [active, s, align, maxLag]);
+
+  if (s.nb < 8) {
+    return <NvEmpty icon="clock" message={`Only ${s.nb} time bucket${s.nb === 1 ? "" : "s"} — too few to correlate. Choose a smaller bucket size or load a longer time range.`} />;
+  }
+  if (vg.length < 2) {
+    return <NvEmpty message="Correlation needs at least two visible groups. Enable more in the legend above." />;
+  }
+
+  const pairBtn = (p) => {
+    const sel = active && p.key === active.key;
+    const pos = p.r > 0;
+    const c = pos ? "#fb923c" : "#60a5fa";
+    return (
+      <button key={p.key} type="button" onClick={() => setSelKey(p.key)} style={{
+        display: "flex", flexDirection: "column", gap: 5, textAlign: "left", cursor: "pointer", width: "100%",
+        padding: "8px 10px", borderRadius: 8, fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--text)",
+        background: sel ? "rgba(129,140,248,0.12)" : "transparent",
+        border: `1px solid ${sel ? "var(--accent-border)" : "var(--border)"}`, transition: "all 0.15s",
+      }}>
+        <span style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
+          <span style={{ width: 8, height: 8, borderRadius: "50%", background: p.lead.color, flexShrink: 0 }} />
+          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>{p.lead.label}</span>
+        </span>
+        <span style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0, color: "var(--muted)" }}>
+          <Icon name={p.lag ? "arrowLeft" : "refresh"} size={10} style={{ transform: p.lag ? "rotate(180deg)" : "none", flexShrink: 0 }} />
+          <span style={{ width: 8, height: 8, borderRadius: "50%", background: p.follow.color, flexShrink: 0 }} />
+          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1, color: "var(--text)" }}>{p.follow.label}</span>
+        </span>
+        <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{ flex: 1, height: 4, borderRadius: 2, background: "rgba(255,255,255,0.06)", overflow: "hidden" }}>
+            <span style={{ display: "block", height: "100%", width: `${Math.abs(p.r) * 100}%`, background: c }} />
+          </span>
+          <span style={{ color: c, fontWeight: 700 }}>{p.r > 0 ? "+" : ""}{p.r.toFixed(2)}</span>
+          <span style={{ color: "var(--muted)", fontSize: 10, minWidth: 64, textAlign: "right" }}>
+            {p.lag ? `+${tvFormatStep(p.lag * s.step)}` : "same time"}
+          </span>
+        </span>
+      </button>
+    );
+  };
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 12, padding: 12 }}>
+      <div style={TV_GRID}>
+        <div style={{ ...TV_CARD, background: "transparent", display: "flex", flexDirection: "column", height: 440 }}>
+          <div style={{ fontFamily: NV_FONT, fontSize: 10, color: "var(--muted)", padding: "8px 12px 0" }}>
+            Correlation matrix · event counts per {tvFormatStep(s.step)} · click a cell to inspect the pair
+          </div>
+          <div style={{ flex: 1, minHeight: 0 }}>
+            <NvPlot
+              data={matrix.data} layout={matrix.layout} minHeight={300} revision={`m|${s.dim}|${s.step}|${vg.length}`} filename="event_correlation"
+              onPointClick={(pt) => {
+                const pn = pt.pointNumber;
+                if (!Array.isArray(pn) || pn[0] === pn[1]) return;
+                const a = Math.min(pn[0], pn[1]), b = Math.max(pn[0], pn[1]);
+                setSelKey(`${vg[a].key}|${vg[b].key}`);
+              }}
+            />
+          </div>
+        </div>
+        <div style={{ ...TV_CARD, background: "transparent", display: "flex", flexDirection: "column", height: 440 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", flexWrap: "wrap", borderBottom: "1px solid var(--border)" }}>
+            <span style={{ fontFamily: NV_FONT, fontSize: 10, color: "var(--muted)", flex: 1, minWidth: 140 }}>
+              Strongest relationships · lead → follower (window ±{maxLag} buckets)
+            </span>
+            <NvSelect label="Show" value={filter} onChange={setFilter} options={[
+              { id: "all", label: "All" }, { id: "pos", label: "Move together" },
+              { id: "neg", label: "Opposite" }, { id: "lead", label: "Lead / lag only" },
+            ]} />
+          </div>
+          <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: 8, display: "flex", flexDirection: "column", gap: 6 }}>
+            {list.length === 0 ? (
+              <NvEmpty icon="search" message={`No pairs reach |r| ≥ ${threshold.toFixed(2)} for this filter. Try a different bucket size or grouping.`} />
+            ) : list.map(pairBtn)}
+          </div>
+        </div>
+      </div>
+
+      {active && detail && (
+        <div style={{ ...TV_CARD, background: "transparent", padding: 12, display: "flex", flexDirection: "column", gap: 10 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+            <div style={{ flex: 1, minWidth: 220, fontFamily: "var(--font-display)", fontSize: 13, color: "var(--text)", lineHeight: 1.5 }}>
+              <b style={{ color: active.lead.color }}>{nvShort(active.lead.label, 60)}</b>
+              {active.lag ? " tends to be followed by " : " moves together with "}
+              <b style={{ color: active.follow.color }}>{nvShort(active.follow.label, 60)}</b>
+              {active.lag ? <> after ~<b>{tvFormatStep(active.lag * s.step)}</b></> : null}
+            </div>
+            <NvStat label="Correlation" value={`${active.r > 0 ? "+" : ""}${active.r.toFixed(2)}`} />
+            <NvStat label="Co-occurrence" value={`${Math.round(detail.jaccard * 100)}%`} />
+            {active.lag > 0 && (
+              <Btn size="sm" variant={align ? "primary" : "subtle"} onClick={() => setAlign((v) => !v)} title="Shift the follower back in time so both curves line up">
+                <Icon name="clock" size={12} />Align by lag
+              </Btn>
+            )}
+          </div>
+          <div style={TV_GRID}>
+            <div style={{ height: 300 }}><NvPlot data={detail.overlay.data} layout={detail.overlay.layout} minHeight={240} revision={`o|${active.key}|${align}|${s.step}`} filename="event_pair" /></div>
+            <div style={{ height: 300 }}><NvPlot data={detail.xc.data} layout={detail.xc.layout} minHeight={240} revision={`x|${active.key}|${s.step}`} filename="event_lag" /></div>
+          </div>
+          <NvNote>
+            Correlation ≠ causation. Left: both series per bucket{align && active.lag ? " (follower shifted back to line up)" : ""}; right: how strongly they correlate at each time offset — the highlighted bar is the best match.
+          </NvNote>
+        </div>
+      )}
+    </div>
+  );
+}
+
+const TV_VIEWS = [
+  { id: "density",     label: "Density",     desc: "How many events happen over time, split by group. Zoom with drag, double-click to reset." },
+  { id: "heatmap",     label: "Heatmap",     desc: "One row per group, one column per time bucket — bursts and quiet periods at a glance (log colour scale)." },
+  { id: "correlation", label: "Correlation", desc: "Which events rise and fall together, and which tend to precede others." },
+];
+
+/**
+ * Props:
+ *   rows – log rows ({ time, device_name, log_name, content }); already filtered by the log filter bar
+ */
+function TextLogVisualizer({ rows }) {
+  const [prep, setPrep] = useState(null);
+  useEffect(() => {
+    setPrep(null);
+    if (!rows || rows.length === 0) return undefined;
+    let dead = false;
+    tvPrepareAsync(rows, (p) => { if (!dead) setPrep(p); }, () => dead);
+    return () => { dead = true; };
+  }, [rows]);
+
+  const [view, setView] = useState("density");
+  const [dim, setDim] = useState("template");
+  const [bucketSel, setBucketSel] = useState("auto");
+  const [mode, setMode] = useState("stack");
+  const [hidden, setHidden] = useState(() => new Set());
+  const [queryInput, setQueryInput] = useState("");
+  const [query, setQuery] = useState("");
+
+  useEffect(() => {
+    const id = setTimeout(() => setQuery(queryInput), 250);
+    return () => clearTimeout(id);
+  }, [queryInput]);
+  useEffect(() => { setHidden(new Set()); }, [dim]);
+
+  const terms = useMemo(() => tvParseQuery(query), [query]);
+  const mask = useMemo(() => {
+    if (!prep || !terms.length) return null;
+    const m = new Uint8Array(prep.n);
+    for (let i = 0; i < prep.n; i++) {
+      const r = rows[i];
+      const hay = `${r.content ?? ""} ${r.device_name ?? ""} ${r.log_name ?? ""}`.toLowerCase();
+      let ok = 1;
+      for (const t of terms) { if (hay.includes(t.text) === t.neg) { ok = 0; break; } }
+      m[i] = ok;
+    }
+    return m;
+  }, [prep, terms, rows]);
+
+  const range = prep ? Math.max(0, prep.tMax - prep.tMin) : 0;
+  const bucketOptions = useMemo(() => {
+    const auto = tvAutoStep(range);
+    const opts = [{ id: "auto", label: `Auto (${tvFormatStep(auto)})` }];
+    TV_STEPS.forEach((st) => {
+      const nb = range / st;
+      if (nb <= TV_MAX_BUCKETS && (nb >= 4 || st === 1000)) opts.push({ id: String(st), label: tvFormatStep(st) });
+    });
+    return opts;
+  }, [range]);
+  const step = bucketSel === "auto" || !bucketOptions.some((o) => o.id === bucketSel) ? tvAutoStep(range) : Number(bucketSel);
+
+  const s = useMemo(() => (prep && prep.valid > 0 ? tvBuildSeries(prep, dim, mask, step) : null), [prep, dim, mask, step]);
+
+  if (!rows || rows.length === 0) return <p style={{ color: "var(--muted)", padding: 16 }}>No log lines to visualize.</p>;
+  if (!prep) return <Spinner />;
+  if (prep.valid === 0) {
+    return <NvEmpty icon="clock" message="None of the log lines have a parseable timestamp, so there is no time axis to draw." />;
+  }
+
+  const toggle = (k) => setHidden((prev) => { const nx = new Set(prev); if (nx.has(k)) nx.delete(k); else nx.add(k); return nx; });
+  const isolate = (k) => setHidden((prev) => {
+    const all = s.groups.map((g) => g.key);
+    const already = all.every((q) => (q === k ? !prev.has(q) : prev.has(q)));
+    return already ? new Set() : new Set(all.filter((q) => q !== k));
+  });
+  const clearSearch = () => { setQueryInput(""); setQuery(""); };
+
+  const tabStyle = (active) => ({
+    padding: "7px 16px", borderRadius: 7, border: "none", cursor: "pointer",
+    fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 12, letterSpacing: "0.05em",
+    background: active ? "rgba(129,140,248,0.15)" : "transparent",
+    color: active ? "var(--accent)" : "var(--muted)", transition: "all 0.15s",
+  });
+  const noMatches = !!mask && s.total === 0;
+  const allHidden = s.groups.every((g) => hidden.has(g.key));
+  const curView = TV_VIEWS.find((v) => v.id === view);
+
+  return (
+    <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", gap: 12 }}>
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", flexShrink: 0 }}>
+        <NvStat label="Events" value={mask ? `${s.total.toLocaleString()} / ${prep.valid.toLocaleString()}` : s.total.toLocaleString()} />
+        <NvStat label={dim === "template" ? "Patterns" : dim === "source" ? "Sources" : "Levels"} value={s.distinct.toLocaleString()} />
+        <NvStat label="Time span" value={nvFormatDuration(range / 1000)} />
+        <NvStat label="Bucket" value={tvFormatStep(s.step)} />
+        <NvStat label="Peak" value={`${s.peak.toLocaleString()} @ ${tvFmtTime(s.t0 + s.peakAt * s.step, s.step).slice(-8)}`} />
+        {prep.undated > 0 && <NvStat label="No timestamp" value={prep.undated.toLocaleString()} />}
+        <NvSearch
+          value={queryInput} onChange={setQueryInput} onClear={clearSearch}
+          placeholder="Filter events — text, “phrase”, -exclude"
+          title={"All terms must match (case-insensitive) against the message, device and log name.\nQuote phrases: \"link down\"   Exclude: -debug"}
+        />
+      </div>
+
+      <div style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0, borderBottom: "1px solid var(--border)", paddingBottom: 8, flexWrap: "wrap" }}>
+        {TV_VIEWS.map((v) => (
+          <button key={v.id} style={tabStyle(view === v.id)} onClick={() => setView(v.id)}>{v.label}</button>
+        ))}
+        <div style={{ flex: 1 }} />
+        <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center" }}>
+          <NvSelect label="Group by" value={dim} options={TV_DIMS} onChange={setDim} />
+          <NvSelect label="Bucket" value={bucketSel} options={bucketOptions} onChange={setBucketSel} />
+          {view === "density" && (
+            <NvSelect label="Chart" value={mode} onChange={setMode} options={[
+              { id: "stack", label: "Stacked bars" }, { id: "lines", label: "Lines" }, { id: "share", label: "Share %" },
+            ]} />
+          )}
+        </div>
+      </div>
+
+      <NvNote>{curView.desc}{dim === "template" && " Event patterns mask numbers, IPs, ids and quoted values so similar messages group together."}</NvNote>
+
+      <TvLegend s={s} hidden={hidden} onToggle={toggle} onIsolate={isolate}
+        onShowAll={() => setHidden(new Set())} onHideAll={() => setHidden(new Set(s.groups.map((g) => g.key)))} />
+
+      <div style={{
+        flex: 1, minHeight: 380, display: "flex", flexDirection: "column", ...TV_CARD,
+        padding: view === "correlation" ? 0 : "10px 12px 12px",
+        overflow: view === "correlation" ? "auto" : "hidden",
+      }}>
+        {noMatches ? (
+          <NvEmpty icon="search" message={`No events match “${query.trim()}”.`}
+            action={<Btn size="sm" variant="subtle" onClick={clearSearch}><Icon name="close" size={12} />Clear filter</Btn>} />
+        ) : allHidden ? (
+          <NvEmpty message="All groups are hidden. Pick one in the legend above to bring the data back."
+            action={<Btn size="sm" variant="subtle" onClick={() => setHidden(new Set())}><Icon name="eye" size={12} />Show all</Btn>} />
+        ) : (
+          <>
+            {view === "density" && <TvDensity s={s} hidden={hidden} mode={mode} />}
+            {view === "heatmap" && <TvHeatmap s={s} hidden={hidden} />}
+            {view === "correlation" && <TvCorrelation s={s} hidden={hidden} />}
           </>
         )}
       </div>
@@ -7959,6 +8677,7 @@ export default function App() {
   // packet_capture "view packet details" modal
   const [packetModal,        setPacketModal]        = useState(false);
   const [vizModal,           setVizModal]           = useState(false); // network capture visualizer
+  const [textVizModal,       setTextVizModal]       = useState(false); // text log event visualizer
   const [packetModalData,    setPacketModalData]    = useState(null); // { packet_number, details }
   const [packetModalLoading, setPacketModalLoading] = useState(false);
   const [packetModalError,   setPacketModalError]   = useState("");
@@ -9610,6 +10329,11 @@ ${rowsHtml}
                 <Icon name="chart" size={12} />Visualize
               </Btn>
             )}
+            {!isChart && !logRowsLoading && filteredLogRows.length > 0 && (
+              <Btn size="sm" variant="subtle" onClick={() => setTextVizModal(true)} title="Event density, heatmap and correlation charts for these text logs">
+                <Icon name="chart" size={12} />{networkCaptureSnaps.length > 0 ? "Visualize events" : "Visualize"}
+              </Btn>
+            )}
             {networkCaptureSnaps.map((s) => (
               <Btn key={s.id} size="sm" variant="subtle" onClick={() => downloadRawPcap(s)}>
                 <Icon name="download" size={12} />Raw PCAP{networkCaptureSnaps.length > 1 ? `: ${s.deviceName}` : ""}
@@ -9663,6 +10387,18 @@ ${rowsHtml}
         footer={<Btn variant="ghost" onClick={() => setVizModal(false)}>Close</Btn>}
       >
         {vizModal && <NetworkCaptureVisualizer rows={filteredLogRows} onPacketClick={openPacketDetails} />}
+      </Modal>
+
+      {/* Text log visualizer — event density, heatmap and correlation */}
+      <Modal
+        open={textVizModal}
+        onClose={() => setTextVizModal(false)}
+        title="Text Log Visualizer"
+        icon={<Icon name="chart" size={18} />}
+        size="full"
+        footer={<Btn variant="ghost" onClick={() => setTextVizModal(false)}>Close</Btn>}
+      >
+        {textVizModal && <TextLogVisualizer rows={filteredLogRows} />}
       </Modal>
 
       {/* Packet details modal — opened from the search icon next to packet_capture rows */}
