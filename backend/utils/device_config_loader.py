@@ -1,4 +1,5 @@
 import base64
+import os
 from pathlib import Path
 from backend.models.device import Device
 from backend.models.device_config import DeviceConfig
@@ -38,6 +39,26 @@ class DeviceConfigLoader():
         else:
             return None
 
+    def _iter_config_paths(self):
+        """
+        Yield the config file of every device directory.
+
+        A device's config lives at <configs_dir>/<device_config_id>/<device_config_id>.json,
+        so it is looked up directly instead of with rglob("*.json"). rglob walks
+        *every* file under the data directory - including all the snapshot
+        .parquet files (tens of thousands) - on every call, and this runs on
+        nearly every API request.
+        """
+        try:
+            entries = list(os.scandir(self.configs_dir_path))
+        except FileNotFoundError:
+            return
+        for entry in entries:
+            if entry.is_dir():
+                candidate = os.path.join(entry.path, f"{entry.name}.json")
+                if os.path.isfile(candidate):
+                    yield Path(candidate)
+
     def load_all_devices(self):
         """
         Get all source device config files from target directory and create a list of Device objects.
@@ -46,8 +67,7 @@ class DeviceConfigLoader():
             (list): List of Device objects.
         """
         devices_list = []
-        config_paths = list(Path(self.configs_dir_path).rglob("*.json"))
-        for config_path in config_paths:
+        for config_path in self._iter_config_paths():
             device = self.load_device_from_config(config_path)
             if device:
                 devices_list.append(device)

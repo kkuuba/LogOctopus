@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import signal
+import threading
 import uuid
 from pathlib import Path
 
@@ -1755,5 +1756,15 @@ def logout():
 
 
 # ── background jobs ───────────────────────────────────────────────────────────
+def _warm_caches() -> None:
+    """Pre-read the snapshot index in the background so
+    the first page load after startup isn't slow (cold disk cache)."""
+    import time
+    t = time.perf_counter()
+    snapshot_index.warm()
+    app.logger.info("cache warm-up finished in %.2fs", time.perf_counter() - t)
+
+
 if _should_start_background_threads():
     retention_scheduler.start()
+    threading.Thread(target=_warm_caches, name="cache-warmup", daemon=True).start()

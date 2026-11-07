@@ -219,6 +219,32 @@ def find_by_id(snapshot_id: str) -> sqlite3.Row | None:
     ).fetchone()
 
 
+def warm(chunk_size: int = 4 * 1024 * 1024) -> float:
+    """Pre-load the index into the OS page cache so the first
+    GET /api/snapshots after startup doesn't pay for cold disk reads.
+
+    Reads the DB (and WAL) files front to back - a sequential read is far
+    faster than the random page reads SQLite does on a cold query - then
+    runs the two hot list queries once. Best-effort: never raises.
+
+    Returns the seconds spent.
+    """
+    import time
+    start = time.perf_counter()
+    try:
+        for suffix in ("", "-wal"):
+            path = Path(str(DB_PATH) + suffix)
+            if path.exists():
+                with open(path, "rb") as f:
+                    while f.read(chunk_size):
+                        pass
+        query(False)
+        query(True)
+    except Exception:
+        pass
+    return time.perf_counter() - start
+
+
 def count_all() -> int:
     return _conn().execute("SELECT COUNT(*) FROM snapshots").fetchone()[0]
 
